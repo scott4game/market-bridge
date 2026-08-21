@@ -1,0 +1,6 @@
+.env
+/data/
+/go-client
+/go-server
+*.tmp
+*.downloading

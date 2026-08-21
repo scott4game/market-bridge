@@ -1,0 +1,107 @@
+services:
+  go-server:
+    profiles: [server]
+    image: massive-go-server:${IMAGE_TAG:-local}
+    build:
+      context: .
+      target: go-server
+    environment:
+      GO_SERVER_LISTEN: :17601
+      GO_SERVER_DATA_DIR: /data
+      GO_SERVER_PROVIDER: ${GO_SERVER_PROVIDER:-mock}
+      GO_SERVER_DATA_VERSION: ${GO_SERVER_DATA_VERSION:-mock-v1}
+      GO_SERVER_DATASET_TTL: ${GO_SERVER_DATASET_TTL:-24h}
+      GO_SERVER_TOKEN: ${GO_SERVER_TOKEN:-local-development-token}
+      MASSIVE_API_KEY: ${MASSIVE_API_KEY:-}
+      GO_SERVER_LIVE_PROVIDER: ${GO_SERVER_LIVE_PROVIDER:-mock}
+      GO_SERVER_WATCHLIST: ${GO_SERVER_WATCHLIST:-AAPL,NVDA}
+      LONGBRIDGE_APP_KEY: ${LONGBRIDGE_APP_KEY:-}
+      LONGBRIDGE_APP_SECRET: ${LONGBRIDGE_APP_SECRET:-}
+      LONGBRIDGE_ACCESS_TOKEN: ${LONGBRIDGE_ACCESS_TOKEN:-}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: market
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-change-me}
+    volumes:
+      - server-data:/data
+    expose: [17601]
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: unless-stopped
+
+  clickhouse:
+    profiles: [server]
+    image: clickhouse/clickhouse-server:25.8-alpine
+    environment:
+      CLICKHOUSE_DB: market
+      CLICKHOUSE_USER: market
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-change-me}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    expose: [8123, 9000]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  caddy:
+    profiles: [server]
+    image: caddy:2.10-alpine
+    environment:
+      MARKET_DOMAIN: ${MARKET_DOMAIN:-localhost}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      go-server:
+        condition: service_healthy
+    restart: unless-stopped
+
+  go-client:
+    profiles: [local]
+    image: massive-go-client:${IMAGE_TAG:-local}
+    build:
+      context: .
+      target: go-client
+    environment:
+      GO_CLIENT_LISTEN: 0.0.0.0:17600
+      GO_CLIENT_CACHE_DIRECTORY: /data
+      GO_CLIENT_SERVER_URL: ${GO_CLIENT_SERVER_URL:-http://host.docker.internal:17601}
+      GO_CLIENT_SERVER_TOKEN: ${GO_CLIENT_SERVER_TOKEN:-local-development-token}
+      GO_CLIENT_PARQUET_TTL: ${GO_CLIENT_PARQUET_TTL:-720h}
+      GO_CLIENT_CLEANUP_INTERVAL: ${GO_CLIENT_CLEANUP_INTERVAL:-6h}
+      GO_CLIENT_REDIS_ENABLED: "true"
+      GO_CLIENT_REDIS_ADDRESS: redis:6379
+      GO_CLIENT_REDIS_TTL: ${GO_CLIENT_REDIS_TTL:-24h}
+    ports: ["127.0.0.1:17600:17600"]
+    volumes:
+      - client-data:/data
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  redis:
+    profiles: [local]
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "2gb", "--maxmemory-policy", "allkeys-lru"]
+    expose: [6379]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  server-data:
+  client-data:
+  clickhouse-data:
+  caddy-data:
+  caddy-config:

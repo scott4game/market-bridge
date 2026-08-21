@@ -1,0 +1,4 @@
+{$MARKET_DOMAIN:localhost} {
+	encode zstd gzip
+	reverse_proxy go-server:17601
+}

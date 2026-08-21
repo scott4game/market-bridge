@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>KLineChart V1</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<main><header><div><p class="eyebrow">LOCAL MARKET DATA</p><h1>KLineChart</h1></div><span id="status">go-client</span></header>
+<form id="query"><label>股票<input id="symbol" value="AAPL"></label><label>周期<select id="interval"><option>1m</option><option>5m</option><option>30m</option><option>1h</option><option>1d</option></select></label><label>开始<input id="from" type="datetime-local"></label><label>结束<input id="to" type="datetime-local"></label><button>加载</button></form>
+<section class="meta"><span id="source">缓存：—</span><span id="count">Bars：—</span><span id="updated">更新：—</span></section>
+<canvas id="chart" width="1200" height="620"></canvas><pre id="error"></pre>
+</main><script src="/app.js"></script>
+</body></html>
