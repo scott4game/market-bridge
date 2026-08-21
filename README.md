@@ -1,16 +1,33 @@
 # market-bridge
 
-日本笔记本本地缓存与新加坡行情服务的两层架构：
+面向量化研究、行情分析与本地回测的数据缓存网关。
+
+market-bridge 将远程行情服务与本地分析环境分离，通过多级缓存减少重复拉取，并为 K 线图表和策略回测提供一致的数据访问入口。
 
 ```text
-KLineChart / Go strategy -> go-client -> Redis -> Parquet -> go-server -> provider
+KLineChart / Go Strategy
+          ↓
+      go-client
+          ↓
+ Redis 热缓存 → Parquet 磁盘缓存
+          ↓
+      go-server
+          ↓
+ Market Data Provider
 ```
 
-`go-server` 提供版本化 Parquet 数据集和实时 WebSocket；`go-client` 是本地唯一入口，托管 KLineChart，并提供可配置 TTL 的本地缓存。默认 mock provider 无需供应商密钥即可验证完整链路。
+## 核心组件
+
+- **go-server**：连接行情供应商，统一处理历史数据、实时行情、数据版本和访问认证。
+- **go-client**：运行在本地分析环境中，为图表和策略提供统一 API，并管理 Redis 与 Parquet 缓存。
+- **Redis**：保存高频访问的热数据，可在数据丢失后自动重建。
+- **Parquet**：保存可配置 TTL 的本地磁盘缓存，支持离线分析和回测。
+
+项目默认提供 Mock Provider，无需配置第三方行情密钥即可运行并验证完整链路。go-client 可以部署在个人工作站，go-server 则可部署在靠近行情供应商的云服务器。
 
 ## 配置
 
-服务端与客户端使用彼此隔离的配置，避免把供应商密钥传入本地客户端：
+服务端与客户端使用彼此隔离的配置，避免将供应商密钥传入本地环境：
 
 ```bash
 cp .env.server.example .env.server
@@ -22,7 +39,7 @@ chmod 600 .env.server .env.client
 
 ## 一键安装
 
-### 新加坡 go-server
+### go-server
 
 从 GHCR 安装指定版本：
 
@@ -48,7 +65,7 @@ sudo ./scripts/uninstall-server.sh --purge-data  # 同时删除配置和 Docker 
 
 升级失败时会恢复之前的 `.env` 版本并尝试重新启动旧镜像。普通卸载保留配置和数据。
 
-### 日本 go-client
+### go-client
 
 Docker + Redis 模式：
 
