@@ -1,0 +1,43 @@
+name: market-bridge-client
+
+services:
+  go-client:
+    image: ${MARKET_BRIDGE_CLIENT_IMAGE:?set MARKET_BRIDGE_CLIENT_IMAGE}:${MARKET_BRIDGE_VERSION:?set MARKET_BRIDGE_VERSION}
+    pull_policy: ${MARKET_BRIDGE_PULL_POLICY:-always}
+    environment:
+      GO_CLIENT_LISTEN: 0.0.0.0:17600
+      GO_CLIENT_CACHE_DIRECTORY: /data
+      GO_CLIENT_SERVER_URL: ${GO_CLIENT_SERVER_URL:?set GO_CLIENT_SERVER_URL}
+      GO_CLIENT_SERVER_TOKEN: ${GO_CLIENT_SERVER_TOKEN:?set GO_CLIENT_SERVER_TOKEN}
+      GO_CLIENT_PARQUET_TTL: ${GO_CLIENT_PARQUET_TTL:-720h}
+      GO_CLIENT_CLEANUP_INTERVAL: ${GO_CLIENT_CLEANUP_INTERVAL:-6h}
+      GO_CLIENT_REDIS_ENABLED: "true"
+      GO_CLIENT_REDIS_ADDRESS: redis:6379
+      GO_CLIENT_REDIS_USERNAME: ${GO_CLIENT_REDIS_USERNAME:-}
+      GO_CLIENT_REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+      GO_CLIENT_REDIS_DB: ${GO_CLIENT_REDIS_DB:-0}
+      GO_CLIENT_REDIS_TTL: ${GO_CLIENT_REDIS_TTL:-24h}
+    ports: ["127.0.0.1:17600:17600"]
+    volumes:
+      - client-data:/data
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+    command: ["sh", "-c", "exec redis-server --save '' --appendonly no --maxmemory $${REDIS_MAXMEMORY:-2gb} --maxmemory-policy allkeys-lru --requirepass \"$$REDIS_PASSWORD\""]
+    expose: [6379]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping 2>/dev/null | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  client-data:

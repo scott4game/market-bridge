@@ -9,11 +9,11 @@ import (
 	"syscall"
 	"time"
 
-	"massive-go/internal/config"
-	"massive-go/internal/live"
-	"massive-go/internal/provider"
-	marketserver "massive-go/internal/server"
-	"massive-go/internal/storage"
+	"github.com/scott4game/market-bridge/internal/config"
+	"github.com/scott4game/market-bridge/internal/live"
+	"github.com/scott4game/market-bridge/internal/provider"
+	marketserver "github.com/scott4game/market-bridge/internal/server"
+	"github.com/scott4game/market-bridge/internal/storage"
 )
 
 func main() {
@@ -38,7 +38,7 @@ func main() {
 	go store.RunCleanup(ctx, cfg.DatasetTTL)
 	var sink live.Sink = live.NopSink{}
 	if cfg.ClickHouseURL != "" {
-		ch, err := storage.NewClickHouseSink(ctx, cfg.ClickHouseURL, cfg.ClickHouseUser, cfg.ClickHousePassword)
+		ch, err := storage.NewClickHouseSink(ctx, cfg.ClickHouseURL, cfg.ClickHouseDatabase, cfg.ClickHouseUser, cfg.ClickHousePassword)
 		if err != nil {
 			log.Fatal(err)
 		}

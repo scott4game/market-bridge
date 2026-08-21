@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"massive-go/internal/market"
+	"github.com/scott4game/market-bridge/internal/market"
 )
 
 func TestMockHubWebSocket(t *testing.T) {

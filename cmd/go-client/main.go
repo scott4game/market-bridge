@@ -13,9 +13,9 @@ import (
 	"syscall"
 	"time"
 
-	"massive-go/internal/config"
-	"massive-go/internal/localclient"
-	"massive-go/internal/market"
+	"github.com/scott4game/market-bridge/internal/config"
+	"github.com/scott4game/market-bridge/internal/localclient"
+	"github.com/scott4game/market-bridge/internal/market"
 )
 
 func main() {

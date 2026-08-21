@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"massive-go/internal/market"
+	"github.com/scott4game/market-bridge/internal/market"
 )
 
 //go:embed ui/*

@@ -11,18 +11,21 @@ import (
 	"strings"
 	"time"
 
-	"massive-go/internal/market"
+	"github.com/scott4game/market-bridge/internal/market"
 )
 
 type ClickHouseSink struct {
-	url, user, password string
-	http                *http.Client
-	queue               chan market.LiveEvent
+	url, database, user, password string
+	http                          *http.Client
+	queue                         chan market.LiveEvent
 }
 
-func NewClickHouseSink(ctx context.Context, url, user, password string) (*ClickHouseSink, error) {
-	s := &ClickHouseSink{url: strings.TrimRight(url, "/"), user: user, password: password, http: &http.Client{Timeout: 15 * time.Second}, queue: make(chan market.LiveEvent, 8192)}
-	for _, q := range schema {
+func NewClickHouseSink(ctx context.Context, url, database, user, password string) (*ClickHouseSink, error) {
+	if !validIdentifier(database) {
+		return nil, fmt.Errorf("invalid ClickHouse database %q", database)
+	}
+	s := &ClickHouseSink{url: strings.TrimRight(url, "/"), database: database, user: user, password: password, http: &http.Client{Timeout: 15 * time.Second}, queue: make(chan market.LiveEvent, 8192)}
+	for _, q := range schema(database) {
 		if err := s.exec(ctx, q); err != nil {
 			return nil, err
 		}
@@ -74,11 +77,11 @@ func (s *ClickHouseSink) insert(ctx context.Context, events []market.LiveEvent) 
 		var table string
 		switch typ {
 		case market.BarEvent:
-			table = "market.bars"
+			table = s.database + ".bars"
 		case market.TradeEvent:
-			table = "market.trades"
+			table = s.database + ".trades"
 		case market.DepthEvent:
-			table = "market.depth"
+			table = s.database + ".depth"
 		default:
 			continue
 		}
@@ -128,9 +131,22 @@ func (s *ClickHouseSink) exec(ctx context.Context, query string) error {
 	return nil
 }
 
-var schema = []string{
-	`CREATE DATABASE IF NOT EXISTS market`,
-	`CREATE TABLE IF NOT EXISTS market.bars (symbol LowCardinality(String), timestamp DateTime64(3, 'UTC'), sequence Int64, stream_epoch String, open Decimal64(6), high Decimal64(6), low Decimal64(6), close Decimal64(6), volume Int64, turnover Nullable(Decimal64(6)), completed Bool, source LowCardinality(String)) ENGINE = ReplacingMergeTree(sequence) ORDER BY (symbol, timestamp, stream_epoch) TTL timestamp + INTERVAL 1 YEAR DELETE`,
-	`CREATE TABLE IF NOT EXISTS market.trades (symbol LowCardinality(String), timestamp DateTime64(3, 'UTC'), sequence Int64, stream_epoch String, payload String) ENGINE = MergeTree ORDER BY (symbol, timestamp, stream_epoch, sequence) TTL timestamp + INTERVAL 7 DAY DELETE`,
-	`CREATE TABLE IF NOT EXISTS market.depth (symbol LowCardinality(String), timestamp DateTime64(3, 'UTC'), sequence Int64, stream_epoch String, payload String) ENGINE = MergeTree ORDER BY (symbol, timestamp, stream_epoch, sequence) TTL timestamp + INTERVAL 7 DAY DELETE`,
+func schema(db string) []string {
+	return []string{
+		`CREATE DATABASE IF NOT EXISTS ` + db,
+		`CREATE TABLE IF NOT EXISTS ` + db + `.bars (symbol LowCardinality(String), timestamp DateTime64(3, 'UTC'), sequence Int64, stream_epoch String, open Decimal64(6), high Decimal64(6), low Decimal64(6), close Decimal64(6), volume Int64, turnover Nullable(Decimal64(6)), completed Bool, source LowCardinality(String)) ENGINE = ReplacingMergeTree(sequence) ORDER BY (symbol, timestamp, stream_epoch) TTL timestamp + INTERVAL 1 YEAR DELETE`,
+		`CREATE TABLE IF NOT EXISTS ` + db + `.trades (symbol LowCardinality(String), timestamp DateTime64(3, 'UTC'), sequence Int64, stream_epoch String, payload String) ENGINE = MergeTree ORDER BY (symbol, timestamp, stream_epoch, sequence) TTL timestamp + INTERVAL 7 DAY DELETE`,
+		`CREATE TABLE IF NOT EXISTS ` + db + `.depth (symbol LowCardinality(String), timestamp DateTime64(3, 'UTC'), sequence Int64, stream_epoch String, payload String) ENGINE = MergeTree ORDER BY (symbol, timestamp, stream_epoch, sequence) TTL timestamp + INTERVAL 7 DAY DELETE`,
+	}
+}
+func validIdentifier(v string) bool {
+	if v == "" {
+		return false
+	}
+	for _, r := range v {
+		if !(r == '_' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return true
 }

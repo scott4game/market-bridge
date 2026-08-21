@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/parquet-go/parquet-go"
-	"massive-go/internal/market"
-	"massive-go/internal/provider"
+	"github.com/scott4game/market-bridge/internal/market"
+	"github.com/scott4game/market-bridge/internal/provider"
 )
 
 type Store struct {

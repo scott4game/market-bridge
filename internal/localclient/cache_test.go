@@ -7,12 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"massive-go/internal/config"
-	"massive-go/internal/localclient"
-	"massive-go/internal/market"
-	"massive-go/internal/provider"
-	marketserver "massive-go/internal/server"
-	publicclient "massive-go/pkg/client"
+	"github.com/scott4game/market-bridge/internal/config"
+	"github.com/scott4game/market-bridge/internal/localclient"
+	"github.com/scott4game/market-bridge/internal/market"
+	"github.com/scott4game/market-bridge/internal/provider"
+	marketserver "github.com/scott4game/market-bridge/internal/server"
+	publicclient "github.com/scott4game/market-bridge/pkg/client"
 )
 
 type countingProvider struct {

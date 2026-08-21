@@ -13,10 +13,10 @@ run-client:
 	go run ./cmd/go-client serve
 
 docker-server:
-	docker build --target go-server -t massive-go-server:local .
+	docker build --target go-server -t market-bridge-server:local .
 
 docker-client:
-	docker build --target go-client -t massive-go-client:local .
+	docker build --target go-client -t market-bridge-client:local .
 
 docker: docker-server docker-client
 

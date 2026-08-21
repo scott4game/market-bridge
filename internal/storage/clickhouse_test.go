@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"massive-go/internal/market"
+	"github.com/scott4game/market-bridge/internal/market"
 )
 
 func TestClickHouseSchemaAndBarInsert(t *testing.T) {
@@ -25,7 +25,7 @@ func TestClickHouseSchemaAndBarInsert(t *testing.T) {
 	}))
 	defer srv.Close()
 	ctx, cancel := context.WithCancel(context.Background())
-	sink, err := NewClickHouseSink(ctx, srv.URL, "market", "secret")
+	sink, err := NewClickHouseSink(ctx, srv.URL, "market", "market", "secret")
 	if err != nil {
 		t.Fatal(err)
 	}

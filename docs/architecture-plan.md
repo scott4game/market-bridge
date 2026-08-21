@@ -238,6 +238,9 @@ GO_CLIENT_PARQUET_TTL
 GO_CLIENT_CLEANUP_INTERVAL
 GO_CLIENT_REDIS_ENABLED
 GO_CLIENT_REDIS_ADDRESS
+GO_CLIENT_REDIS_USERNAME
+GO_CLIENT_REDIS_PASSWORD
+GO_CLIENT_REDIS_DB
 GO_CLIENT_REDIS_TTL
 ```
 
@@ -387,6 +390,15 @@ GET /v1/watchlists/{effective_date}
 - 图表与回测使用相同 wire schema、时间规则和周期聚合结果。
 
 ## 安全与部署
+
+服务端和客户端采用独立的最小权限 `.env` 文件：服务端持有供应商与 ClickHouse 凭据，客户端只持有 go-server 访问令牌和本机 Redis 凭据。密钥、授权、账户和服务地址不写入镜像、Compose 文件或 systemd/launchd 模板；安装后配置文件权限固定为 `0600`。
+
+发布和安装链路：
+
+- `deploy/compose.server.yaml` 安装 go-server、ClickHouse 和 Caddy，默认目录 `/opt/market-bridge`，由 systemd 管理。
+- `deploy/compose.client.yaml` 安装 go-client 和无持久化 Redis；也可下载校验过 SHA-256 的原生客户端，由 systemd user service 或 macOS LaunchAgent 管理。
+- `scripts/install-*.sh`、`upgrade-*.sh`、`uninstall-*.sh` 分别负责一键安装、可回滚升级和默认保留数据的卸载；只有显式 `--purge-data` 才删除缓存或 volume。
+- GitHub Actions 在签名语义化版本 tag 上生成四个平台/架构的二进制 Release，并发布多架构 GHCR 镜像。
 
 ### 新加坡 ECS
 

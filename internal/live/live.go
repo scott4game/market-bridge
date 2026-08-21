@@ -12,7 +12,7 @@ import (
 
 	"github.com/coder/websocket"
 	lbquote "github.com/longbridge/openapi-go/quote"
-	"massive-go/internal/market"
+	"github.com/scott4game/market-bridge/internal/market"
 )
 
 type Source interface {

@@ -1,0 +1,68 @@
+name: market-bridge-server
+
+services:
+  go-server:
+    image: ${MARKET_BRIDGE_SERVER_IMAGE:?set MARKET_BRIDGE_SERVER_IMAGE}:${MARKET_BRIDGE_VERSION:?set MARKET_BRIDGE_VERSION}
+    pull_policy: ${MARKET_BRIDGE_PULL_POLICY:-always}
+    environment:
+      GO_SERVER_LISTEN: :17601
+      GO_SERVER_DATA_DIR: /data
+      GO_SERVER_PROVIDER: ${GO_SERVER_PROVIDER:-mock}
+      GO_SERVER_DATA_VERSION: ${GO_SERVER_DATA_VERSION:-daily}
+      GO_SERVER_DATASET_TTL: ${GO_SERVER_DATASET_TTL:-24h}
+      GO_SERVER_TOKEN: ${GO_SERVER_TOKEN:?set GO_SERVER_TOKEN}
+      MASSIVE_API_KEY: ${MASSIVE_API_KEY:-}
+      MASSIVE_BASE_URL: ${MASSIVE_BASE_URL:-https://api.massive.com}
+      GO_SERVER_LIVE_PROVIDER: ${GO_SERVER_LIVE_PROVIDER:-mock}
+      GO_SERVER_WATCHLIST: ${GO_SERVER_WATCHLIST:-AAPL,NVDA}
+      LONGBRIDGE_APP_KEY: ${LONGBRIDGE_APP_KEY:-}
+      LONGBRIDGE_APP_SECRET: ${LONGBRIDGE_APP_SECRET:-}
+      LONGBRIDGE_ACCESS_TOKEN: ${LONGBRIDGE_ACCESS_TOKEN:-}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:?set CLICKHOUSE_DATABASE}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:?set CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD}
+    volumes:
+      - server-data:/data
+    expose: [17601]
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8-alpine
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:?set CLICKHOUSE_DATABASE}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:?set CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    expose: [8123, 9000]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2.10-alpine
+    environment:
+      MARKET_DOMAIN: ${MARKET_DOMAIN:?set MARKET_DOMAIN}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      go-server:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  server-data:
+  clickhouse-data:
+  caddy-data:
+  caddy-config:

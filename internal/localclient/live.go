@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"massive-go/internal/config"
+	"github.com/scott4game/market-bridge/internal/config"
 )
 
 type liveSubscriber struct {

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"massive-go/internal/market"
+	"github.com/scott4game/market-bridge/internal/market"
 )
 
 type Provider interface {

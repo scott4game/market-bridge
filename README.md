@@ -1,93 +1,140 @@
-# massive-go
+# market-bridge
 
-本项目实现日本笔记本本地缓存与新加坡行情服务的两层架构：
+日本笔记本本地缓存与新加坡行情服务的两层架构：
 
 ```text
 KLineChart / Go strategy -> go-client -> Redis -> Parquet -> go-server -> provider
 ```
 
-`go-server` 提供版本化 Parquet 数据集和实时 WebSocket；`go-client` 是本地唯一入口，托管 KLineChart，并提供可配置 TTL 的本地缓存。默认使用确定性 mock provider，无需密钥即可运行完整历史链路。
+`go-server` 提供版本化 Parquet 数据集和实时 WebSocket；`go-client` 是本地唯一入口，托管 KLineChart，并提供可配置 TTL 的本地缓存。默认 mock provider 无需供应商密钥即可验证完整链路。
 
-## 本地快速启动
+## 配置
 
-终端一：
+服务端与客户端使用彼此隔离的配置，避免把供应商密钥传入本地客户端：
+
+```bash
+cp .env.server.example .env.server
+cp .env.client.example .env.client
+chmod 600 .env.server .env.client
+```
+
+所有密钥、授权和账户配置均由环境变量注入；`.env` 已被 Git 忽略，不会复制进镜像。安装器会拒绝空值和示例占位密码。若 GHCR package 是私有的，在 `.env` 中配置 `GHCR_USERNAME` 和只具有 `read:packages` 权限的 `GHCR_TOKEN`。
+
+## 一键安装
+
+### 新加坡 go-server
+
+从 GHCR 安装指定版本：
+
+```bash
+sudo ./scripts/install-server.sh --env .env.server --version v0.1.0
+```
+
+尚未发布 Release 时，可从当前源码构建：
+
+```bash
+sudo ./scripts/install-server.sh --env .env.server --local-build
+```
+
+安装目录默认为 `/opt/market-bridge`。Linux systemd 可用时会安装并启用 `market-bridge-server.service`，系统重启后自动恢复 Compose stack。
+
+升级与卸载：
+
+```bash
+sudo ./scripts/upgrade-server.sh --version v0.2.0
+sudo ./scripts/uninstall-server.sh
+sudo ./scripts/uninstall-server.sh --purge-data  # 同时删除配置和 Docker volumes
+```
+
+升级失败时会恢复之前的 `.env` 版本并尝试重新启动旧镜像。普通卸载保留配置和数据。
+
+### 日本 go-client
+
+Docker + Redis 模式：
+
+```bash
+./scripts/install-client.sh --env .env.client --version v0.1.0 --mode docker
+```
+
+从当前源码构建 Docker 模式：
+
+```bash
+./scripts/install-client.sh --env .env.client --mode docker --local-build
+```
+
+不使用 Docker 的原生模式：
+
+```bash
+./scripts/install-client.sh --env .env.client --version v0.1.0 --mode native
+```
+
+原生 Linux 使用 systemd user service，macOS 使用 LaunchAgent；下载的 GitHub Release 二进制必须通过 `SHA256SUMS` 校验后才会安装。
+
+升级与卸载：
+
+```bash
+./scripts/upgrade-client.sh --version v0.2.0
+./scripts/uninstall-client.sh
+./scripts/uninstall-client.sh --purge-data
+```
+
+安装成功后打开 <http://127.0.0.1:17600>。普通卸载保留 Parquet 缓存和 `.env`。
+
+## 开发运行
 
 ```bash
 GO_SERVER_DATA_VERSION=mock-v1 go run ./cmd/go-server
-```
-
-终端二（没有 Redis 时会自动回退 Parquet）：
-
-```bash
 GO_CLIENT_REDIS_ENABLED=false go run ./cmd/go-client serve
 ```
 
-打开 <http://127.0.0.1:17600>。也可以预取数据：
+预取和缓存管理：
 
 ```bash
 GO_CLIENT_REDIS_ENABLED=false go run ./cmd/go-client fetch \
   --symbols AAPL,NVDA --interval 1m \
   --from 2025-01-02T14:30:00Z --to 2025-01-02T16:00:00Z
-```
 
-缓存管理：
-
-```bash
 go run ./cmd/go-client cache list
 go run ./cmd/go-client cache prune --expired
 go run ./cmd/go-client cache refresh DATASET_ID
 ```
 
-## Docker Compose
+## Docker
 
-Dockerfile 提供两个互相独立的 production target，镜像中只包含对应服务：
+Dockerfile 提供两个独立 target：
 
 ```bash
-docker build --target go-server -t massive-go-server:local .
-docker build --target go-client -t massive-go-client:local .
+docker build --target go-server -t market-bridge-server:local .
+docker build --target go-client -t market-bridge-client:local .
+make docker
 ```
 
-也可以执行 `make docker` 一次构建两个镜像。两个镜像都使用 UID/GID `10001` 的非 root 用户运行，数据目录为 `/data`。
-
-复制 `.env.example` 为 `.env`，然后按部署端启动对应 Compose profile：
+开发 Compose：
 
 ```bash
 docker compose --profile server up --build
 docker compose --profile local up --build
 ```
 
-Compose 会分别生成 `massive-go-server:${IMAGE_TAG:-local}` 和 `massive-go-client:${IMAGE_TAG:-local}`。新加坡与日本应使用各自的 Compose 项目；profile 只是将两端配置保存在同一仓库。
+生产安装器分别使用 `deploy/compose.server.yaml` 和 `deploy/compose.client.yaml`。两个镜像都使用非 root UID/GID `10001`，数据目录为 `/data`。
 
-不使用 Compose 时，可以单独运行 mock go-server：
+## 供应商
+
+- `GO_SERVER_PROVIDER=massive` 与 `MASSIVE_API_KEY` 启用 Massive 历史 aggregates。调整模式只代表拆股调整，不表示股息复权。
+- `GO_SERVER_LIVE_PROVIDER=longbridge` 与 Longbridge 三项凭据启用单连接采集。关注池由 `GO_SERVER_WATCHLIST` 配置，最多 200 只。
+- Quote、Trade 和 Depth 写入 ClickHouse；bars TTL 一年，trades/depth TTL 七天。
+
+## 发布
+
+推送 `vX.Y.Z` 签名 tag 后，GitHub Actions 会：
+
+1. 执行 race test 和 vet。
+2. 构建 Linux/macOS、amd64/arm64 的 client/server 压缩包。
+3. 生成 `SHA256SUMS` 并创建 GitHub Release。
+4. 构建并推送两个 amd64/arm64 GHCR 镜像，同时发布版本 tag 和 `latest`。
 
 ```bash
-docker volume create massive-go-server-data
-docker run --rm -p 17601:17601 \
-  -e GO_SERVER_PROVIDER=mock \
-  -e GO_SERVER_LIVE_PROVIDER=mock \
-  -e GO_SERVER_DATA_DIR=/data \
-  -v massive-go-server-data:/data \
-  massive-go-server:local
+./scripts/release.sh v0.1.0
 ```
-
-go-client 通常与 Redis 一起通过 Compose 启动；若不使用 Redis，可直接运行：
-
-```bash
-docker volume create massive-go-client-data
-docker run --rm -p 127.0.0.1:17600:17600 \
-  --add-host host.docker.internal:host-gateway \
-  -e GO_CLIENT_LISTEN=0.0.0.0:17600 \
-  -e GO_CLIENT_SERVER_URL=http://host.docker.internal:17601 \
-  -e GO_CLIENT_REDIS_ENABLED=false \
-  -e GO_CLIENT_CACHE_DIRECTORY=/data \
-  -v massive-go-client-data:/data \
-  massive-go-client:local
-```
-
-## Massive
-
-设置 `GO_SERVER_PROVIDER=massive` 和 `MASSIVE_API_KEY` 即可启用 Massive 历史 aggregates。Massive 的调整模式仅映射拆股调整，不表示股息复权。
-
-设置 `GO_SERVER_LIVE_PROVIDER=longbridge` 并提供 `LONGBRIDGE_APP_KEY`、`LONGBRIDGE_APP_SECRET`、`LONGBRIDGE_ACCESS_TOKEN` 后启用 Longbridge 单连接采集。关注池由 `GO_SERVER_WATCHLIST` 配置，最多 200 只。Quote、Trade 和 Depth 会写入配置的 ClickHouse；表会自动创建，bars TTL 为一年，trades/depth TTL 为七天。真实运行仍需账户具备对应行情权限。
 
 完整设计与验收标准见 [docs/architecture-plan.md](docs/architecture-plan.md)。

@@ -1,0 +1,16 @@
+[Unit]
+Description=Market Bridge local client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/market-bridge/.env
+ExecStart=%h/.local/bin/market-client serve
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

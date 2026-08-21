@@ -1,4 +1,6 @@
 .env
+.env.server
+.env.client
 /data/
 /go-client
 /go-server

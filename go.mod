@@ -1,4 +1,4 @@
-module massive-go
+module github.com/scott4game/market-bridge
 
 go 1.26
 

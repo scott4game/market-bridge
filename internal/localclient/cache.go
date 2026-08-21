@@ -19,8 +19,8 @@ import (
 
 	"github.com/parquet-go/parquet-go"
 	"github.com/redis/go-redis/v9"
-	"massive-go/internal/config"
-	"massive-go/internal/market"
+	"github.com/scott4game/market-bridge/internal/config"
+	"github.com/scott4game/market-bridge/internal/market"
 	_ "modernc.org/sqlite"
 )
 
@@ -70,7 +70,7 @@ func NewCache(cfg config.Client) (*Cache, error) {
 	}
 	c := &Cache{cfg: cfg, db: db, http: &http.Client{Timeout: 2 * time.Minute}, inflight: map[string]*flight{}, active: map[string]int{}}
 	if cfg.RedisEnabled {
-		c.redis = redis.NewClient(&redis.Options{Addr: cfg.RedisAddress, DialTimeout: 300 * time.Millisecond, ReadTimeout: 500 * time.Millisecond, WriteTimeout: 500 * time.Millisecond})
+		c.redis = redis.NewClient(&redis.Options{Addr: cfg.RedisAddress, Username: cfg.RedisUsername, Password: cfg.RedisPassword, DB: cfg.RedisDB, DialTimeout: 300 * time.Millisecond, ReadTimeout: 500 * time.Millisecond, WriteTimeout: 500 * time.Millisecond})
 	}
 	if err := c.recoverInterrupted(); err != nil {
 		c.Close()
