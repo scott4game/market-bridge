@@ -46,11 +46,23 @@ chmod 600 .env.server .env.client
 ```bash
 mkdir -p market-bridge-deploy && cd market-bridge-deploy
 curl -fsSL https://raw.githubusercontent.com/scott4game/market-bridge/dev/deploy/docker-deploy.sh | bash
+
+# 部署脚本运行后会生成 .env；请在启动容器前检查并配置
+vi .env
+
 docker compose up -d
 docker compose logs -f go-server
 ```
 
-脚本会下载 `compose.yaml` 和 `.env.example`、生成随机 `GO_SERVER_TOKEN`，并询问 Massive API Key；直接回车则以 Mock Provider 启动。镜像直接从 `docker.io/otsgame/market-bridge-server:latest` 拉取，不需要下载源码或本机编译。端口仅绑定 `127.0.0.1:17601`，由宿主机 Nginx 提供公网 HTTPS/WSS。
+脚本会下载 `compose.yaml` 和 `.env.example`，随后生成可直接编辑的 `.env` 和随机 `GO_SERVER_TOKEN`，并询问 Massive API Key；输入 Key 会自动启用 Massive Provider，直接回车则以 Mock Provider 启动。请保管好 `.env` 中的 `GO_SERVER_TOKEN`，go-client 连接服务端时需要配置相同的 Token。`docker compose` 会自动读取当前目录中的 `.env`。
+
+如果服务启动后再次修改 `.env`，需要重新创建容器才能应用新配置：
+
+```bash
+docker compose up -d --force-recreate
+```
+
+镜像直接从 `docker.io/otsgame/market-bridge-server:latest` 拉取，不需要下载源码或本机编译。端口仅绑定 `127.0.0.1:17601`，由宿主机 Nginx 提供公网 HTTPS/WSS。
 
 需要固定版本时，部署完成后把 `.env` 中的 `MARKET_BRIDGE_VERSION` 改为发布标签，例如 `v0.2.0`，再执行 `docker compose up -d`。
 

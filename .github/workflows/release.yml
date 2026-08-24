@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     tags: ["v*.*.*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -21,6 +22,7 @@ jobs:
       - run: go vet ./...
 
   binaries:
+    if: github.event_name == 'push'
     needs: test
     runs-on: ubuntu-latest
     strategy:
@@ -50,6 +52,7 @@ jobs:
           if-no-files-found: error
 
   release:
+    if: github.event_name == 'push'
     needs: binaries
     runs-on: ubuntu-latest
     env:
@@ -102,9 +105,9 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            docker.io/${{ vars.DOCKERHUB_USERNAME }}/${{ matrix.image }}:${{ github.ref_name }}
+            ${{ github.event_name == 'push' && format('docker.io/{0}/{1}:{2}', vars.DOCKERHUB_USERNAME, matrix.image, github.ref_name) || '' }}
             docker.io/${{ vars.DOCKERHUB_USERNAME }}/${{ matrix.image }}:latest
-            ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:${{ github.ref_name }}
+            ${{ github.event_name == 'push' && format('ghcr.io/{0}/{1}:{2}', github.repository_owner, matrix.image, github.ref_name) || '' }}
             ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
