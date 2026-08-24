@@ -2,7 +2,10 @@ package localclient_test
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -25,6 +28,51 @@ func (p *countingProvider) DataVersion() string { return p.mock.DataVersion() }
 func (p *countingProvider) Bars(ctx context.Context, s market.DatasetSpec) ([]market.Bar, error) {
 	p.calls.Add(1)
 	return p.mock.Bars(ctx, s)
+}
+
+type emptyProvider struct{}
+
+func (*emptyProvider) Name() string        { return "empty" }
+func (*emptyProvider) DataVersion() string { return "empty-v1" }
+func (*emptyProvider) Bars(context.Context, market.DatasetSpec) ([]market.Bar, error) {
+	return nil, nil
+}
+
+func TestEmptyBarsAreEncodedAsArray(t *testing.T) {
+	store, err := marketserver.NewStore(t.TempDir(), &emptyProvider{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream := httptest.NewServer((&marketserver.HTTP{Store: store}).Handler())
+	defer upstream.Close()
+	cache, err := localclient.NewCache(config.Client{CacheDir: t.TempDir(), ServerURL: upstream.URL, ParquetTTL: time.Hour, RedisEnabled: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cache.Close()
+	localHTTP := httptest.NewServer((&localclient.HTTP{Cache: cache}).Handler())
+	defer localHTTP.Close()
+	query := url.Values{
+		"interval":   {"1d"},
+		"from":       {"2025-01-01T00:00:00Z"},
+		"to":         {"2025-01-02T00:00:00Z"},
+		"session":    {"regular"},
+		"adjustment": {"split_adjusted"},
+	}
+	resp, err := http.Get(localHTTP.URL + "/v1/bars/AAPL?" + query.Encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var payload struct {
+		Bars json.RawMessage `json:"bars"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || string(payload.Bars) != "[]" {
+		t.Fatalf("status=%d bars=%s", resp.StatusCode, payload.Bars)
+	}
 }
 
 func TestCacheRemoteThenParquetAndLocalAPI(t *testing.T) {

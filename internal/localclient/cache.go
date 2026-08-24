@@ -137,6 +137,9 @@ func (c *Cache) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar
 		if b, err := c.redis.Get(ctx, "bars:"+key).Bytes(); err == nil {
 			var bars []market.Bar
 			if json.Unmarshal(b, &bars) == nil {
+				if bars == nil {
+					bars = []market.Bar{}
+				}
 				_ = c.touchBySpec(ctx, key)
 				return bars, "redis", nil
 			}
@@ -159,6 +162,9 @@ func (c *Cache) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar
 	bars, err := c.readManifest(m)
 	if err != nil {
 		return nil, "", err
+	}
+	if bars == nil {
+		bars = []market.Bar{}
 	}
 	market.SortBars(bars)
 	_ = c.touch(ctx, m.DatasetID)
@@ -285,7 +291,7 @@ func (c *Cache) download(ctx context.Context, key string, spec market.DatasetSpe
 }
 
 func (c *Cache) readManifest(m market.Manifest) ([]market.Bar, error) {
-	var out []market.Bar
+	out := make([]market.Bar, 0)
 	for _, p := range m.Partitions {
 		rows, err := parquet.ReadFile[market.ParquetBar](c.partitionPath(m.DatasetID, p.Name))
 		if err != nil {
