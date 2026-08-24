@@ -193,3 +193,5 @@ docker compose --profile local up --build
 ```
 
 完整设计与验收标准见 [docs/architecture-plan.md](docs/architecture-plan.md)。
+
+生产部署后的 Compose 升级、Nginx/OpenResty 配置、REST/WebSocket 验证及 Longbridge 常见故障排查，见 [go-server 部署、验证与故障排查](docs/server-operations.md)。
