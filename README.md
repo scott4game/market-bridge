@@ -76,7 +76,7 @@ docker compose up -d
 docker compose logs -f go-server
 ```
 
-脚本会下载 `compose.yaml` 和 `.env.example`，随后生成可直接编辑的 `.env` 和随机 `GO_SERVER_TOKEN`，并询问 Massive API Key；输入 Key 会自动启用 Massive Provider，直接回车则以 Mock Provider 启动。请保管好 `.env` 中的 `GO_SERVER_TOKEN`，go-client 连接服务端时需要配置相同的 Token。`docker compose` 会自动读取当前目录中的 `.env`。
+脚本会下载 `compose.yaml` 和 `.env.example`，随后生成可直接编辑的 `.env` 和随机 `GO_SERVER_TOKEN`，并询问 Massive API Key；输入 Key 会自动启用 Massive Provider，直接回车则以 Mock Provider 启动。请保管好 `.env` 中的 `GO_SERVER_TOKEN`：它是兼容旧部署的系统级管理员票据，不应分发给普通成员。团队成员连接 go-server 时应使用管理员为其签发的个人 API Key。`docker compose` 会自动读取当前目录中的 `.env`。
 
 如果服务启动后再次修改 `.env`，需要重新创建容器才能应用新配置：
 
@@ -132,7 +132,7 @@ sudo ./scripts/uninstall-server.sh --purge-data  # 同时删除配置和 Docker 
 mkdir -p market-bridge-client-deploy && cd market-bridge-client-deploy
 curl -fsSL https://raw.githubusercontent.com/scott4game/market-bridge/dev/deploy/docker-client-deploy.sh | bash
 
-# 填写 go-server 地址和与服务端一致的访问 Token
+# 填写 go-server 地址和个人 API Key（单用户兼容模式也可使用 GO_SERVER_TOKEN）
 vi .env
 
 docker compose up -d
@@ -143,7 +143,7 @@ docker compose logs -f go-client
 
 ```dotenv
 GO_CLIENT_SERVER_URL=https://stock.example.com
-GO_CLIENT_SERVER_TOKEN=与服务端_GO_SERVER_TOKEN_一致
+GO_CLIENT_SERVER_TOKEN=管理员为当前用户签发的完整_API_Key
 ```
 
 镜像直接从 `docker.io/otsgame/market-bridge-client:latest` 拉取。启动成功后打开 <http://127.0.0.1:17600>。go-client 和 Redis 均只监听本机或 Compose 内部网络。

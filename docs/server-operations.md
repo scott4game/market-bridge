@@ -111,38 +111,131 @@ docker compose restart go-server
 
 ### 2.5 团队成员与个人 API Key
 
-现有 `GO_SERVER_TOKEN` 会作为兼容的 legacy admin 凭据继续生效。新增团队成员时，不要复制该管理员 Token，而应为每人签发独立 Key：
+多账号模式有两类凭据：
+
+- `GO_SERVER_TOKEN`：配置在 go-server 的 `.env` 中，是兼容旧部署的系统级管理员票据。它具有管理员权限，不应分发给普通成员。
+- 个人 API Key：由管理员为团队成员签发，可单独撤销、设置配额和统计用量。一个用户可以为不同设备持有多个 Key。
+
+#### 2.5.1 配置系统管理员票据
+
+服务端 `.env` 必须保留一个足够长的随机 Token：
+
+```dotenv
+GO_SERVER_TOKEN=replace-with-a-long-random-token
+```
+
+修改后需要重建容器才能加载新配置：
+
+```bash
+docker compose up -d --force-recreate go-server
+```
+
+#### 2.5.2 创建团队用户
+
+新增团队成员时，不要复制管理员 Token，而应先创建独立用户：
 
 ```bash
 docker compose exec go-server go-server admin user create --name alice --role member
+docker compose exec go-server go-server admin user list
+```
+
+`--role` 支持 `member` 和 `admin`。普通团队成员应使用 `member`；`admin` 可以访问管理级接口，只应授予受信任的管理员。
+
+#### 2.5.3 签发个人 API Key
+
+为 Alice 的电脑签发默认有效期一年的 Key：
+
+```bash
 docker compose exec go-server go-server admin key create --user alice --name laptop
 ```
 
-第二条命令只会显示一次完整 Key。成员应将其写入自己 go-client 的 `.env`：
+命令会输出类似下面的内容：
+
+```text
+API key (shown once): mbk_前缀.完整密钥
+```
+
+完整 Key 只显示一次，应立即通过安全方式交给用户。需要自定义有效期时使用 Go duration 格式，例如签发一个有效期 30 天的 Key：
+
+```bash
+docker compose exec go-server go-server admin key create \
+  --user alice \
+  --name temporary \
+  --expires-in 720h
+```
+
+一个用户可以拥有多个 Key，建议按设备或用途分别签发，方便单独撤销：
+
+```bash
+docker compose exec go-server go-server admin key create --user alice --name laptop
+docker compose exec go-server go-server admin key create --user alice --name server
+```
+
+#### 2.5.4 配置用户的 go-client
+
+成员应将自己的完整 API Key 写入其 go-client 的 `.env`，不要填写管理员的 `GO_SERVER_TOKEN`：
 
 ```dotenv
+GO_CLIENT_SERVER_URL=https://stock.example.com
 GO_CLIENT_SERVER_TOKEN=mbk_前缀.完整密钥
 ```
 
-常用管理命令：
+配置完成后更新并启动客户端：
 
 ```bash
-docker compose exec go-server go-server admin user list
-docker compose exec go-server go-server admin key list --user alice
-docker compose exec go-server go-server admin key revoke --prefix KEY_PREFIX
-docker compose exec go-server go-server admin user disable --name alice
-docker compose exec go-server go-server admin user enable --name alice
+docker compose pull
+docker compose up -d
+docker compose logs -f go-client
+```
 
+直接请求 go-server API 时，通过 Bearer Header 携带相同的个人 API Key：
+
+```bash
+curl \
+  -H 'Authorization: Bearer mbk_前缀.完整密钥' \
+  https://stock.example.com/v1/me
+```
+
+#### 2.5.5 配额管理
+
+`member` 的默认配额为每分钟 600 个普通请求、20 个数据集请求、2 个并发数据集构建、3 条实时连接和合计 20 个实时标的。可以为指定用户覆盖默认值：
+
+```bash
 docker compose exec go-server go-server admin quota set --user alice \
-  --requests-per-minute 600 \
-  --datasets-per-minute 20 \
-  --concurrent-builds 2 \
-  --live-connections 3 \
-  --live-symbols 20
+  --requests-per-minute 1000 \
+  --datasets-per-minute 30 \
+  --concurrent-builds 3 \
+  --live-connections 5 \
+  --live-symbols 30
+```
+
+清除覆盖值并恢复角色默认配额：
+
+```bash
 docker compose exec go-server go-server admin quota clear --user alice
 ```
 
-认证数据保存在服务端数据卷的 `/data/auth.db`。备份服务端数据卷时应同时备份该文件；数据库中只保存 Key 哈希，不保存可恢复的完整 Key。撤销、到期或禁用用户后，新请求立即失败，已有 WebSocket 最迟 60 秒断开。
+#### 2.5.6 查看、撤销与禁用
+
+Key 列表只显示元数据和前缀，不会显示完整 Key：
+
+```bash
+docker compose exec go-server go-server admin key list --user alice
+docker compose exec go-server go-server admin key revoke --prefix KEY_PREFIX
+```
+
+遗失完整 Key 时不能找回，应撤销旧 Key 并重新签发。需要停用成员的所有 Key 时，可以禁用整个用户：
+
+```bash
+docker compose exec go-server go-server admin user disable --name alice
+docker compose exec go-server go-server admin user enable --name alice
+```
+
+撤销、到期或禁用用户后，新请求立即失败，已有 WebSocket 最迟 60 秒断开。
+
+#### 2.5.7 数据保存与个人接口
+
+认证数据保存在服务端数据卷的 `/data/auth.db`。备份服务端数据卷时应同时备份该文件；数据库中只保存 Key 哈希，不保存可恢复的完整 Key。
 
 成员可通过以下接口查看自己的身份、配额和关注列表：
 
