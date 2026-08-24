@@ -1,19 +1,44 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>KLineChart V1</title><link rel="stylesheet" href="/style.css"></head>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Market Bridge KLineChart</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
 <body>
-<main><header><div><p class="eyebrow">LOCAL MARKET DATA</p><h1>KLineChart</h1></div><span id="status">go-client</span></header>
-<form id="query"><label>股票<input id="symbol" value="AAPL"></label><label>周期<select id="interval"><option>1m</option><option>5m</option><option>30m</option><option>1h</option><option>1d</option></select></label><label>开始<input id="from" type="datetime-local"></label><label>结束<input id="to" type="datetime-local"></label><button>加载</button></form>
-<section class="meta"><span id="source">缓存：—</span><span id="count">Bars：—</span><span id="updated">更新：—</span></section>
-<section class="usage" aria-label="团队账号状态">
-  <div><small>当前成员</small><strong id="account-name">—</strong><span id="account-key">正在读取</span></div>
-  <div><small>API 请求</small><strong id="account-requests">—</strong><span id="account-daily">—</span></div>
-  <div><small>数据集任务</small><strong id="account-datasets">—</strong><span id="account-builds">—</span></div>
-  <div><small>实时额度</small><strong id="account-live">—</strong><span id="account-symbols">—</span></div>
-  <div><small>Massive</small><strong id="massive-status">—</strong><span id="massive-plan">—</span></div>
-  <div><small>Longbridge</small><strong id="longbridge-status">—</strong><span id="longbridge-detail">—</span></div>
-</section>
-<section class="watchlist"><label>个人关注列表（全局池子集）<input id="watchlist-symbols" placeholder="AAPL,NVDA"></label><button id="save-watchlist" type="button">保存关注列表</button><span id="watchlist-state">—</span></section>
-<canvas id="chart" width="1200" height="620"></canvas><pre id="error"></pre>
-</main><script src="/app.js"></script>
-</body></html>
+<main>
+  <header><div><p class="eyebrow">LOCAL MARKET DATA</p><h1>KLineChart</h1></div><span id="status">go-client</span></header>
+  <form id="query">
+    <label>股票<input id="symbol" value="AAPL" autocomplete="off"></label>
+    <label>周期<select id="interval"><option>1m</option><option>5m</option><option>30m</option><option>1h</option><option selected>1d</option></select></label>
+    <label>开始<input id="from" type="datetime-local"></label>
+    <label>结束<input id="to" type="datetime-local"></label>
+    <button>加载</button>
+  </form>
+  <section class="meta"><span id="source">缓存：—</span><span id="count">Bars：—</span><span id="updated">更新：—</span><span>滚轮缩放 · 拖动平移 · 悬停查看 OHLC</span></section>
+  <section class="indicator-controls" aria-label="NX 指标设置">
+    <label class="toggle"><input id="nx-enabled" type="checkbox" checked>显示 NX 牛熊分界线</label>
+    <label>蓝线上轨<input id="nx-blue-high" type="number" min="1" max="500" value="24"></label>
+    <label>蓝线下轨<input id="nx-blue-low" type="number" min="1" max="500" value="23"></label>
+    <label>黄线上轨<input id="nx-yellow-high" type="number" min="1" max="500" value="89"></label>
+    <label>黄线下轨<input id="nx-yellow-low" type="number" min="1" max="500" value="90"></label>
+    <button id="apply-nx" type="button">应用指标</button>
+    <span id="nx-state">蓝 24/23 · 黄 89/90</span>
+  </section>
+  <section class="usage" aria-label="团队账号状态">
+    <div><small>当前成员</small><strong id="account-name">—</strong><span id="account-key">正在读取</span></div>
+    <div><small>API 请求</small><strong id="account-requests">—</strong><span id="account-daily">—</span></div>
+    <div><small>数据集任务</small><strong id="account-datasets">—</strong><span id="account-builds">—</span></div>
+    <div><small>实时额度</small><strong id="account-live">—</strong><span id="account-symbols">—</span></div>
+    <div><small>Massive</small><strong id="massive-status">—</strong><span id="massive-plan">—</span></div>
+    <div><small>Longbridge</small><strong id="longbridge-status">—</strong><span id="longbridge-detail">—</span></div>
+  </section>
+  <section class="watchlist"><label>个人关注列表（全局池子集）<input id="watchlist-symbols" placeholder="AAPL,NVDA"></label><button id="save-watchlist" type="button">保存关注列表</button><span id="watchlist-state">—</span></section>
+  <div id="chart" role="img" aria-label="交互式 K 线图"></div>
+  <pre id="error"></pre>
+</main>
+<script src="/klinecharts.min.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,12 +1,33 @@
 package localclient
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/scott4game/market-bridge/internal/config"
 )
+
+func TestEmbeddedKLineChartAssets(t *testing.T) {
+	handler := (&HTTP{}).Handler()
+	for path, want := range map[string]string{
+		"/":                        "/klinecharts.min.js",
+		"/klinecharts.min.js":      "KLineChart v10.0.2",
+		"/klinecharts.LICENSE.txt": "Apache License",
+	} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		body, err := io.ReadAll(recorder.Result().Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if recorder.Code != http.StatusOK || !strings.Contains(string(body), want) {
+			t.Fatalf("path=%s status=%d missing=%q", path, recorder.Code, want)
+		}
+	}
+}
 
 func TestProviderUsageProxyForwardsServerToken(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -172,6 +172,14 @@ GO_CLIENT_SERVER_TOKEN=管理员为当前用户签发的完整_API_Key
 
 安装成功后打开 <http://127.0.0.1:17600>。普通卸载保留 Parquet 缓存和 `.env`。
 
+### 交互式 K 线与 NX 指标
+
+go-client 内置并自行托管 KLineChart `10.0.2`，页面运行时不依赖外部 CDN。图表支持鼠标滚轮缩放、拖动平移、十字光标和 OHLC 提示；`1m` 周期会继续接收 Longbridge 实时 bar，其他周期只展示历史数据，避免混入错误周期的数据。
+
+主图默认启用 NX 牛熊分界线：蓝线上下轨为 `EMA(HIGH,24)` / `EMA(LOW,23)`，黄线上下轨为 `EMA(HIGH,89)` / `EMA(LOW,90)`。页面可以开关指标或修改四个周期，设置保存在当前浏览器的 localStorage。默认加载最近 180 天日线，为 89/90 周期 EMA 提供足够的预热数据；缩短查询范围会改变长周期 EMA 的起始结果。
+
+KLineChart 使用 Apache License 2.0，固定版本、校验和及许可证位置记录在 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
+
 ## 开发运行
 
 ```bash
