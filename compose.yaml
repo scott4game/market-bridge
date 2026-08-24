@@ -11,6 +11,8 @@ services:
       GO_SERVER_PROVIDER: ${GO_SERVER_PROVIDER:-mock}
       GO_SERVER_DATA_VERSION: ${GO_SERVER_DATA_VERSION:-mock-v1}
       GO_SERVER_DATASET_TTL: ${GO_SERVER_DATASET_TTL:-24h}
+      GO_SERVER_DATASET_WORKERS: ${GO_SERVER_DATASET_WORKERS:-2}
+      GO_SERVER_DATASET_QUEUE_SIZE: ${GO_SERVER_DATASET_QUEUE_SIZE:-100}
       GO_SERVER_TOKEN: ${GO_SERVER_TOKEN:?set GO_SERVER_TOKEN in .env}
       MASSIVE_API_KEY: ${MASSIVE_API_KEY:-}
       MASSIVE_PLAN_NAME: ${MASSIVE_PLAN_NAME:-stocks_basic}
@@ -62,7 +64,8 @@ services:
     image: redis:7.4-alpine
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
-    command: ["sh", "-c", "exec redis-server --save '' --appendonly no --maxmemory $${REDIS_MAXMEMORY:-2gb} --maxmemory-policy allkeys-lru --requirepass \"$$REDIS_PASSWORD\""]
+      REDIS_MAXMEMORY: ${REDIS_MAXMEMORY:-256mb}
+    command: ["sh", "-c", "exec redis-server --save '' --appendonly no --maxmemory \"$$REDIS_MAXMEMORY\" --maxmemory-policy allkeys-lru --requirepass \"$$REDIS_PASSWORD\""]
     expose: [6379]
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping 2>/dev/null | grep -q PONG"]

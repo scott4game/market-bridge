@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,16 +24,56 @@ type Store struct {
 	provider provider.Provider
 	mu       sync.RWMutex
 	tasks    map[string]market.DatasetStatus
+	queue    chan buildJob
+	active   map[string]int
 }
 
+type buildJob struct {
+	id     string
+	spec   market.DatasetSpec
+	userID string
+}
+
+var ErrBuildQuota = errors.New("concurrent dataset build quota exceeded")
+var ErrBuildQueueFull = errors.New("dataset build queue is full")
+var ErrDatasetRateQuota = errors.New("dataset creation quota exceeded")
+
 func NewStore(root string, p provider.Provider) (*Store, error) {
+	return NewStoreWithOptions(root, p, 2, 100)
+}
+
+func NewStoreWithOptions(root string, p provider.Provider, workers, queueSize int) (*Store, error) {
 	if err := os.MkdirAll(filepath.Join(root, "datasets"), 0o755); err != nil {
 		return nil, err
 	}
-	return &Store{root: root, provider: p, tasks: map[string]market.DatasetStatus{}}, nil
+	if workers < 1 {
+		workers = 1
+	}
+	if queueSize < 1 {
+		queueSize = 1
+	}
+	s := &Store{root: root, provider: p, tasks: map[string]market.DatasetStatus{}, queue: make(chan buildJob, queueSize), active: map[string]int{}}
+	entries, _ := os.ReadDir(filepath.Join(root, "datasets"))
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasSuffix(entry.Name(), ".building") {
+			_ = os.RemoveAll(filepath.Join(root, "datasets", entry.Name()))
+		}
+	}
+	for range workers {
+		go s.worker()
+	}
+	return s, nil
 }
 
 func (s *Store) Ensure(ctx context.Context, spec market.DatasetSpec) (market.DatasetStatus, error) {
+	return s.EnsureFor(ctx, spec, "system", 1<<30)
+}
+
+func (s *Store) EnsureFor(ctx context.Context, spec market.DatasetSpec, userID string, maxConcurrent int) (market.DatasetStatus, error) {
+	return s.EnsureForAdmission(ctx, spec, userID, maxConcurrent, nil)
+}
+
+func (s *Store) EnsureForAdmission(ctx context.Context, spec market.DatasetSpec, userID string, maxConcurrent int, admit func() bool) (market.DatasetStatus, error) {
 	spec, err := spec.Normalize()
 	if err != nil {
 		return market.DatasetStatus{}, err
@@ -49,11 +90,55 @@ func (s *Store) Ensure(ctx context.Context, spec market.DatasetSpec) (market.Dat
 		s.mu.Unlock()
 		return status, nil
 	}
+	if admit != nil && !admit() {
+		s.mu.Unlock()
+		return market.DatasetStatus{}, ErrDatasetRateQuota
+	}
+	if s.active[userID] >= maxConcurrent {
+		s.mu.Unlock()
+		return market.DatasetStatus{}, ErrBuildQuota
+	}
 	status := market.DatasetStatus{DatasetID: id, State: "building"}
 	s.tasks[id] = status
+	s.active[userID]++
 	s.mu.Unlock()
-	go s.generate(context.WithoutCancel(ctx), id, spec)
+	select {
+	case s.queue <- buildJob{id: id, spec: spec, userID: userID}:
+	default:
+		s.mu.Lock()
+		delete(s.tasks, id)
+		s.active[userID]--
+		s.mu.Unlock()
+		return market.DatasetStatus{}, ErrBuildQueueFull
+	}
 	return status, nil
+}
+
+func (s *Store) worker() {
+	for job := range s.queue {
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					s.mu.Lock()
+					s.tasks[job.id] = market.DatasetStatus{DatasetID: job.id, State: "failed", Error: fmt.Sprintf("dataset worker panic: %v", recovered)}
+					s.mu.Unlock()
+				}
+				s.mu.Lock()
+				s.active[job.userID]--
+				if s.active[job.userID] <= 0 {
+					delete(s.active, job.userID)
+				}
+				s.mu.Unlock()
+			}()
+			s.generate(context.Background(), job.id, job.spec)
+		}()
+	}
+}
+
+func (s *Store) ActiveBuilds(userID string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.active[userID]
 }
 
 func (s *Store) Status(id string) market.DatasetStatus {

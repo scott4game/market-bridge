@@ -109,6 +109,53 @@ docker compose logs --tail=100 go-server
 docker compose restart go-server
 ```
 
+### 2.5 团队成员与个人 API Key
+
+现有 `GO_SERVER_TOKEN` 会作为兼容的 legacy admin 凭据继续生效。新增团队成员时，不要复制该管理员 Token，而应为每人签发独立 Key：
+
+```bash
+docker compose exec go-server go-server admin user create --name alice --role member
+docker compose exec go-server go-server admin key create --user alice --name laptop
+```
+
+第二条命令只会显示一次完整 Key。成员应将其写入自己 go-client 的 `.env`：
+
+```dotenv
+GO_CLIENT_SERVER_TOKEN=mbk_前缀.完整密钥
+```
+
+常用管理命令：
+
+```bash
+docker compose exec go-server go-server admin user list
+docker compose exec go-server go-server admin key list --user alice
+docker compose exec go-server go-server admin key revoke --prefix KEY_PREFIX
+docker compose exec go-server go-server admin user disable --name alice
+docker compose exec go-server go-server admin user enable --name alice
+
+docker compose exec go-server go-server admin quota set --user alice \
+  --requests-per-minute 600 \
+  --datasets-per-minute 20 \
+  --concurrent-builds 2 \
+  --live-connections 3 \
+  --live-symbols 20
+docker compose exec go-server go-server admin quota clear --user alice
+```
+
+认证数据保存在服务端数据卷的 `/data/auth.db`。备份服务端数据卷时应同时备份该文件；数据库中只保存 Key 哈希，不保存可恢复的完整 Key。撤销、到期或禁用用户后，新请求立即失败，已有 WebSocket 最迟 60 秒断开。
+
+成员可通过以下接口查看自己的身份、配额和关注列表：
+
+```text
+GET /v1/me
+GET /v1/me/usage
+GET /v1/me/watchlist
+PUT /v1/me/watchlist
+GET /v1/providers/status
+```
+
+`GET /v1/providers/massive/usage` 只允许 admin 使用。个人 Watchlist 和实时订阅标的必须属于 `GO_SERVER_WATCHLIST` 配置的全局池。
+
 ## 3. Nginx/OpenResty 反向代理
 
 如果域名专用于 `go-server`，整个域名应直接代理到 `17601`，不需要额外增加 `/api` 前缀，也不需要前端服务或 Authelia 配置：

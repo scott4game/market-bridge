@@ -5,13 +5,15 @@
 <main><header><div><p class="eyebrow">LOCAL MARKET DATA</p><h1>KLineChart</h1></div><span id="status">go-client</span></header>
 <form id="query"><label>股票<input id="symbol" value="AAPL"></label><label>周期<select id="interval"><option>1m</option><option>5m</option><option>30m</option><option>1h</option><option>1d</option></select></label><label>开始<input id="from" type="datetime-local"></label><label>结束<input id="to" type="datetime-local"></label><button>加载</button></form>
 <section class="meta"><span id="source">缓存：—</span><span id="count">Bars：—</span><span id="updated">更新：—</span></section>
-<section class="usage" aria-label="Massive API 用量">
-  <div><small>Massive 套餐</small><strong id="usage-plan">—</strong></div>
-  <div><small>最近 60 秒</small><strong id="usage-minute">—</strong><span id="usage-remaining">—</span></div>
-  <div><small>本月累计</small><strong id="usage-month">—</strong><span id="usage-timezone">—</span></div>
-  <div><small>请求结果</small><strong id="usage-results">—</strong><span id="usage-health">正在读取</span></div>
-  <div><small>接口明细</small><strong id="usage-endpoints">—</strong><span>实际出站请求</span></div>
+<section class="usage" aria-label="团队账号状态">
+  <div><small>当前成员</small><strong id="account-name">—</strong><span id="account-key">正在读取</span></div>
+  <div><small>API 请求</small><strong id="account-requests">—</strong><span id="account-daily">—</span></div>
+  <div><small>数据集任务</small><strong id="account-datasets">—</strong><span id="account-builds">—</span></div>
+  <div><small>实时额度</small><strong id="account-live">—</strong><span id="account-symbols">—</span></div>
+  <div><small>Massive</small><strong id="massive-status">—</strong><span id="massive-plan">—</span></div>
+  <div><small>Longbridge</small><strong id="longbridge-status">—</strong><span id="longbridge-detail">—</span></div>
 </section>
+<section class="watchlist"><label>个人关注列表（全局池子集）<input id="watchlist-symbols" placeholder="AAPL,NVDA"></label><button id="save-watchlist" type="button">保存关注列表</button><span id="watchlist-state">—</span></section>
 <canvas id="chart" width="1200" height="620"></canvas><pre id="error"></pre>
 </main><script src="/app.js"></script>
 </body></html>

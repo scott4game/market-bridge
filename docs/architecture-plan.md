@@ -1,459 +1,431 @@
-# 日本本地策略 + 新加坡行情服务实施计划
+# market-bridge 架构设计
 
-## 目标
+market-bridge 是一个面向行情分析、图表展示与策略回测的数据网关。它将远程行情接入与本地数据消费解耦，在统一数据模型之上提供历史数据集、实时行情流和可恢复的本地缓存。
 
-系统拆分为两个独立 Go 服务：
+本文描述当前架构、核心约束和后续演进方向。部署位置、云厂商和终端设备均不是架构的一部分；服务可以运行在任何满足网络与资源要求的环境中。
 
-- `go-server` 部署在新加坡 ECS，专门负责 Massive、Longbridge 的数据接入、标准化、数据集生成与实时分发，并可选写入外部 ClickHouse。
-- `go-client` 常驻日本笔记本，是 KLineChart 和本地 Go 回测唯一的数据入口，负责本地热缓存、Parquet 缓存、自动拉取和实时连接复用。
+## 设计目标
 
-核心原则：
+- 通过统一接口屏蔽 Massive、Longbridge 等上游供应商的差异。
+- 优先使用本地缓存，减少重复请求、网络延迟和供应商调用量。
+- 让图表、研究工具和回测程序共享同一套数据语义。
+- 将供应商凭据保留在服务端，不传递给本地应用或浏览器。
+- 在 Redis 不可用或远程服务离线时，仍可读取已有 Parquet 数据。
+- 使用不可变数据集、Manifest 和校验和保证缓存可复现、可验证。
+- 将实时采集、历史数据和外部存储设计为可独立启用的能力。
 
-- KLineChart 固定通过 `KLineChart → go-client → Redis → Parquet → go-server` 获取数据。
-- Go 回测通过本地 Go 库访问 `go-client`，复用相同缓存链路。
-- Redis 是可选热缓存，Parquet 是本地权威缓存；Redis 不可用时仍可离线回测。
-- 本地数据存在时不访问新加坡服务；数据缺失时由 `go-client` 自动拉取并缓存。
-- Parquet 通过可配置 TTL 自动清理，默认按最后访问时间保留 30 天。
-- 实时验证只由 `go-client` 建立一条到 `go-server` 的 WebSocket 长连接，并向本地消费者扇出。
-- 策略代码和执行环境始终保留在笔记本，不上传 ECS。
-
-## 整体架构
+## 系统概览
 
 ```mermaid
 flowchart LR
-    subgraph Japan["日本 · 个人笔记本"]
-        Strategies["现有 Go 策略"]
-        Runner["本地回测 Runner"]
-        GoLib["go-client Go 库"]
-        Chart["KLineChart"]
-
-        subgraph LocalService["go-client · 127.0.0.1"]
-            LocalAPI["本地 REST / WS API"]
-            CacheManager["缓存与下载管理"]
-            LiveProxy["实时连接与本地扇出"]
-            LocalMeta[("SQLite<br/>Manifest / TTL / 下载状态")]
-        end
-
-        Redis[("可选 Redis 热缓存<br/>可淘汰")]
-        Parquet[("Parquet 磁盘缓存<br/>本地权威副本")]
-
-        Strategies --> Runner
-        Runner --> GoLib
-        GoLib --> LocalAPI
-        Chart --> LocalAPI
-        LocalAPI --> CacheManager
-        LocalAPI --> LiveProxy
-        CacheManager --> Redis
-        CacheManager --> Parquet
-        CacheManager --> LocalMeta
+    subgraph Consumers[Data consumers]
+        Chart[KLineChart]
+        Strategy[Go strategies]
+        Tools[Research tools]
     end
 
-    Internet["HTTPS / WSS<br/>批量传输 + 长连接"]
-
-    subgraph Singapore["新加坡 · ECS"]
-        Gateway["宿主机 Nginx<br/>TLS"]
-
-        subgraph Server["go-server"]
-            API["历史行情 API"]
-            Dataset["数据集生成服务"]
-            Live["实时行情 Hub"]
-            Auth["Token 鉴权"]
-            LB["Longbridge Collector"]
-            Bars["1分钟线聚合"]
-            Watchlist["200只关注池调度"]
-            Reconcile["盘后校准"]
-        end
-
-        CK[("可选外部 ClickHouse<br/>关注池1m：一年<br/>Trades/Depth：7天")]
-        Meta[("SQLite<br/>关注池 / 任务 / 数据版本")]
-        Temp[("临时数据集<br/>24小时 TTL")]
+    subgraph Client[go-client]
+        LocalAPI[Local REST / WebSocket API]
+        Cache[Cache coordinator]
+        LiveProxy[Live stream fan-out]
+        Metadata[(SQLite metadata)]
     end
 
-    Massive["Massive<br/>历史行情"]
-    Longbridge["Longbridge WS<br/>Quote / Trade / Depth"]
+    Redis[(Redis hot cache)]
+    Parquet[(Parquet cache)]
 
-    CacheManager <--> Internet
-    LiveProxy <--> Internet
-    Internet <--> Gateway
-    Gateway --> Auth
-    Auth --> API
-    Auth <--> Live
+    subgraph Server[go-server]
+        ServerAPI[Dataset API]
+        Dataset[Dataset generator]
+        LiveHub[Live market hub]
+        Auth[Bearer token auth]
+    end
 
-    API --> Dataset
+    Massive[Massive historical data]
+    Longbridge[Longbridge live data]
+    ClickHouse[(Optional ClickHouse)]
+
+    Chart --> LocalAPI
+    Strategy --> LocalAPI
+    Tools --> LocalAPI
+
+    LocalAPI --> Cache
+    LocalAPI --> LiveProxy
+    Cache --> Redis
+    Cache --> Parquet
+    Cache --> Metadata
+
+    Cache <-->|HTTPS| Auth
+    LiveProxy <-->|WSS| Auth
+    Auth --> ServerAPI
+    Auth --> LiveHub
+
+    ServerAPI --> Dataset
     Dataset --> Massive
-    Dataset --> Temp
-    Dataset --> Meta
-
-    Longbridge --> LB
-    LB --> Bars
-    LB --> CK
-    LB --> Live
-    Bars --> CK
-    Bars --> Live
-
-    Watchlist --> Meta
-    Watchlist --> LB
-    Reconcile --> Massive
-    Reconcile --> CK
+    Longbridge --> LiveHub
+    LiveHub --> ClickHouse
 ```
 
-KLineChart 和策略不得直接连接 `go-server`。`go-client` 只监听 loopback，并同时托管 KLineChart 静态页面，使页面与本地 API 保持同源；默认不开放 CORS。
+典型部署由一个靠近行情供应商的 `go-server` 和一个靠近数据消费者的 `go-client` 组成。两者也可以运行在同一台机器上。
 
-## 本地读取与回测流程
-
-### 历史数据读取顺序
-
-```mermaid
-sequenceDiagram
-    participant C as KLineChart / Go 回测
-    participant LC as go-client
-    participant R as Redis
-    participant P as Parquet
-    participant S as go-server
-
-    C->>LC: 请求 bars / 数据集
-    LC->>R: 查询热缓存
-
-    alt Redis 命中
-        R-->>LC: 返回 bars
-    else Redis 未命中或不可用
-        LC->>P: 查询本地分区
-        alt Parquet 命中且校验通过
-            P-->>LC: 返回 bars
-            LC-->>R: 异步回填热缓存
-        else Parquet 缺失或已过期
-            LC->>S: 创建或获取数据集
-            S-->>LC: Manifest + Parquet 分区
-            LC->>LC: SHA-256 校验
-            LC->>P: 原子落盘
-            LC-->>R: 写入热缓存
-        end
-    end
-
-    LC-->>C: 按时间顺序返回 bars
-```
-
-规则：
-
-- Redis 命中和 Parquet 命中均不得访问 `go-server` 检查版本。
-- 完成下载和 SHA-256 校验后，先写临时文件，再使用原子 rename 发布，消费者不得读取半写文件。
-- 同一分区的并发 miss 合并为一个下载任务，其他请求等待同一结果。
-- 数据集不可变。更新数据必须改变数据版本，或由用户执行显式 refresh。
-- 本地完全缺失时默认自动拉取完整所需范围；不允许静默返回部分数据进行回测。
-
-### Go 回测访问方式
-
-Go 回测代码使用轻量 Go 库访问 localhost API。Go 库不直接读取 Parquet，也不直接连接 `go-server`，从而避免 daemon 与回测进程并发修改文件或维护两套缓存索引。
-
-```go
-client := market.NewLocalClient(market.LocalConfig{
-    BaseURL: "http://127.0.0.1:17600",
-})
-
-dataset, err := client.EnsureDataset(ctx, market.DatasetSpec{
-    Symbols:    []string{"AAPL", "NVDA"},
-    Interval:   market.Interval1Min,
-    From:       time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
-    To:         time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-    Session:    market.RegularSession,
-    Adjustment: market.SplitAdjusted,
-})
-if err != nil {
-    return err
-}
-
-err = dataset.ScanBars(ctx, func(bar market.Bar) error {
-    return strategy.OnBar(bar)
-})
-```
-
-多标的默认按 `(timestamp, symbol)` 全局排序，使同一时间窗口内的股票能够进入同一个回测时间轴。
-
-## go-client
-
-### 职责
-
-- 为 KLineChart 和 Go 回测提供统一的 localhost REST/WS API。
-- 按 Redis、Parquet、go-server 的固定顺序读取历史数据。
-- 管理数据集下载、断点续传、SHA-256 校验、原子落盘和并发合并。
-- 管理 Parquet Manifest、分区索引、TTL、访问时间和清理任务。
-- Redis 不可用时自动旁路，并使用有限的进程内缓存保证基本性能。
-- 按需建立一条到 `go-server` 的 WSS，完成重连、补发、去重和本地扇出。
-- 托管 KLineChart 静态文件，避免浏览器直接访问公网服务。
-
-### 本地 API
-
-```http
-POST   /v1/datasets/ensure
-POST   /v1/datasets/{dataset_id}/refresh
-GET    /v1/datasets/{dataset_id}
-GET    /v1/bars/{symbol}?interval=&from=&to=&session=&adjustment=
-GET    /v1/live/ws
-GET    /v1/cache
-POST   /v1/cache/prune
-GET    /healthz
-GET    /readyz
-```
-
-`POST /v1/datasets/ensure` 在本地命中时直接返回；本地缺失时等待 go-server 数据集任务完成并下载所需分区。KLineChart 的 REST 与 WS 数据模型和 Go 库保持一致。
-
-### 命令行
+应用默认通过 `go-client` 访问数据：
 
 ```text
-go-client serve
-go-client fetch --symbols AAPL,NVDA --interval 1m --from ... --to ...
-go-client cache list
-go-client cache prune
-go-client cache prune --expired
-go-client cache refresh <dataset-id>
+KLineChart / strategy / research tool
+                  │
+                  ▼
+              go-client
+                  │
+        Redis → Parquet → go-server
 ```
 
-## 本地缓存与 TTL
+`go-server` 也暴露稳定的服务端 API，适合自建客户端、集成测试和运维诊断。供应商密钥只由 `go-server` 持有。
 
-### Parquet
+## 组件职责
 
-- Parquet 是本地权威缓存，按 `symbol/year` 分区。
-- 每个分区记录 schema 版本、数据版本、供应商、请求参数、行数、时间范围和 SHA-256。
-- SQLite 保存数据集、分区、最后访问时间、使用计数、下载状态和删除状态。
-- 每次成功读取 Redis 或 Parquet 后更新对应分区的 `last_accessed_at`；频繁访问更新可在内存中合并后批量落库。
+### go-server
 
-配置：
+`go-server` 是远程行情接入层，负责：
 
-```yaml
-cache:
-  directory: ./data/cache
-  parquet_ttl: 720h
-  cleanup_interval: 6h
-  redis:
-    enabled: true
-    address: 127.0.0.1:6379
-    ttl: 24h
-```
+- 通过 Massive 或 Mock Provider 生成历史行情数据集。
+- 通过 Longbridge 或 Mock Provider 接收实时行情。
+- 将供应商数据转换为统一的 Bar、Trade、Depth 和游标模型。
+- 生成不可变的 Parquet 分区和 Manifest。
+- 使用 Bearer Token 保护 `/v1/*` 接口。
+- 可选地将实时事件写入外部 ClickHouse。
+- 按 TTL 清理服务端临时数据集。
 
-同一配置支持环境变量和命令行覆盖：
+`go-server` 不运行用户策略，也不管理客户端缓存。
 
-```text
-GO_CLIENT_CACHE_DIRECTORY
-GO_CLIENT_PARQUET_TTL
-GO_CLIENT_CLEANUP_INTERVAL
-GO_CLIENT_REDIS_ENABLED
-GO_CLIENT_REDIS_ADDRESS
-GO_CLIENT_REDIS_USERNAME
-GO_CLIENT_REDIS_PASSWORD
-GO_CLIENT_REDIS_DB
-GO_CLIENT_REDIS_TTL
-```
+### go-client
 
-TTL 规则：
+`go-client` 是数据消费入口，负责：
 
-- `parquet_ttl` 默认 `720h`，从最后成功访问时间计算，不从下载时间计算。
-- `parquet_ttl <= 0` 时禁用自动清理，只允许手动清理。
-- 清理器默认每 6 小时运行，也可手动触发。
-- 正在下载、正在读取或仍有使用计数的数据集/分区不得删除。
-- 清理时先在 SQLite 标记 `deleting`，再删除 Parquet 和对应 Redis key，最后删除元数据。
-- go-client 启动时检查 `downloading` 和 `deleting` 状态，清理未发布的临时文件并恢复未完成任务。
+- 为图表、策略和研究工具提供本地 REST/WebSocket API。
+- 按 Redis、Parquet、go-server 的顺序读取历史数据。
+- 下载并校验远程数据集，然后原子发布到本地缓存。
+- 使用 SQLite 管理数据集索引、状态、访问时间和 TTL。
+- 将远程实时连接复用并扇出给多个本地消费者。
+- 托管内置 Web 页面，使浏览器与本地 API 保持同源。
+
+`go-client` 默认监听本机地址，不应直接暴露到公网。
 
 ### Redis
 
-- Redis 只保存解码后的热数据或分区块，不作为数据完整性的来源。
-- 默认 TTL 为 24 小时，并配置 LRU 淘汰策略；内存上限由本地部署配置决定。
-- Redis 不开启持久化，数据丢失不会导致 Parquet 失效。
-- Redis 超时、断线或未启动时，go-client 立即旁路到 Parquet，不阻断回测。
-- Docker Compose 中 Redis 为可选 profile，端口只绑定 loopback。
+Redis 是可选的热缓存：
 
-## 实时验证
+- 保存解码后的热点数据，降低重复读取和反序列化开销。
+- 默认 TTL 为 24 小时，使用 LRU 淘汰策略。
+- Docker 部署默认使用 `maxmemory=256mb`，可通过 `REDIS_MAXMEMORY` 覆盖。
+- 不启用持久化，不作为数据完整性的来源。
+- 不可用时由 `go-client` 自动旁路到 Parquet。
 
-- 第一个本地订阅者出现时，go-client 建立一条到 go-server 的 WSS。
-- KLineChart 和多个策略订阅者共享该连接；最后一个订阅者退出后，空闲超时再关闭连接。
-- 慢客户端使用有界队列隔离，不得阻塞上游行情采集；队列溢出时返回明确 gap 事件。
-- go-client 自动重连，并使用 `stream_epoch + event_type + symbol + sequence` 作为恢复游标。
-- 启用 ClickHouse 后，go-server 可先建立实时缓冲，再从 ClickHouse 补发缺失事件，最后切换到实时流；未启用时不提供持久化补发。
-- 游标超出保留期时返回 `resume_expired`，客户端重新获取当前快照后恢复订阅。
-- 未完成的实时 bar 可以用相同 timestamp 多次修订；只有 `Completed=true` 后才成为最终 bar。
+### Parquet 与 SQLite
+
+Parquet 是 `go-client` 的本地权威缓存，SQLite 保存缓存元数据：
+
+- Parquet 默认按 `symbol/year` 分区。
+- Manifest 记录数据规格、供应商、版本、行数、时间范围、文件大小和 SHA-256。
+- SQLite 保存数据集状态、Manifest、最后访问时间和清理状态。
+- 文件校验完成后通过原子 rename 发布，消费者不会读取半写文件。
+- 默认按最后访问时间保留 30 天，可调整或关闭自动清理。
+
+### ClickHouse
+
+ClickHouse 是默认关闭的可选实时事件存储：
+
+- 保存 Longbridge 推送的 Bar、Trade 和 Depth。
+- 不参与 `go-client` 的本地缓存命中判断。
+- 不作为 Massive 历史数据的全量镜像。
+- 生命周期、容量和备份策略由外部 ClickHouse 部署负责。
+
+## 历史数据流程
+
+```mermaid
+sequenceDiagram
+    participant App as Application
+    participant Client as go-client
+    participant Redis
+    participant Parquet
+    participant Server as go-server
+    participant Provider as Historical provider
+
+    App->>Client: Query bars
+    Client->>Redis: Read hot cache
+
+    alt Redis hit
+        Redis-->>Client: Bars
+    else Redis miss or unavailable
+        Client->>Parquet: Read local dataset
+        alt Valid local dataset
+            Parquet-->>Client: Bars
+            Client-->>Redis: Populate hot cache
+        else Dataset missing or expired
+            Client->>Server: Ensure dataset
+            Server->>Provider: Fetch historical bars
+            Provider-->>Server: Provider response
+            Server-->>Client: Manifest and partitions
+            Client->>Client: Verify SHA-256
+            Client->>Parquet: Atomic publish
+            Client-->>Redis: Populate hot cache
+        end
+    end
+
+    Client-->>App: Ordered bars
+```
+
+### 数据集标识
+
+数据集由规范化请求和版本信息共同决定：
+
+```text
+dataset_id = SHA-256(
+    normalized DatasetSpec
+    + schema version
+    + provider data version
+)
+```
+
+因此，相同输入会得到相同 `dataset_id`，以下变化会生成新的数据集：
+
+- 股票集合或时间范围变化。
+- 周期、交易时段或调整模式变化。
+- wire schema 版本变化。
+- 上游数据版本变化。
+
+数据集一旦发布即不可变。需要刷新时，由客户端显式请求新的数据版本或重新生成，而不是原地修改已有分区。
+
+### 一致性约束
+
+- Redis 或 Parquet 命中时，不访问远程服务检查版本。
+- 本地完全缺失时必须返回完整请求范围，不静默返回部分数据。
+- 同一数据集的并发 miss 合并为一个下载任务。
+- 下载完成并通过 SHA-256 校验后才能发布。
+- 多标的数据按 `(timestamp, symbol)` 排序，保证回测时间轴稳定。
+- Redis 数据可以随时丢弃并从 Parquet 重建。
+
+## 实时数据流程
+
+```mermaid
+sequenceDiagram
+    participant Provider as Longbridge
+    participant Server as go-server
+    participant Client as go-client
+    participant A as Consumer A
+    participant B as Consumer B
+
+    Provider-->>Server: Quote / Trade / Depth
+    Server->>Server: Normalize and aggregate bars
+    Client->>Server: One upstream WebSocket
+    A->>Client: Subscribe symbols
+    B->>Client: Subscribe symbols
+    Server-->>Client: LiveEvent stream
+    Client-->>A: Filtered events
+    Client-->>B: Filtered events
+```
+
+实时链路遵循以下规则：
+
+- `go-server` 为配置的 watchlist 建立一个 Longbridge 行情上下文。
+- `go-client` 复用一条上游 WSS，并向本地消费者扇出。
+- 慢消费者使用有界队列隔离，不阻塞上游采集。
+- 队列溢出时返回显式 gap 事件，不静默丢失数据。
+- `stream_epoch + event_type + symbol + sequence` 构成实时游标。
+- 同一分钟的未完成 Bar 可以重复修订，`completed=true` 后视为最终值。
+
+Longbridge 只负责实时行情。历史数据集由 `GO_SERVER_PROVIDER=massive|mock` 控制，实时数据由 `GO_SERVER_LIVE_PROVIDER=longbridge|mock` 控制。
 
 ## 统一数据模型
 
+### DatasetSpec
+
 ```go
-type AdjustmentMode string
-
-const (
-    Raw           AdjustmentMode = "raw"
-    SplitAdjusted AdjustmentMode = "split_adjusted"
-)
-
 type DatasetSpec struct {
-    Symbols    []string
-    Interval   Interval
-    From       time.Time
-    To         time.Time
-    Session    Session
-    Adjustment AdjustmentMode
-}
-
-type Bar struct {
-    Symbol    string
-    Timestamp time.Time
-    Open      Decimal
-    High      Decimal
-    Low       Decimal
-    Close     Decimal
-    Volume    int64
-    Turnover  *Decimal
-    Session   Session
-    Source    string
-    Completed bool
-}
-
-type LiveCursor struct {
-    StreamEpoch string
-    EventType   EventType
-    Symbol      string
-    Sequence    int64
-}
-
-type LiveEvent struct {
-    Type      EventType
-    Symbol    string
-    Timestamp time.Time
-    Cursor    LiveCursor
-    Bar       *Bar
-    Trade     *Trade
-    Depth     *Depth
+    Symbols    []string       `json:"symbols"`
+    Interval   string         `json:"interval"`
+    From       time.Time      `json:"from"`
+    To         time.Time      `json:"to"`
+    Session    Session        `json:"session"`
+    Adjustment AdjustmentMode `json:"adjustment"`
 }
 ```
 
-Massive 的 `adjusted` 只表示拆股调整，因此第一版只支持 `raw` 和 `split_adjusted`，不把它描述为分红复权。上游没有提供的 `Turnover` 保持 `nil`，不得从不完整字段伪造。
+规范化规则：
 
-## go-server
+- 股票代码去除首尾空白、转为大写并去除可选 `.US` 后缀。
+- 时间统一转换为 UTC。
+- 默认周期为 `1m`。
+- 默认交易时段为 `regular`。
+- 默认调整模式为 `split_adjusted`。
 
-### 职责
+### Bar
 
-- 统一接入 Massive 历史行情和 Longbridge 实时行情。
-- 生成不可变、版本化的 Parquet 数据集。
-- 保存关注池实时产生的 1 分钟线、Trades 和 Depth。
-- 为 go-client 提供历史数据集 API 和实时 WSS。
-- 执行关注池切换、盘中聚合和盘后校准。
-- 不运行本地策略，不保存笔记本缓存状态，也不直接服务 KLineChart。
+```go
+type Bar struct {
+    Symbol    string    `json:"symbol"`
+    Timestamp time.Time `json:"timestamp"`
+    Open      Decimal   `json:"open"`
+    High      Decimal   `json:"high"`
+    Low       Decimal   `json:"low"`
+    Close     Decimal   `json:"close"`
+    Volume    int64     `json:"volume"`
+    Turnover  *Decimal  `json:"turnover,omitempty"`
+    Session   Session   `json:"session"`
+    Source    string    `json:"source"`
+    Completed bool      `json:"completed"`
+}
+```
 
-### 历史数据集 API
+价格使用定点十进制表示，JSON 中编码为字符串，避免浮点误差。上游未提供的字段保持为空，不使用推测值补齐。
+
+Massive 的 `adjusted` 只表示拆股调整，因此当前模型使用 `raw` 和 `split_adjusted`，不将其描述为包含股息的完整复权。
+
+### LiveEvent
+
+```go
+type LiveCursor struct {
+    StreamEpoch string    `json:"stream_epoch"`
+    EventType   EventType `json:"event_type"`
+    Symbol      string    `json:"symbol"`
+    Sequence    int64     `json:"sequence"`
+}
+
+type LiveEvent struct {
+    Type      EventType       `json:"type"`
+    Symbol    string          `json:"symbol"`
+    Timestamp time.Time       `json:"timestamp"`
+    Cursor    LiveCursor      `json:"cursor"`
+    Bar       *Bar            `json:"bar,omitempty"`
+    Trade     json.RawMessage `json:"trade,omitempty"`
+    Depth     json.RawMessage `json:"depth,omitempty"`
+    Reason    string          `json:"reason,omitempty"`
+}
+```
+
+## HTTP 与 WebSocket 接口
+
+### go-server
 
 ```http
+GET  /healthz
 POST /v1/datasets
 GET  /v1/datasets/{dataset_id}
 GET  /v1/datasets/{dataset_id}/manifest
 GET  /v1/datasets/{dataset_id}/files/{partition}
+GET  /v1/live/ws
+GET  /v1/providers/massive/usage
 ```
 
-数据集生成可能耗时，`POST /v1/datasets` 返回 `202 Accepted` 和任务状态地址。相同规范化参数、schema 版本、生成器版本和上游数据版本得到相同 `dataset_id`；并发相同请求合并为同一任务。
+除 `/healthz` 外，服务端接口使用 `Authorization: Bearer <token>` 鉴权。
 
-服务端临时文件保留 24 小时。文件过期后返回 `410 Gone`，go-client 可使用同一规格重新生成。下载支持 HTTP Range、ETag 和断点续传。
+`POST /v1/datasets` 可能返回 `202 Accepted`。客户端应轮询状态，待 `state=ready` 后读取 Manifest 和分区文件。服务端文件超过 TTL 后可能返回 `410 Gone`，客户端可以使用相同规格重新生成。
 
-### 实时与关注池 API
+### go-client
 
 ```http
-GET /v1/live/ws
-
-PUT /v1/watchlists/{effective_date}
-GET /v1/watchlists/current
-GET /v1/watchlists/{effective_date}
+GET  /
+GET  /healthz
+GET  /readyz
+POST /v1/datasets/ensure
+GET  /v1/datasets/{dataset_id}
+POST /v1/datasets/{dataset_id}/refresh
+GET  /v1/bars/{symbol}
+GET  /v1/cache
+POST /v1/cache/prune
+GET  /v1/live/ws
+GET  /v1/providers/massive/usage
 ```
 
-- Longbridge 使用唯一行情连接监听最多 200 只关注股票。
-- 每日盘后提交次日股票集合，盘前自动切换订阅。
-- 订阅失败不会清空原关注池，并记录失败股票与原因。
-- 部署前必须验证 Longbridge 账户的实时 Quote、Trade 和所需 Depth 权限。
+本地 REST、WebSocket 和 Go SDK 共享相同的请求及响应模型。
 
-## 行情和存储规则
+## 缓存生命周期
 
-- Massive 提供按需历史数据，ECS 不保存全市场历史副本。
-- ClickHouse 是默认关闭的可选外部实时存储；启用后保存关注池产生的 1 分钟 K 线一年、Trades 七天、Depth 七天。
-- 盘中查询由 Massive 已完成历史数据与 Longbridge 当日数据拼接；收盘后由 Massive 校准当日分钟线。
-- 默认常规盘为 `09:30–16:00 America/New_York`，扩展时段必须显式请求。
-- 聚合器以交易所日历为准，明确处理夏令时、节假日、提前收盘、无成交窗口和最后一个不完整窗口。
-- 支持周期：
+### Parquet TTL
+
+- 默认 `720h`，从最后成功访问时间计算。
+- `GO_CLIENT_PARQUET_TTL<=0` 时禁用自动清理。
+- 清理器由 `GO_CLIENT_CLEANUP_INTERVAL` 控制，默认每 6 小时运行。
+- 正在下载或读取的数据集不会被删除。
+- 清理先更新 SQLite 状态，再删除文件和 Redis key，最后移除元数据。
+- 启动时恢复未完成的 `downloading` 和 `deleting` 状态。
+
+### Redis 降级
+
+Redis 超时、断线或未启动时，`go-client` 立即旁路到 Parquet。Redis 恢复后，后续读取会自然回填热缓存，不需要人工重建。
+
+## 安全边界
+
+- Massive、Longbridge 和 ClickHouse 凭据只存在于 `go-server` 环境中。
+- `go-client` 只保存访问 `go-server` 所需的 Token 和本机 Redis 配置。
+- `.env` 文件权限应为 `0600`，不得写入镜像或提交到仓库。
+- `go-server` 默认绑定宿主机 loopback，通过 Nginx/OpenResty 提供 TLS。
+- `go-client` 默认只监听 loopback，浏览器页面不接触服务端 Token。
+- 日志不得记录密钥、完整授权头或供应商响应中的敏感账户信息。
+- 公网部署应限制请求体、并发任务、下载速率和可访问端口。
+
+## 部署模型
+
+生产部署提供两套独立配置：
 
 ```text
-1m, 3m, 5m, 10m, 15m, 30m
-1h, 2h, 3h, 4h
-1d, 1w, 1mo, 1y
+deploy/compose.server.yaml  # go-server
+deploy/compose.client.yaml  # go-client + optional Redis
 ```
 
-分钟和小时周期按请求的交易时段起点对齐；周、月、年周期按交易所日历边界聚合。
+支持的运行方式：
 
-## KLineChart V1
+- 使用公开镜像和 Docker Compose 部署。
+- 从源码构建 Docker 镜像。
+- 使用 Release 二进制运行原生客户端。
+- 使用 systemd、systemd user service 或 macOS LaunchAgent 托管。
 
-- 页面由 go-client 本地托管，只访问同源 localhost REST/WS API。
-- 支持股票、周期、日期范围、常规盘/扩展时段和拆股调整/原始价格选择。
-- REST 加载历史数据，WS 更新当前 K 线。
-- 展示 K 线、成交量、十字光标、缩放、拖动、数据来源、最后更新时间、连接状态和缓存来源。
-- 缓存来源显示 `redis`、`parquet` 或 `go-server`，方便确认读取链路。
-- 图表与回测使用相同 wire schema、时间规则和周期聚合结果。
+服务端默认发布到 `127.0.0.1:17601`，客户端默认监听 `127.0.0.1:17600`。跨主机连接应通过 HTTPS/WSS，证书和反向代理由部署环境负责。
 
-## 安全与部署
+## 可观测性与故障判定
 
-服务端和客户端采用独立的最小权限 `.env` 文件：服务端持有供应商凭据，并仅在启用外部 ClickHouse 时持有其凭据；客户端只持有 go-server 访问令牌和本机 Redis 凭据。密钥、授权、账户和服务地址不写入镜像、Compose 文件或 systemd/launchd 模板；安装后配置文件权限固定为 `0600`。
+- `/healthz` 只表示进程可以响应 HTTP，不代表供应商链路健康。
+- `/readyz` 表示 `go-client` 是否满足对外服务条件。
+- `go-server` 启动日志会记录已选择的历史和实时 Provider，但不会输出凭据。
+- Massive usage API 记录由本服务发出的供应商请求，不代表整个 API Key 的全局用量。
+- 实时事件中的 `source=mock-live` 表示模拟数据，`source=longbridge` 表示 Longbridge 数据。
+- Longbridge 持续出现 `1006 unexpected EOF` 时，应检查重复连接、Token、IP 白名单、行情权限和区域路由。
 
-发布和安装链路：
+完整部署验证和故障排查命令见 [go-server 部署、验证与故障排查](server-operations.md)。
 
-- `deploy/compose.server.yaml` 只安装 go-server，默认目录 `/opt/market-bridge`，由 systemd 管理；服务绑定宿主机 `127.0.0.1:17601`，由已有 Nginx 反向代理，ClickHouse 需要时连接外部实例。
-- `deploy/compose.client.yaml` 安装 go-client 和无持久化 Redis；也可下载校验过 SHA-256 的原生客户端，由 systemd user service 或 macOS LaunchAgent 管理。
-- `scripts/install-*.sh`、`upgrade-*.sh`、`uninstall-*.sh` 分别负责一键安装、可回滚升级和默认保留数据的卸载；只有显式 `--purge-data` 才删除缓存或 volume。
-- GitHub Actions 在签名语义化版本 tag 上生成四个平台/架构的二进制 Release，并发布多架构 GHCR 镜像。
+## 当前能力与演进方向
 
-### 新加坡 ECS
+### 已实现
 
-Docker Compose 只包含 go-server，宿主机 Nginx 负责公网入口：
+- Mock 和 Massive 历史数据 Provider。
+- Mock 和 Longbridge 实时数据 Provider。
+- 不可变数据集、Parquet 分区、Manifest 和 SHA-256 校验。
+- go-client SQLite/Parquet 缓存与可选 Redis 热缓存。
+- go-client 本地 REST、WebSocket、Web UI 和 Go SDK。
+- SQLite 团队账号、个人 API Key、角色 scope、用户配额、审计和 legacy admin Token 兼容。
+- 有界数据集任务队列、服务端数据集 TTL 和客户端缓存 TTL。
+- Longbridge 全局 Watchlist 子集授权、用户级 WebSocket/标的配额和 Provider 状态。
+- 可选 ClickHouse 实时事件写入。
+- Docker、原生二进制及自动化发布流程。
 
-- 只开放 `443` 和必要的运维入口。
-- HTTPS/WSS 使用有效证书。
-- Bearer Token 由 go-server 校验，支持创建、撤销和轮换。
-- Massive、Longbridge 密钥只存在 ECS 环境变量。
-- 日志禁止记录密钥、Token 和完整授权头。
-- 数据集 API 设置请求范围、并发生成任务和下载速率限制。
+### 演进方向
 
-### 日本笔记本
+- 更完整的交易所日历、提前收盘和扩展时段处理。
+- 断点续传、HTTP Range 和大数据集并行下载。
+- 动态 watchlist 管理与平滑订阅切换。
+- 实时游标持久化、缺口补发和恢复窗口。
+- 多实例账号存储、分布式限流、对象存储和跨实例实时行情扇出。
 
-- go-client、KLineChart 和可选 Redis 只监听 `127.0.0.1`。
-- go-client 保存访问 go-server 所需的 Token，不向浏览器暴露该 Token。
-- KLineChart 与本地 API 同源，默认禁止任意网页跨域调用。
-- Redis Docker 容器不对局域网或公网开放端口。
+路线图描述的是扩展方向，不构成现有 API 的兼容性承诺。公开接口的变更应遵循语义化版本和 Release Notes。
 
-## 测试与验收
+## 验收原则
 
-- Redis 命中时，KLineChart 和回测均不读取 Parquet、不请求 go-server。
-- Redis miss、Parquet 命中时不请求 go-server，并正确回填 Redis。
-- Redis 停止、清空或超时时，已有 Parquet 数据仍能完成离线回测。
-- 本地完全缺失时只触发一次 go-server 下载，校验并原子落盘后返回完整数据。
-- 并发图表和回测请求不会重复下载，也不会读取半写文件。
-- 验证可配置 Parquet TTL、默认 30 天、访问续期、禁用 TTL、手动清理和活跃数据保护。
-- 模拟清理中断和进程重启，确保 SQLite 与磁盘状态自动恢复一致。
-- 修改股票、周期、日期、时段、调整模式或数据版本会生成新的数据集 ID。
-- 多标的迭代严格按 `(timestamp, symbol)` 排序，最终 bar 无重复。
-- KLineChart 和 Go 回测返回逐根一致的数据，且都不直接访问 go-server。
-- 多个本地实时消费者共享一条上游 WSS，慢消费者不会阻塞采集。
-- 模拟断线、乱序、重复、游标缺口、服务重启和游标过期。
-- 验证全部目标周期以及夏令时、节假日、提前收盘和无成交窗口。
-- 启用 ClickHouse 时，验证 200 只股票订阅下 go-server 内存、ClickHouse 写入量和外部实例磁盘水位稳定。
-
-## 实施顺序
-
-1. 建立 go-server、统一行情模型、数据版本规则和 Docker 部署。
-2. 实现 Massive 数据集任务、Parquet 分区、Manifest 和断点下载。
-3. 建立 go-client localhost API、SQLite 元数据和 Parquet 缓存。
-4. 实现 Redis 可选热缓存、固定读取顺序和故障旁路。
-5. 实现可配置 Parquet TTL、并发下载合并和崩溃恢复。
-6. 实现 Go 本地库并接入现有单股、板块回测。
-7. 接入 Longbridge、关注池、可选外部 ClickHouse、聚合与盘后校准。
-8. 实现 go-client 实时共享连接、续传、去重和本地扇出。
-9. 将 KLineChart 托管到 go-client，并只使用本地 REST/WS。
-10. 完成缓存链路、离线回测、容量、监控和部署验收。
-
-## 明确假设
-
-- go-client daemon 运行后，KLineChart 和 Go 回测才能访问数据。
-- Parquet 是本地权威缓存，Redis 数据可以随时丢弃和重建。
-- Parquet TTL 默认 30 天，可以配置或完全禁用。
-- Docker Redis 是可选组件，不是 go-client 的运行前置条件。
-- Massive 套餐具备所需历史分钟线、拆股调整和调用额度。
-- ClickHouse 默认关闭；启用时只保存实时关注池，不建设全量历史仓库。
-- 第一版是个人单用户系统，不上传或执行任意策略代码，也不提供多租户能力。
+- Redis 命中时不读取 Parquet，也不请求 `go-server`。
+- Redis miss、Parquet 命中时不请求 `go-server`，并回填 Redis。
+- Redis 不可用时，已有 Parquet 数据仍可离线读取。
+- 本地完全缺失时，同一数据集只触发一次下载任务。
+- 消费者不会读取未校验或未完整发布的文件。
+- 修改数据规格或数据版本会得到新的数据集 ID。
+- 图表、REST 和 Go SDK 对相同请求返回一致的数据语义。
+- 多个实时消费者共享上游连接，慢消费者不会阻塞采集。
+- Mock 与真实 Provider 在输出中可明确区分。
+- 凭据不出现在镜像、仓库、浏览器或普通日志中。

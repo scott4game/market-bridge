@@ -241,7 +241,7 @@ func (c *Cache) download(ctx context.Context, key string, spec market.DatasetSpe
 		select {
 		case <-ctx.Done():
 			return market.Manifest{}, ctx.Err()
-		case <-time.After(100 * time.Millisecond):
+		case <-time.After(time.Second):
 		}
 		if err := c.getJSON(ctx, "/v1/datasets/"+st.DatasetID, &st); err != nil {
 			return market.Manifest{}, err
@@ -328,6 +328,29 @@ func (c *Cache) ProviderUsage(ctx context.Context) (json.RawMessage, error) {
 	var raw json.RawMessage
 	err := c.getJSON(ctx, "/v1/providers/massive/usage", &raw)
 	return raw, err
+}
+
+func (c *Cache) ServerJSON(ctx context.Context, method, path string, body io.Reader) (json.RawMessage, int, error) {
+	req, err := c.request(ctx, method, path, body)
+	if err != nil {
+		return nil, 0, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	if !json.Valid(raw) {
+		return nil, resp.StatusCode, fmt.Errorf("go-server returned invalid JSON")
+	}
+	return json.RawMessage(raw), resp.StatusCode, nil
 }
 func (c *Cache) downloadFile(ctx context.Context, urlPath, path, want string) error {
 	req, err := c.request(ctx, http.MethodGet, urlPath, nil)

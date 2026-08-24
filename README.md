@@ -37,6 +37,28 @@ chmod 600 .env.server .env.client
 
 所有密钥、授权和账户配置均由环境变量注入；`.env` 已被 Git 忽略，不会复制进镜像。安装器会拒绝空值和示例占位密码。服务镜像默认从公开的 Docker Hub 仓库拉取，无需登录镜像仓库。
 
+### 团队多账号
+
+`GO_SERVER_TOKEN` 继续作为兼容的管理员凭据。团队成员应使用独立 API Key，以便单独撤销、设置配额和记录用量。用户、Key、个人关注列表和审计记录保存在服务端数据卷的 `auth.db`，完整 Key 只在创建时显示一次。
+
+```bash
+# 创建成员
+docker compose exec go-server go-server admin user create --name alice --role member
+
+# 为成员签发默认有效期一年的 Key
+docker compose exec go-server go-server admin key create --user alice --name laptop
+
+# 查看用户和 Key 元数据（不会显示完整 Key）
+docker compose exec go-server go-server admin user list
+docker compose exec go-server go-server admin key list --user alice
+
+# 单独撤销或禁用
+docker compose exec go-server go-server admin key revoke --prefix KEY_PREFIX
+docker compose exec go-server go-server admin user disable --name alice
+```
+
+成员把创建时得到的 Key 配置为本地 go-client 的 `GO_CLIENT_SERVER_TOKEN`。默认 member 配额为每分钟 600 个普通请求、20 个数据集请求、2 个并发构建、3 条实时连接和合计 20 个实时标的；可使用 `go-server admin quota set` 单独覆盖。Longbridge 订阅必须是服务端 `GO_SERVER_WATCHLIST` 的子集。
+
 ## 一键安装
 
 ### go-server
@@ -104,19 +126,35 @@ sudo ./scripts/uninstall-server.sh --purge-data  # 同时删除配置和 Docker 
 
 ### go-client
 
-Docker + Redis 模式：
+推荐在需要运行客户端的机器上创建空目录，通过部署准备脚本生成 `compose.yaml`、`.env.example` 和 `.env`：
 
 ```bash
-./scripts/install-client.sh --env .env.client --version v0.1.0 --mode docker
+mkdir -p market-bridge-client-deploy && cd market-bridge-client-deploy
+curl -fsSL https://raw.githubusercontent.com/scott4game/market-bridge/dev/deploy/docker-client-deploy.sh | bash
+
+# 填写 go-server 地址和与服务端一致的访问 Token
+vi .env
+
+docker compose up -d
+docker compose logs -f go-client
 ```
 
-从当前源码构建 Docker 模式：
+准备脚本会下载客户端 Compose 和配置模板，并自动生成 Redis 随机密码。至少需要修改：
+
+```dotenv
+GO_CLIENT_SERVER_URL=https://stock.example.com
+GO_CLIENT_SERVER_TOKEN=与服务端_GO_SERVER_TOKEN_一致
+```
+
+镜像直接从 `docker.io/otsgame/market-bridge-client:latest` 拉取。启动成功后打开 <http://127.0.0.1:17600>。go-client 和 Redis 均只监听本机或 Compose 内部网络。
+
+需要从当前源码构建 Docker 模式时，仍可使用仓库内安装器：
 
 ```bash
 ./scripts/install-client.sh --env .env.client --mode docker --local-build
 ```
 
-不使用 Docker 的原生模式：
+不使用 Docker 时，可以安装经过 SHA-256 校验的原生 Release：
 
 ```bash
 ./scripts/install-client.sh --env .env.client --version v0.1.0 --mode native

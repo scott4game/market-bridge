@@ -3,10 +3,11 @@ package localclient
 import (
 	"embed"
 	"encoding/json"
+	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/scott4game/market-bridge/internal/market"
@@ -33,12 +34,32 @@ func (h *HTTP) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/cache", h.cacheList)
 	mux.HandleFunc("POST /v1/cache/prune", h.prune)
 	mux.HandleFunc("GET /v1/providers/massive/usage", h.providerUsage)
+	mux.HandleFunc("GET /v1/providers/status", h.proxyServerJSON)
+	mux.HandleFunc("GET /v1/me", h.proxyServerJSON)
+	mux.HandleFunc("GET /v1/me/usage", h.proxyServerJSON)
+	mux.HandleFunc("GET /v1/me/watchlist", h.proxyServerJSON)
+	mux.HandleFunc("PUT /v1/me/watchlist", h.proxyServerJSON)
 	if h.Live != nil {
 		mux.Handle("/v1/live/ws", h.Live)
 	}
 	assets, _ := fs.Sub(ui, "ui")
 	mux.Handle("/", http.FileServer(http.FS(assets)))
 	return security(mux)
+}
+
+func (h *HTTP) proxyServerJSON(w http.ResponseWriter, r *http.Request) {
+	var body io.Reader
+	if r.Body != nil && r.Body != http.NoBody {
+		body = http.MaxBytesReader(w, r.Body, 64<<10)
+	}
+	raw, status, err := h.Cache.ServerJSON(r.Context(), r.Method, r.URL.Path, body)
+	if err != nil {
+		jsonResponse(w, 502, map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(raw)
 }
 func (h *HTTP) providerUsage(w http.ResponseWriter, r *http.Request) {
 	raw, err := h.Cache.ProviderUsage(r.Context())
@@ -68,12 +89,20 @@ func security(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' ws://127.0.0.1:* ws://localhost:*")
-		if origin := r.Header.Get("Origin"); origin != "" && !strings.HasPrefix(origin, "http://127.0.0.1:") {
+		if origin := r.Header.Get("Origin"); origin != "" && !localOrigin(origin) {
 			jsonResponse(w, 403, map[string]string{"error": "cross-origin request denied"})
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func localOrigin(origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return false
+	}
+	return u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost"
 }
 func (h *HTTP) ensure(w http.ResponseWriter, r *http.Request) {
 	var spec market.DatasetSpec

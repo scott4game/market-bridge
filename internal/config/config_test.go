@@ -11,6 +11,8 @@ func TestServerFromEnv(t *testing.T) {
 	t.Setenv("GO_SERVER_LISTEN", ":27601")
 	t.Setenv("GO_SERVER_WATCHLIST", " AAPL, ,NVDA ")
 	t.Setenv("GO_SERVER_DATASET_TTL", "48h")
+	t.Setenv("GO_SERVER_DATASET_WORKERS", "4")
+	t.Setenv("GO_SERVER_DATASET_QUEUE_SIZE", "50")
 	t.Setenv("CLICKHOUSE_DATABASE", "prices")
 	t.Setenv("CLICKHOUSE_USER", "bridge")
 	t.Setenv("CLICKHOUSE_PASSWORD", "secret")
@@ -22,6 +24,9 @@ func TestServerFromEnv(t *testing.T) {
 	got := ServerFromEnv()
 	if got.Listen != ":27601" || got.DatasetTTL != 48*time.Hour {
 		t.Fatalf("unexpected server settings: %+v", got)
+	}
+	if got.DatasetWorkers != 4 || got.DatasetQueueSize != 50 {
+		t.Fatalf("unexpected dataset scheduler settings: %+v", got)
 	}
 	if got.ClickHouseDatabase != "prices" || got.ClickHouseUser != "bridge" || got.ClickHousePassword != "secret" {
 		t.Fatalf("unexpected ClickHouse settings: %+v", got)
