@@ -19,7 +19,7 @@ jobs:
           cache: true
       - run: go test -race ./...
       - run: go vet ./...
-      - run: bash -n scripts/*.sh scripts/lib/*.sh
+      - run: bash -n scripts/*.sh scripts/lib/*.sh deploy/*.sh
       - run: cp .env.example .env
       - run: docker compose --profile server config -q
       - run: docker compose --profile local config -q

@@ -35,13 +35,26 @@ cp .env.client.example .env.client
 chmod 600 .env.server .env.client
 ```
 
-所有密钥、授权和账户配置均由环境变量注入；`.env` 已被 Git 忽略，不会复制进镜像。安装器会拒绝空值和示例占位密码。若 GHCR package 是私有的，在 `.env` 中配置 `GHCR_USERNAME` 和只具有 `read:packages` 权限的 `GHCR_TOKEN`。
+所有密钥、授权和账户配置均由环境变量注入；`.env` 已被 Git 忽略，不会复制进镜像。安装器会拒绝空值和示例占位密码。服务镜像默认从公开的 Docker Hub 仓库拉取，无需登录镜像仓库。
 
 ## 一键安装
 
 ### go-server
 
-从 GHCR 安装指定版本：
+推荐在服务器上创建一个空目录并运行部署准备脚本：
+
+```bash
+mkdir -p market-bridge-deploy && cd market-bridge-deploy
+curl -fsSL https://raw.githubusercontent.com/scott4game/market-bridge/dev/deploy/docker-deploy.sh | bash
+docker compose up -d
+docker compose logs -f go-server
+```
+
+脚本会下载 `compose.yaml` 和 `.env.example`、生成随机 `GO_SERVER_TOKEN`，并询问 Massive API Key；直接回车则以 Mock Provider 启动。镜像直接从 `docker.io/otsgame/market-bridge-server:latest` 拉取，不需要下载源码或本机编译。端口仅绑定 `127.0.0.1:17601`，由宿主机 Nginx 提供公网 HTTPS/WSS。
+
+需要固定版本时，部署完成后把 `.env` 中的 `MARKET_BRIDGE_VERSION` 改为发布标签，例如 `v0.2.0`，再执行 `docker compose up -d`。
+
+原有的 systemd 安装方式仍可使用：
 
 ```bash
 sudo ./scripts/install-server.sh --env .env.server --version v0.1.0
@@ -161,7 +174,7 @@ docker compose --profile local up --build
 1. 执行 race test 和 vet。
 2. 构建 Linux/macOS、amd64/arm64 的 client/server 压缩包。
 3. 生成 `SHA256SUMS` 并创建 GitHub Release。
-4. 构建并推送两个 amd64/arm64 GHCR 镜像，同时发布版本 tag 和 `latest`。
+4. 构建并推送两个 amd64/arm64 Docker Hub 与 GHCR 镜像，同时发布版本 tag 和 `latest`。
 
 ```bash
 ./scripts/release.sh v0.1.0

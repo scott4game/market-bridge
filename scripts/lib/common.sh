@@ -2,8 +2,8 @@
 set -Eeuo pipefail
 
 SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DEFAULT_SERVER_IMAGE="ghcr.io/scott4game/market-bridge-server"
-DEFAULT_CLIENT_IMAGE="ghcr.io/scott4game/market-bridge-client"
+DEFAULT_SERVER_IMAGE="docker.io/otsgame/market-bridge-server"
+DEFAULT_CLIENT_IMAGE="docker.io/otsgame/market-bridge-client"
 
 log() { printf '[market-bridge] %s\n' "$*"; }
 warn() { printf '[market-bridge] WARNING: %s\n' "$*" >&2; }
