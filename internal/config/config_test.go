@@ -2,6 +2,7 @@ package config
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -13,6 +14,10 @@ func TestServerFromEnv(t *testing.T) {
 	t.Setenv("CLICKHOUSE_DATABASE", "prices")
 	t.Setenv("CLICKHOUSE_USER", "bridge")
 	t.Setenv("CLICKHOUSE_PASSWORD", "secret")
+	t.Setenv("CLICKHOUSE_URL", "http://clickhouse.example:8123")
+	t.Setenv("MASSIVE_PLAN_NAME", "stocks_developer")
+	t.Setenv("MASSIVE_REQUESTS_PER_MINUTE", "0")
+	t.Setenv("MASSIVE_REQUESTS_PER_MONTH", "10000")
 
 	got := ServerFromEnv()
 	if got.Listen != ":27601" || got.DatasetTTL != 48*time.Hour {
@@ -21,8 +26,37 @@ func TestServerFromEnv(t *testing.T) {
 	if got.ClickHouseDatabase != "prices" || got.ClickHouseUser != "bridge" || got.ClickHousePassword != "secret" {
 		t.Fatalf("unexpected ClickHouse settings: %+v", got)
 	}
+	if got.ClickHouseEnabled {
+		t.Fatal("ClickHouse must remain disabled unless explicitly enabled")
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatalf("disabled ClickHouse settings must be ignored: %v", err)
+	}
 	if !reflect.DeepEqual(got.Watchlist, []string{"AAPL", "NVDA"}) {
 		t.Fatalf("unexpected watchlist: %#v", got.Watchlist)
+	}
+	if got.MassivePlanName != "stocks_developer" || got.MassivePerMinute != 0 || got.MassivePerMonth != 10000 {
+		t.Fatalf("unexpected Massive usage settings: %+v", got)
+	}
+}
+
+func TestServerClickHouseOptInValidation(t *testing.T) {
+	t.Setenv("GO_SERVER_CLICKHOUSE_ENABLED", "true")
+	t.Setenv("CLICKHOUSE_URL", "")
+	if err := ServerFromEnv().Validate(); err == nil || !strings.Contains(err.Error(), "CLICKHOUSE_URL") {
+		t.Fatalf("expected missing URL error, got %v", err)
+	}
+
+	t.Setenv("CLICKHOUSE_URL", "http://clickhouse.example:8123")
+	t.Setenv("CLICKHOUSE_DATABASE", "market")
+	t.Setenv("CLICKHOUSE_USER", "market")
+	t.Setenv("CLICKHOUSE_PASSWORD", "secret")
+	cfg := ServerFromEnv()
+	if !cfg.ClickHouseEnabled {
+		t.Fatal("ClickHouse should be enabled")
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected validation error: %v", err)
 	}
 }
 

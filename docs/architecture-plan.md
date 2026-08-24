@@ -4,7 +4,7 @@
 
 系统拆分为两个独立 Go 服务：
 
-- `go-server` 部署在新加坡 ECS，专门负责 Massive、Longbridge 和 ClickHouse 的数据接入、标准化、数据集生成与实时分发。
+- `go-server` 部署在新加坡 ECS，专门负责 Massive、Longbridge 的数据接入、标准化、数据集生成与实时分发，并可选写入外部 ClickHouse。
 - `go-client` 常驻日本笔记本，是 KLineChart 和本地 Go 回测唯一的数据入口，负责本地热缓存、Parquet 缓存、自动拉取和实时连接复用。
 
 核心原则：
@@ -51,7 +51,7 @@ flowchart LR
     Internet["HTTPS / WSS<br/>批量传输 + 长连接"]
 
     subgraph Singapore["新加坡 · ECS"]
-        Gateway["Caddy<br/>TLS"]
+        Gateway["宿主机 Nginx<br/>TLS"]
 
         subgraph Server["go-server"]
             API["历史行情 API"]
@@ -64,7 +64,7 @@ flowchart LR
             Reconcile["盘后校准"]
         end
 
-        CK[("ClickHouse<br/>关注池1m：一年<br/>Trades/Depth：7天")]
+        CK[("可选外部 ClickHouse<br/>关注池1m：一年<br/>Trades/Depth：7天")]
         Meta[("SQLite<br/>关注池 / 任务 / 数据版本")]
         Temp[("临时数据集<br/>24小时 TTL")]
     end
@@ -267,7 +267,7 @@ TTL 规则：
 - KLineChart 和多个策略订阅者共享该连接；最后一个订阅者退出后，空闲超时再关闭连接。
 - 慢客户端使用有界队列隔离，不得阻塞上游行情采集；队列溢出时返回明确 gap 事件。
 - go-client 自动重连，并使用 `stream_epoch + event_type + symbol + sequence` 作为恢复游标。
-- go-server 先建立实时缓冲，再从 ClickHouse 补发缺失事件，最后切换到实时流，避免补发与实时切换之间丢数据。
+- 启用 ClickHouse 后，go-server 可先建立实时缓冲，再从 ClickHouse 补发缺失事件，最后切换到实时流；未启用时不提供持久化补发。
 - 游标超出保留期时返回 `resume_expired`，客户端重新获取当前快照后恢复订阅。
 - 未完成的实时 bar 可以用相同 timestamp 多次修订；只有 `Completed=true` 后才成为最终 bar。
 
@@ -366,7 +366,7 @@ GET /v1/watchlists/{effective_date}
 ## 行情和存储规则
 
 - Massive 提供按需历史数据，ECS 不保存全市场历史副本。
-- ClickHouse 保存关注池产生的 1 分钟 K 线一年、Trades 七天、Depth 七天。
+- ClickHouse 是默认关闭的可选外部实时存储；启用后保存关注池产生的 1 分钟 K 线一年、Trades 七天、Depth 七天。
 - 盘中查询由 Massive 已完成历史数据与 Longbridge 当日数据拼接；收盘后由 Massive 校准当日分钟线。
 - 默认常规盘为 `09:30–16:00 America/New_York`，扩展时段必须显式请求。
 - 聚合器以交易所日历为准，明确处理夏令时、节假日、提前收盘、无成交窗口和最后一个不完整窗口。
@@ -391,18 +391,18 @@ GET /v1/watchlists/{effective_date}
 
 ## 安全与部署
 
-服务端和客户端采用独立的最小权限 `.env` 文件：服务端持有供应商与 ClickHouse 凭据，客户端只持有 go-server 访问令牌和本机 Redis 凭据。密钥、授权、账户和服务地址不写入镜像、Compose 文件或 systemd/launchd 模板；安装后配置文件权限固定为 `0600`。
+服务端和客户端采用独立的最小权限 `.env` 文件：服务端持有供应商凭据，并仅在启用外部 ClickHouse 时持有其凭据；客户端只持有 go-server 访问令牌和本机 Redis 凭据。密钥、授权、账户和服务地址不写入镜像、Compose 文件或 systemd/launchd 模板；安装后配置文件权限固定为 `0600`。
 
 发布和安装链路：
 
-- `deploy/compose.server.yaml` 安装 go-server、ClickHouse 和 Caddy，默认目录 `/opt/market-bridge`，由 systemd 管理。
+- `deploy/compose.server.yaml` 只安装 go-server，默认目录 `/opt/market-bridge`，由 systemd 管理；服务绑定宿主机 `127.0.0.1:17601`，由已有 Nginx 反向代理，ClickHouse 需要时连接外部实例。
 - `deploy/compose.client.yaml` 安装 go-client 和无持久化 Redis；也可下载校验过 SHA-256 的原生客户端，由 systemd user service 或 macOS LaunchAgent 管理。
 - `scripts/install-*.sh`、`upgrade-*.sh`、`uninstall-*.sh` 分别负责一键安装、可回滚升级和默认保留数据的卸载；只有显式 `--purge-data` 才删除缓存或 volume。
 - GitHub Actions 在签名语义化版本 tag 上生成四个平台/架构的二进制 Release，并发布多架构 GHCR 镜像。
 
 ### 新加坡 ECS
 
-Docker Compose 包含 go-server、ClickHouse 和 Caddy：
+Docker Compose 只包含 go-server，宿主机 Nginx 负责公网入口：
 
 - 只开放 `443` 和必要的运维入口。
 - HTTPS/WSS 使用有效证书。
@@ -433,7 +433,7 @@ Docker Compose 包含 go-server、ClickHouse 和 Caddy：
 - 多个本地实时消费者共享一条上游 WSS，慢消费者不会阻塞采集。
 - 模拟断线、乱序、重复、游标缺口、服务重启和游标过期。
 - 验证全部目标周期以及夏令时、节假日、提前收盘和无成交窗口。
-- 验证 200 只股票订阅时 go-server 内存、ClickHouse 写入量和磁盘水位稳定。
+- 启用 ClickHouse 时，验证 200 只股票订阅下 go-server 内存、ClickHouse 写入量和外部实例磁盘水位稳定。
 
 ## 实施顺序
 
@@ -443,7 +443,7 @@ Docker Compose 包含 go-server、ClickHouse 和 Caddy：
 4. 实现 Redis 可选热缓存、固定读取顺序和故障旁路。
 5. 实现可配置 Parquet TTL、并发下载合并和崩溃恢复。
 6. 实现 Go 本地库并接入现有单股、板块回测。
-7. 接入 Longbridge、关注池、ClickHouse、聚合与盘后校准。
+7. 接入 Longbridge、关注池、可选外部 ClickHouse、聚合与盘后校准。
 8. 实现 go-client 实时共享连接、续传、去重和本地扇出。
 9. 将 KLineChart 托管到 go-client，并只使用本地 REST/WS。
 10. 完成缓存链路、离线回测、容量、监控和部署验收。
@@ -455,5 +455,5 @@ Docker Compose 包含 go-server、ClickHouse 和 Caddy：
 - Parquet TTL 默认 30 天，可以配置或完全禁用。
 - Docker Redis 是可选组件，不是 go-client 的运行前置条件。
 - Massive 套餐具备所需历史分钟线、拆股调整和调用额度。
-- ClickHouse 只保存实时关注池，不建设全量历史仓库。
+- ClickHouse 默认关闭；启用时只保存实时关注池，不建设全量历史仓库。
 - 第一版是个人单用户系统，不上传或执行任意策略代码，也不提供多租户能力。

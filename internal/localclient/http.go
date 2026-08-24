@@ -32,12 +32,21 @@ func (h *HTTP) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/bars/{symbol}", h.bars)
 	mux.HandleFunc("GET /v1/cache", h.cacheList)
 	mux.HandleFunc("POST /v1/cache/prune", h.prune)
+	mux.HandleFunc("GET /v1/providers/massive/usage", h.providerUsage)
 	if h.Live != nil {
 		mux.Handle("/v1/live/ws", h.Live)
 	}
 	assets, _ := fs.Sub(ui, "ui")
 	mux.Handle("/", http.FileServer(http.FS(assets)))
 	return security(mux)
+}
+func (h *HTTP) providerUsage(w http.ResponseWriter, r *http.Request) {
+	raw, err := h.Cache.ProviderUsage(r.Context())
+	if err != nil {
+		jsonResponse(w, 502, map[string]string{"error": err.Error()})
+		return
+	}
+	jsonResponse(w, 200, raw)
 }
 
 func (h *HTTP) dataset(w http.ResponseWriter, r *http.Request) {

@@ -323,6 +323,12 @@ func (c *Cache) getJSON(ctx context.Context, path string, v any) error {
 	}
 	return json.NewDecoder(resp.Body).Decode(v)
 }
+
+func (c *Cache) ProviderUsage(ctx context.Context) (json.RawMessage, error) {
+	var raw json.RawMessage
+	err := c.getJSON(ctx, "/v1/providers/massive/usage", &raw)
+	return raw, err
+}
 func (c *Cache) downloadFile(ctx context.Context, urlPath, path, want string) error {
 	req, err := c.request(ctx, http.MethodGet, urlPath, nil)
 	if err != nil {

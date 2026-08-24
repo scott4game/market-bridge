@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,12 +12,18 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/scott4game/market-bridge/internal/market"
+	"github.com/scott4game/market-bridge/internal/provider"
 )
+
+type UsageReader interface {
+	Snapshot(context.Context, string) (provider.UsageSnapshot, error)
+}
 
 type HTTP struct {
 	Store *Store
 	Token string
 	Live  http.Handler
+	Usage UsageReader
 }
 
 func (h *HTTP) Handler() http.Handler {
@@ -27,7 +34,20 @@ func (h *HTTP) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/datasets/{id}/manifest", h.auth(h.manifest))
 	mux.HandleFunc("GET /v1/datasets/{id}/files/{name...}", h.auth(h.file))
 	mux.HandleFunc("GET /v1/live/ws", h.auth(h.live))
+	mux.HandleFunc("GET /v1/providers/massive/usage", h.auth(h.usage))
 	return mux
+}
+func (h *HTTP) usage(w http.ResponseWriter, r *http.Request) {
+	if h.Usage == nil {
+		writeJSON(w, 404, map[string]string{"error": "Massive usage tracking is not enabled"})
+		return
+	}
+	snapshot, err := h.Usage.Snapshot(r.Context(), "massive")
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, snapshot)
 }
 
 func (h *HTTP) auth(next http.HandlerFunc) http.HandlerFunc {

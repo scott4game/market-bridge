@@ -13,54 +13,22 @@ services:
       GO_SERVER_DATASET_TTL: ${GO_SERVER_DATASET_TTL:-24h}
       GO_SERVER_TOKEN: ${GO_SERVER_TOKEN:?set GO_SERVER_TOKEN in .env}
       MASSIVE_API_KEY: ${MASSIVE_API_KEY:-}
+      MASSIVE_PLAN_NAME: ${MASSIVE_PLAN_NAME:-stocks_basic}
+      MASSIVE_REQUESTS_PER_MINUTE: ${MASSIVE_REQUESTS_PER_MINUTE:-5}
+      MASSIVE_REQUESTS_PER_MONTH: ${MASSIVE_REQUESTS_PER_MONTH:-0}
       GO_SERVER_LIVE_PROVIDER: ${GO_SERVER_LIVE_PROVIDER:-mock}
       GO_SERVER_WATCHLIST: ${GO_SERVER_WATCHLIST:-AAPL,NVDA}
       LONGBRIDGE_APP_KEY: ${LONGBRIDGE_APP_KEY:-}
       LONGBRIDGE_APP_SECRET: ${LONGBRIDGE_APP_SECRET:-}
       LONGBRIDGE_ACCESS_TOKEN: ${LONGBRIDGE_ACCESS_TOKEN:-}
-      CLICKHOUSE_URL: http://clickhouse:8123
-      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:?set CLICKHOUSE_DATABASE in .env}
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:?set CLICKHOUSE_USER in .env}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD in .env}
+      GO_SERVER_CLICKHOUSE_ENABLED: ${GO_SERVER_CLICKHOUSE_ENABLED:-false}
+      CLICKHOUSE_URL: ${CLICKHOUSE_URL:-}
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-market}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-market}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
     volumes:
       - server-data:/data
-    expose: [17601]
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-    restart: unless-stopped
-
-  clickhouse:
-    profiles: [server]
-    image: clickhouse/clickhouse-server:25.8-alpine
-    environment:
-      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:?set CLICKHOUSE_DATABASE in .env}
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:?set CLICKHOUSE_USER in .env}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD in .env}
-      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
-    volumes:
-      - clickhouse-data:/var/lib/clickhouse
-    expose: [8123, 9000]
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8123/ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-    restart: unless-stopped
-
-  caddy:
-    profiles: [server]
-    image: caddy:2.10-alpine
-    environment:
-      MARKET_DOMAIN: ${MARKET_DOMAIN:?set MARKET_DOMAIN in .env}
-    ports: ["80:80", "443:443"]
-    volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
-    depends_on:
-      go-server:
-        condition: service_healthy
+    ports: ["127.0.0.1:17601:17601"]
     restart: unless-stopped
 
   go-client:
@@ -106,6 +74,3 @@ services:
 volumes:
   server-data:
   client-data:
-  clickhouse-data:
-  caddy-data:
-  caddy-config:

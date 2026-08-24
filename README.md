@@ -53,7 +53,19 @@ sudo ./scripts/install-server.sh --env .env.server --version v0.1.0
 sudo ./scripts/install-server.sh --env .env.server --local-build
 ```
 
-安装目录默认为 `/opt/market-bridge`。Linux systemd 可用时会安装并启用 `market-bridge-server.service`，系统重启后自动恢复 Compose stack。
+安装目录默认为 `/opt/market-bridge`。Linux systemd 可用时会安装并启用 `market-bridge-server.service`，系统重启后自动恢复 Compose stack。服务仅发布到宿主机 `127.0.0.1:17601`，不启动 Caddy，也不要求 `MARKET_DOMAIN`；公网 HTTPS/WSS 由宿主机 Nginx 提供。
+
+Nginx 站点可将请求反向代理到：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:17601;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+}
+```
 
 升级与卸载：
 
@@ -138,8 +150,9 @@ docker compose --profile local up --build
 ## 供应商
 
 - `GO_SERVER_PROVIDER=massive` 与 `MASSIVE_API_KEY` 启用 Massive 历史 aggregates。调整模式只代表拆股调整，不表示股息复权。
+- Massive 调用量会持久化到服务端数据目录的 `usage.db`。免费档使用 `MASSIVE_PLAN_NAME=stocks_basic`、`MASSIVE_REQUESTS_PER_MINUTE=5`；`MASSIVE_REQUESTS_PER_MONTH=0` 表示月度不限额。通过受保护的 `GET /v1/providers/massive/usage` 或本地页面查看最近 60 秒、本月和累计调用量。计数只覆盖本 go-server 发出的请求，不包含同一 API Key 被其他程序使用的次数。
 - `GO_SERVER_LIVE_PROVIDER=longbridge` 与 Longbridge 三项凭据启用单连接采集。关注池由 `GO_SERVER_WATCHLIST` 配置，最多 200 只。
-- Quote、Trade 和 Depth 写入 ClickHouse；bars TTL 一年，trades/depth TTL 七天。
+- ClickHouse 默认关闭且不随项目部署。设置 `GO_SERVER_CLICKHOUSE_ENABLED=true` 并提供 `CLICKHOUSE_URL`、`CLICKHOUSE_DATABASE`、`CLICKHOUSE_USER`、`CLICKHOUSE_PASSWORD` 后，可将实时 bars、trades 和 depth 写入外部 ClickHouse；它用于实时行情留存，不作为请求缓存。
 
 ## 发布
 

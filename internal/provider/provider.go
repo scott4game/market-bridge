@@ -80,6 +80,7 @@ func (m *Mock) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar,
 type Massive struct {
 	APIKey, BaseURL, Version string
 	HTTP                     *http.Client
+	Usage                    *UsageTracker
 }
 
 func (m *Massive) Name() string { return "massive" }
@@ -124,8 +125,13 @@ func (m *Massive) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.B
 			q.Set("adjusted", strconv.FormatBool(spec.Adjustment == market.SplitAdjusted))
 			u.RawQuery = q.Encode()
 			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+			finish := func(int, error) {}
+			if m.Usage != nil {
+				finish = m.Usage.Begin("massive", "stocks_aggregates_custom_bars")
+			}
 			resp, err := client.Do(req)
 			if err != nil {
+				finish(0, err)
 				return nil, err
 			}
 			var payload struct {
@@ -144,8 +150,10 @@ func (m *Massive) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.B
 			err = json.NewDecoder(resp.Body).Decode(&payload)
 			resp.Body.Close()
 			if err != nil {
+				finish(resp.StatusCode, err)
 				return nil, err
 			}
+			finish(resp.StatusCode, nil)
 			if resp.StatusCode/100 != 2 {
 				return nil, fmt.Errorf("massive: status %d: %s", resp.StatusCode, payload.Error)
 			}

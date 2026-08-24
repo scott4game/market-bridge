@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -15,8 +16,12 @@ type Server struct {
 	BearerToken        string
 	MassiveAPIKey      string
 	MassiveBaseURL     string
+	MassivePlanName    string
+	MassivePerMinute   int
+	MassivePerMonth    int
 	LiveProvider       string
 	Watchlist          []string
+	ClickHouseEnabled  bool
 	ClickHouseURL      string
 	ClickHouseDatabase string
 	ClickHouseUser     string
@@ -29,10 +34,30 @@ func ServerFromEnv() Server {
 		Listen: env("GO_SERVER_LISTEN", ":17601"), DataDir: env("GO_SERVER_DATA_DIR", "./data/server"),
 		Provider: env("GO_SERVER_PROVIDER", "mock"), DataVersion: env("GO_SERVER_DATA_VERSION", time.Now().UTC().Format("2006-01-02")),
 		BearerToken: os.Getenv("GO_SERVER_TOKEN"), MassiveAPIKey: os.Getenv("MASSIVE_API_KEY"), MassiveBaseURL: env("MASSIVE_BASE_URL", "https://api.massive.com"),
+		MassivePlanName: env("MASSIVE_PLAN_NAME", "stocks_basic"), MassivePerMinute: integer("MASSIVE_REQUESTS_PER_MINUTE", 5), MassivePerMonth: integer("MASSIVE_REQUESTS_PER_MONTH", 0),
 		LiveProvider: env("GO_SERVER_LIVE_PROVIDER", "mock"), Watchlist: split(env("GO_SERVER_WATCHLIST", "AAPL,NVDA")),
-		ClickHouseURL: os.Getenv("CLICKHOUSE_URL"), ClickHouseDatabase: env("CLICKHOUSE_DATABASE", "market"), ClickHouseUser: env("CLICKHOUSE_USER", "market"), ClickHousePassword: os.Getenv("CLICKHOUSE_PASSWORD"),
+		ClickHouseEnabled: env("GO_SERVER_CLICKHOUSE_ENABLED", "false") == "true",
+		ClickHouseURL:     os.Getenv("CLICKHOUSE_URL"), ClickHouseDatabase: env("CLICKHOUSE_DATABASE", "market"), ClickHouseUser: env("CLICKHOUSE_USER", "market"), ClickHousePassword: os.Getenv("CLICKHOUSE_PASSWORD"),
 		DatasetTTL: duration("GO_SERVER_DATASET_TTL", 24*time.Hour),
 	}
+}
+
+func (s Server) Validate() error {
+	if !s.ClickHouseEnabled {
+		return nil
+	}
+	values := []struct{ name, value string }{
+		{"CLICKHOUSE_URL", s.ClickHouseURL},
+		{"CLICKHOUSE_DATABASE", s.ClickHouseDatabase},
+		{"CLICKHOUSE_USER", s.ClickHouseUser},
+		{"CLICKHOUSE_PASSWORD", s.ClickHousePassword},
+	}
+	for _, item := range values {
+		if strings.TrimSpace(item.value) == "" {
+			return fmt.Errorf("%s is required when GO_SERVER_CLICKHOUSE_ENABLED=true", item.name)
+		}
+	}
+	return nil
 }
 
 func split(v string) []string {

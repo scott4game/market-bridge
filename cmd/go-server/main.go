@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -18,10 +19,20 @@ import (
 
 func main() {
 	cfg := config.ServerFromEnv()
+	if err := cfg.Validate(); err != nil {
+		log.Fatal(err)
+	}
+	var usage *provider.UsageTracker
 	var p provider.Provider
 	switch cfg.Provider {
 	case "massive":
-		p = &provider.Massive{APIKey: cfg.MassiveAPIKey, BaseURL: cfg.MassiveBaseURL, Version: cfg.DataVersion}
+		var err error
+		usage, err = provider.NewUsageTracker(filepath.Join(cfg.DataDir, "usage.db"), cfg.MassivePlanName, cfg.MassivePerMinute, cfg.MassivePerMonth, time.Local)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer usage.Close()
+		p = &provider.Massive{APIKey: cfg.MassiveAPIKey, BaseURL: cfg.MassiveBaseURL, Version: cfg.DataVersion, Usage: usage}
 	default:
 		p = &provider.Mock{Version: cfg.DataVersion}
 	}
@@ -37,7 +48,7 @@ func main() {
 	defer cancel()
 	go store.RunCleanup(ctx, cfg.DatasetTTL)
 	var sink live.Sink = live.NopSink{}
-	if cfg.ClickHouseURL != "" {
+	if cfg.ClickHouseEnabled {
 		ch, err := storage.NewClickHouseSink(ctx, cfg.ClickHouseURL, cfg.ClickHouseDatabase, cfg.ClickHouseUser, cfg.ClickHousePassword)
 		if err != nil {
 			log.Fatal(err)
@@ -50,7 +61,7 @@ func main() {
 		log.Fatal(err)
 	}
 	go hub.Run(ctx)
-	srv := &http.Server{Addr: cfg.Listen, Handler: (&marketserver.HTTP{Store: store, Token: cfg.BearerToken, Live: hub}).Handler()}
+	srv := &http.Server{Addr: cfg.Listen, Handler: (&marketserver.HTTP{Store: store, Token: cfg.BearerToken, Live: hub, Usage: usage}).Handler()}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)

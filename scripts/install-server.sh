@@ -9,7 +9,7 @@ LOCAL_BUILD=false
 
 usage(){ cat <<'EOF'
 Usage: sudo ./scripts/install-server.sh --env PATH [--version v0.1.0] [--install-dir PATH] [--local-build]
-Installs the go-server, ClickHouse, and Caddy Compose stack. Existing data volumes are preserved.
+Installs go-server on 127.0.0.1:17601 for an external reverse proxy. Existing data volumes are preserved.
 EOF
 }
 while (($#)); do case "$1" in
@@ -29,7 +29,6 @@ load_env "$INPUT_ENV"; validate_server_env
 
 mkdir -p "$INSTALL_DIR"
 copy_file "$SCRIPT_ROOT/deploy/compose.server.yaml" "$INSTALL_DIR/compose.yaml" 644
-copy_file "$SCRIPT_ROOT/deploy/Caddyfile" "$INSTALL_DIR/Caddyfile" 644
 copy_file "$INPUT_ENV" "$INSTALL_DIR/.env" 600
 ENV_FILE="$INSTALL_DIR/.env"; COMPOSE_FILE="$INSTALL_DIR/compose.yaml"
 set_env_value "$ENV_FILE" MARKET_BRIDGE_VERSION "$VERSION"

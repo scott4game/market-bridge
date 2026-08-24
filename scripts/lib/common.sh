@@ -55,11 +55,16 @@ require_env() {
 }
 
 validate_server_env() {
-  require_env GO_SERVER_TOKEN CLICKHOUSE_DATABASE CLICKHOUSE_USER CLICKHOUSE_PASSWORD MARKET_DOMAIN
+  require_env GO_SERVER_TOKEN
   if [[ "${GO_SERVER_PROVIDER:-mock}" == "massive" ]]; then require_env MASSIVE_API_KEY; fi
   if [[ "${GO_SERVER_LIVE_PROVIDER:-mock}" == "longbridge" ]]; then
     require_env LONGBRIDGE_APP_KEY LONGBRIDGE_APP_SECRET LONGBRIDGE_ACCESS_TOKEN
   fi
+  case "${GO_SERVER_CLICKHOUSE_ENABLED:-false}" in
+    true) require_env CLICKHOUSE_URL CLICKHOUSE_DATABASE CLICKHOUSE_USER CLICKHOUSE_PASSWORD ;;
+    false) ;;
+    *) die "GO_SERVER_CLICKHOUSE_ENABLED must be true or false" ;;
+  esac
 }
 
 validate_client_env() {
