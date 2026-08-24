@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -68,8 +69,18 @@ func main() {
 		defer shutdownCancel()
 		_ = srv.Shutdown(shutdownCtx)
 	}()
+	logEnabledProviders(cfg)
 	log.Printf("go-server listening on %s with %s provider", cfg.Listen, p.Name())
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
+	}
+}
+
+func logEnabledProviders(cfg config.Server) {
+	if cfg.Provider == "massive" {
+		log.Printf("Massive historical provider enabled: plan=%s, data_version=%s", cfg.MassivePlanName, cfg.DataVersion)
+	}
+	if cfg.LiveProvider == "longbridge" {
+		log.Printf("Longbridge live provider enabled: watchlist=%s", strings.Join(cfg.Watchlist, ","))
 	}
 }
