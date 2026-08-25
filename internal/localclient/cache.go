@@ -102,7 +102,7 @@ func NewCacheWithClickHouse(cfg config.Client, clickhouse HistoricalClickHouse) 
 			return nil, err
 		}
 	}
-	coverageStore, err := coverage.New(db, "clickhouse_coverage_v2", "clickhouse_coverage")
+	coverageStore, err := coverage.New(db, "clickhouse_coverage_v3", "clickhouse_coverage", "clickhouse_coverage_v2")
 	if err != nil {
 		db.Close()
 		return nil, err
@@ -169,7 +169,7 @@ func (c *Cache) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar
 		return nil, "", err
 	}
 	capability, capabilityErr := c.storageCapability(ctx)
-	cutoff := time.Now().UTC().Add(-365 * 24 * time.Hour)
+	cutoff := time.Now().UTC().Add(-c.clickhouseRetention())
 	if capabilityErr == nil && (spec.From.Before(cutoff) || spec.Interval == "1m" && (capability.ClickHouse.Enabled || c.clickhouse != nil)) {
 		return c.routedBars(ctx, spec, capability)
 	}
@@ -239,7 +239,7 @@ func (c *Cache) legacyBars(ctx context.Context, spec market.DatasetSpec) ([]mark
 }
 
 func (c *Cache) routedBars(ctx context.Context, spec market.DatasetSpec, capability StorageCapability) ([]market.Bar, string, error) {
-	cutoff := time.Now().UTC().Add(-365 * 24 * time.Hour)
+	cutoff := time.Now().UTC().Add(-c.clickhouseRetention())
 	var bars []market.Bar
 	var sources []string
 	if spec.From.Before(cutoff) {
@@ -973,13 +973,14 @@ func (c *Cache) RunCleanup(ctx context.Context) {
 		clickhouseC = clickhouseTicker.C
 		defer clickhouseTicker.Stop()
 	}
-	retention := c.cfg.ClickHouseRetention
-	if retention <= 0 {
-		retention = 365 * 24 * time.Hour
+	retention := c.clickhouseRetention()
+	cleanupCoverage := func() {
+		_ = c.coverage.Cleanup(ctx, time.Now().UTC().Add(-retention))
 	}
 	if c.clickhouse != nil {
 		_, _ = c.clickhouse.CleanupBefore(ctx, time.Now().UTC().Add(-retention))
 	}
+	cleanupCoverage()
 	for {
 		select {
 		case <-ctx.Done():
@@ -989,7 +990,14 @@ func (c *Cache) RunCleanup(ctx context.Context) {
 		case <-clickhouseC:
 			_, _ = c.clickhouse.CleanupBefore(ctx, time.Now().UTC().Add(-retention))
 		case <-coverageTicker.C:
-			_ = c.coverage.Cleanup(ctx)
+			cleanupCoverage()
 		}
 	}
+}
+
+func (c *Cache) clickhouseRetention() time.Duration {
+	if c.cfg.ClickHouseRetention > 0 {
+		return c.cfg.ClickHouseRetention
+	}
+	return 365 * 24 * time.Hour
 }

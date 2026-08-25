@@ -10,22 +10,27 @@ import (
 	"github.com/scott4game/market-bridge/internal/market"
 )
 
-// Store records which canonical one-minute ranges have been fetched. Empty
-// ranges expire so a transient successful-but-empty provider response cannot
-// poison the cache forever.
+// Store records which canonical ranges have been fetched. Empty ranges expire
+// so a transient successful-but-empty provider response cannot poison the
+// cache forever.
 type Store struct {
 	db    *sql.DB
 	table string
+	now   func() time.Time
 }
 
-func New(db *sql.DB, table, legacyTable string) (*Store, error) {
-	if table != "history_coverage_v2" && table != "clickhouse_coverage_v2" {
+func New(db *sql.DB, table string, legacyTables ...string) (*Store, error) {
+	if table != "history_coverage_v3" && table != "clickhouse_coverage_v3" {
 		return nil, fmt.Errorf("unsupported coverage table %q", table)
 	}
-	if legacyTable != "" && legacyTable != "history_coverage" && legacyTable != "clickhouse_coverage" {
-		return nil, fmt.Errorf("unsupported legacy coverage table %q", legacyTable)
+	validLegacy := map[string]bool{
+		"history_coverage": true, "history_coverage_v2": true,
+		"clickhouse_coverage": true, "clickhouse_coverage_v2": true,
 	}
-	if legacyTable != "" {
+	for _, legacyTable := range legacyTables {
+		if !validLegacy[legacyTable] {
+			return nil, fmt.Errorf("unsupported legacy coverage table %q", legacyTable)
+		}
 		if _, err := db.Exec(`DROP TABLE IF EXISTS ` + legacyTable); err != nil {
 			return nil, err
 		}
@@ -51,7 +56,7 @@ func New(db *sql.DB, table, legacyTable string) (*Store, error) {
 			return nil, err
 		}
 	}
-	return &Store{db: db, table: table}, nil
+	return &Store{db: db, table: table, now: time.Now}, nil
 }
 
 // Missing returns uncovered ranges as normalized one-symbol specs.
@@ -60,7 +65,7 @@ func (s *Store) Missing(ctx context.Context, spec market.DatasetSpec, dataVersio
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now().Unix()
+	now := s.now().Unix()
 	var missing []market.DatasetSpec
 	for _, symbol := range n.Symbols {
 		rows, err := s.db.QueryContext(ctx, `SELECT from_ms,to_ms FROM `+s.table+`
@@ -111,53 +116,85 @@ func min(a, b int64) int64 {
 	return b
 }
 
-// Record records a successful provider response. Symbols with no bars are
-// negative coverage and expire after emptyTTL.
+func minTime(values ...time.Time) time.Time {
+	result := values[0]
+	for _, value := range values[1:] {
+		if value.Before(result) {
+			result = value
+		}
+	}
+	return result
+}
+
+// Record records only the completed prefix confirmed by a successful provider
+// response. Unconfirmed tails and symbols with no bars are negative coverage
+// and expire after emptyTTL.
 func (s *Store) Record(ctx context.Context, spec market.DatasetSpec, dataVersion string, bars []market.Bar, emptyTTL time.Duration) error {
 	n, err := spec.Normalize()
 	if err != nil {
 		return err
 	}
-	positive := make(map[string]bool, len(bars))
+	last := make(map[string]time.Time, len(n.Symbols))
 	for _, bar := range bars {
-		positive[bar.Symbol] = true
+		symbol, _, normalizeErr := market.NormalizeSymbol(bar.Symbol)
+		if normalizeErr != nil || !bar.Completed || bar.Timestamp.Before(n.From) || !bar.Timestamp.Before(n.To) {
+			continue
+		}
+		if previous, ok := last[symbol]; !ok || bar.Timestamp.After(previous) {
+			last[symbol] = bar.Timestamp.UTC()
+		}
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	now := time.Now()
+	now := s.now().UTC()
+	step := market.IntervalDuration(n.Interval)
+	watermark := now.Truncate(step)
 	for _, symbol := range n.Symbols {
-		kind, expires := "empty", now.Add(emptyTTL).Unix()
-		from, to := n.From.UnixMilli(), n.To.UnixMilli()
-		if positive[symbol] {
-			kind, expires = "positive", int64(0)
-			from, to, err = s.mergePositive(ctx, tx, n, symbol, dataVersion)
-			if err != nil {
+		positiveTo := n.From
+		if lastBar, ok := last[symbol]; ok {
+			positiveTo = minTime(n.To, lastBar.Add(step), watermark)
+		}
+		if positiveTo.After(n.From) {
+			from, to, mergeErr := s.mergePositive(ctx, tx, n, symbol, dataVersion, n.From.UnixMilli(), positiveTo.UnixMilli())
+			if mergeErr != nil {
+				return mergeErr
+			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM `+s.table+` WHERE data_version=? AND symbol=? AND interval=? AND session=? AND adjustment=? AND kind='empty' AND to_ms>? AND from_ms<?`,
+				dataVersion, symbol, n.Interval, n.Session, n.Adjustment, from, to); err != nil {
+				return err
+			}
+			if err := s.insert(ctx, tx, n, symbol, dataVersion, from, to, "positive", 0, now); err != nil {
 				return err
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO `+s.table+`(data_version,symbol,interval,session,adjustment,from_ms,to_ms,kind,expires_at,completed_at) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-			dataVersion, symbol, n.Interval, n.Session, n.Adjustment, from, to, kind, expires, now.Unix()); err != nil {
-			return err
+		if positiveTo.Before(n.To) {
+			if err := s.insert(ctx, tx, n, symbol, dataVersion, positiveTo.UnixMilli(), n.To.UnixMilli(), "empty", now.Add(emptyTTL).Unix(), now); err != nil {
+				return err
+			}
 		}
 	}
-	_, err = tx.ExecContext(ctx, `DELETE FROM `+s.table+` WHERE kind='empty' AND expires_at<=?`, now.Unix())
-	if err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM `+s.table+` WHERE kind='empty' AND expires_at<=?`, now.Unix()); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-func (s *Store) mergePositive(ctx context.Context, tx *sql.Tx, spec market.DatasetSpec, symbol, version string) (int64, int64, error) {
+func (s *Store) insert(ctx context.Context, tx *sql.Tx, spec market.DatasetSpec, symbol, version string, from, to int64, kind string, expires int64, completed time.Time) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO `+s.table+`(data_version,symbol,interval,session,adjustment,from_ms,to_ms,kind,expires_at,completed_at) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		version, symbol, spec.Interval, spec.Session, spec.Adjustment, from, to, kind, expires, completed.Unix())
+	return err
+}
+
+func (s *Store) mergePositive(ctx context.Context, tx *sql.Tx, spec market.DatasetSpec, symbol, version string, from, to int64) (int64, int64, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT id,from_ms,to_ms FROM `+s.table+` WHERE data_version=? AND symbol=? AND interval=? AND session=? AND adjustment=? AND kind='positive' AND to_ms>=? AND from_ms<=?`,
-		version, symbol, spec.Interval, spec.Session, spec.Adjustment, spec.From.UnixMilli(), spec.To.UnixMilli())
+		version, symbol, spec.Interval, spec.Session, spec.Adjustment, from, to)
 	if err != nil {
 		return 0, 0, err
 	}
 	var ids []int64
-	from, to := spec.From.UnixMilli(), spec.To.UnixMilli()
 	for rows.Next() {
 		var id, a, b int64
 		if err := rows.Scan(&id, &a, &b); err != nil {
@@ -183,9 +220,23 @@ func (s *Store) mergePositive(ctx context.Context, tx *sql.Tx, spec market.Datas
 	return from, to, nil
 }
 
-func (s *Store) Cleanup(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM `+s.table+` WHERE kind='empty' AND expires_at<=?`, time.Now().Unix())
-	return err
+func (s *Store) Cleanup(ctx context.Context, cutoff time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM `+s.table+` WHERE kind='empty' AND expires_at<=?`, s.now().Unix()); err != nil {
+		return err
+	}
+	cutoffMS := cutoff.UnixMilli()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM `+s.table+` WHERE to_ms<=?`, cutoffMS); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE `+s.table+` SET from_ms=? WHERE from_ms<? AND to_ms>?`, cutoffMS, cutoffMS, cutoffMS); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // GroupMissing batches symbols whose uncovered ranges and query dimensions are

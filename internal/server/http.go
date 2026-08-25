@@ -45,6 +45,7 @@ type HTTP struct {
 	HistoryCatalog    *HistoryCatalog
 	DataVersion       string
 	EmptyCoverageTTL  time.Duration
+	HistoryRetention  time.Duration
 }
 
 func (h *HTTP) Handler() http.Handler {
@@ -118,7 +119,11 @@ func (h *HTTP) historyBars(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": err.Error()})
 		return
 	}
-	recent := !spec.From.Before(time.Now().UTC().Add(-365 * 24 * time.Hour))
+	retention := h.HistoryRetention
+	if retention <= 0 {
+		retention = 365 * 24 * time.Hour
+	}
+	recent := !spec.From.Before(time.Now().UTC().Add(-retention))
 	canonical := recent && spec.Interval == "1m" && h.ClickHouseEnabled && h.ClickHouse != nil
 	if !canonical || body.ProviderOnly || h.HistoryCatalog == nil {
 		bars, err := h.Store.ProviderBars(r.Context(), spec)

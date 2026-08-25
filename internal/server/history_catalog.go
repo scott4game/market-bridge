@@ -34,7 +34,7 @@ func OpenHistoryCatalog(path string) (*HistoryCatalog, error) {
 			return nil, err
 		}
 	}
-	coverageStore, err := coverage.New(db, "history_coverage_v2", "history_coverage")
+	coverageStore, err := coverage.New(db, "history_coverage_v3", "history_coverage", "history_coverage_v2")
 	if err != nil {
 		db.Close()
 		return nil, err
@@ -52,7 +52,14 @@ func (c *HistoryCatalog) RecordCoverage(ctx context.Context, spec market.Dataset
 
 func (c *HistoryCatalog) Close() error { return c.db.Close() }
 
-func (c *HistoryCatalog) RunCleanup(ctx context.Context) {
+func (c *HistoryCatalog) RunCleanup(ctx context.Context, retention time.Duration) {
+	if retention <= 0 {
+		retention = 365 * 24 * time.Hour
+	}
+	cleanup := func() {
+		_ = c.coverage.Cleanup(ctx, time.Now().UTC().Add(-retention))
+	}
+	cleanup()
 	ticker := time.NewTicker(24 * time.Hour)
 	defer ticker.Stop()
 	for {
@@ -60,7 +67,7 @@ func (c *HistoryCatalog) RunCleanup(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			_ = c.coverage.Cleanup(ctx)
+			cleanup()
 		}
 	}
 }

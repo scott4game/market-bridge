@@ -188,3 +188,28 @@ func TestLimiterDoesNotCreateOrRetainIdleUsers(t *testing.T) {
 		t.Fatalf("expired counter was retained: %d", len(l.users))
 	}
 }
+
+func TestLimiterSweepsAtMostOncePerMinuteAndRetainsLiveUsers(t *testing.T) {
+	now := time.Date(2026, 8, 25, 10, 0, 0, 0, time.UTC)
+	l := NewLimiter()
+	l.now = func() time.Time { return now }
+	p := Principal{UserID: "live", Quotas: Quotas{RequestsPerMinute: 2, LiveConnections: 1, LiveSymbols: 1}}
+	if !l.AcquireLive(p, 1) {
+		t.Fatal("live connection was rejected")
+	}
+	firstSweep := l.lastSweepMinute
+	if !l.AllowRequest(p) || !l.lastSweepMinute.Equal(firstSweep) {
+		t.Fatal("limiter swept more than once in the same minute")
+	}
+	now = now.Add(time.Minute)
+	l.Snapshot("unknown")
+	if _, ok := l.users[p.UserID]; !ok {
+		t.Fatal("live user was removed during minute sweep")
+	}
+	l.ReleaseLive(p.UserID, 1)
+	now = now.Add(time.Minute)
+	l.Snapshot("unknown")
+	if _, ok := l.users[p.UserID]; ok {
+		t.Fatal("released live user was retained after the next sweep")
+	}
+}

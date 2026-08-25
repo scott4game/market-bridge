@@ -184,13 +184,16 @@ func (s *Store) Universe(ctx context.Context) ([]string, error) {
 	return lister.Universe(ctx)
 }
 
-func (s *Store) SyncRecentUniverse(ctx context.Context, writer HistoricalBarWriter, catalog *HistoryCatalog, dataVersion string, days int) error {
+func (s *Store) SyncRecentUniverse(ctx context.Context, writer HistoricalBarWriter, catalog *HistoryCatalog, dataVersion string, days int, emptyCoverageTTL time.Duration) error {
 	symbols, err := s.Universe(ctx)
 	if err != nil {
 		return err
 	}
 	if days < 1 {
 		days = 2
+	}
+	if emptyCoverageTTL <= 0 {
+		emptyCoverageTTL = 15 * time.Minute
 	}
 	from, to := time.Now().UTC().AddDate(0, 0, -days), time.Now().UTC()
 	failed := 0
@@ -229,7 +232,7 @@ func (s *Store) SyncRecentUniverse(ctx context.Context, writer HistoricalBarWrit
 			wrote = true
 		}
 		if catalog != nil {
-			if err := catalog.RecordCoverage(ctx, spec, dataVersion, bars, 15*time.Minute); err != nil {
+			if err := catalog.RecordCoverage(ctx, spec, dataVersion, bars, emptyCoverageTTL); err != nil {
 				failed++
 				if firstFailure == nil {
 					firstFailure = fmt.Errorf("record %s coverage: %w", symbol, err)

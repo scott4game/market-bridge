@@ -14,19 +14,23 @@ type counters struct {
 }
 
 type Limiter struct {
-	mu    sync.Mutex
-	users map[string]*counters
-	now   func() time.Time
+	mu              sync.Mutex
+	users           map[string]*counters
+	now             func() time.Time
+	lastSweepMinute time.Time
 }
 
 func NewLimiter() *Limiter { return &Limiter{users: map[string]*counters{}, now: time.Now} }
 
 func (l *Limiter) counter(userID string, create bool) *counters {
 	now := l.now().Truncate(time.Minute)
-	for id, item := range l.users {
-		if item.window.Before(now) && item.connections == 0 && item.symbols == 0 {
-			delete(l.users, id)
+	if l.lastSweepMinute.Before(now) {
+		for id, item := range l.users {
+			if item.window.Before(now) && item.connections == 0 && item.symbols == 0 {
+				delete(l.users, id)
+			}
 		}
+		l.lastSweepMinute = now
 	}
 	c := l.users[userID]
 	if c == nil && create {

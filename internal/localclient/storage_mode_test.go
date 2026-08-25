@@ -1,7 +1,10 @@
 package localclient_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -110,6 +113,32 @@ func TestArchiveBypassesBothClickHouses(t *testing.T) {
 	localCH.mu.Unlock()
 	if serverWrites != 0 || localWrites != 0 {
 		t.Fatalf("archive wrote server=%d local=%d", serverWrites, localWrites)
+	}
+}
+
+func TestServerHistoryRoutingUsesConfiguredClickHouseRetention(t *testing.T) {
+	p := &countingProvider{mock: provider.Mock{Version: "retention-v1"}}
+	store, _ := marketserver.NewStore(t.TempDir(), p)
+	serverCH := &fakeHistoricalCH{}
+	catalog, _ := marketserver.OpenHistoryCatalog(t.TempDir() + "/history.db")
+	defer catalog.Close()
+	from := time.Now().UTC().AddDate(0, 0, -60).Truncate(24 * time.Hour)
+	spec := market.DatasetSpec{Symbols: []string{"AAPL"}, Interval: "1m", From: from, To: from.Add(time.Minute), Session: market.RegularSession, Adjustment: market.SplitAdjusted}
+	body, _ := json.Marshal(map[string]any{"spec": spec})
+	recorder := httptest.NewRecorder()
+	handler := (&marketserver.HTTP{
+		Store: store, DataVersion: "retention-v1", ClickHouseEnabled: true,
+		ClickHouse: serverCH, HistoryCatalog: catalog, HistoryRetention: 30 * 24 * time.Hour,
+	}).Handler()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/history/bars", bytes.NewReader(body)))
+	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"source":"provider"`)) {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	serverCH.mu.Lock()
+	writes := serverCH.writes
+	serverCH.mu.Unlock()
+	if writes != 0 {
+		t.Fatalf("expired range wrote to ClickHouse: %d", writes)
 	}
 }
 

@@ -125,7 +125,7 @@ func main() {
 		log.Fatal(err)
 	}
 	defer historyCatalog.Close()
-	go historyCatalog.RunCleanup(ctx)
+	go historyCatalog.RunCleanup(ctx, cfg.ClickHouseRetention)
 	go store.RunCleanup(ctx, cfg.DatasetTTL)
 	var sink live.Sink = live.NopSink{}
 	var clickhouse *storage.ClickHouseSink
@@ -153,7 +153,7 @@ func main() {
 		if cfg.MarketHistorySyncEnabled {
 			go func() {
 				for {
-					if err := store.SyncRecentUniverse(ctx, ch, historyCatalog, cfg.DataVersion, 2); err != nil && ctx.Err() == nil {
+					if err := store.SyncRecentUniverse(ctx, ch, historyCatalog, cfg.DataVersion, 2, cfg.EmptyCoverageTTL); err != nil && ctx.Err() == nil {
 						log.Printf("market-history sync: %v", err)
 					}
 					select {
@@ -206,7 +206,7 @@ func main() {
 	}
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           (&marketserver.HTTP{Store: store, Token: cfg.BearerToken, Access: auth, Limiter: limiter, Watchlist: cfg.Watchlist, Live: hub, Usage: usage, ProviderStatus: providerStatus, ClickHouseEnabled: cfg.ClickHouseEnabled, ClickHouse: historicalClickHouse, HistoryCatalog: historyCatalog, DataVersion: cfg.DataVersion, EmptyCoverageTTL: cfg.EmptyCoverageTTL}).Handler(),
+		Handler:           (&marketserver.HTTP{Store: store, Token: cfg.BearerToken, Access: auth, Limiter: limiter, Watchlist: cfg.Watchlist, Live: hub, Usage: usage, ProviderStatus: providerStatus, ClickHouseEnabled: cfg.ClickHouseEnabled, ClickHouse: historicalClickHouse, HistoryCatalog: historyCatalog, DataVersion: cfg.DataVersion, EmptyCoverageTTL: cfg.EmptyCoverageTTL, HistoryRetention: cfg.ClickHouseRetention}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    1 << 20,
