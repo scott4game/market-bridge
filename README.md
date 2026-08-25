@@ -212,13 +212,13 @@ docker compose up -d
 
 ### 交互式 K 线与公式指标
 
-go-client 内置并自行托管 KLineChart `10.0.2`，页面运行时不依赖外部 CDN。图表支持鼠标滚轮缩放、拖动平移、十字光标和 OHLC 提示；`1m` 周期会继续接收 Longbridge 实时 bar，其他周期只展示历史数据，避免混入错误周期的数据。
+go-client 内置并自行托管 KLineChart `10.0.2`，页面运行时不依赖外部 CDN。图表支持鼠标滚轮缩放、拖动平移、十字光标和 OHLC 提示；`1m` 周期会继续接收 Longbridge 实时 bar，其他周期只展示历史数据，避免混入错误周期的数据。页面不再要求选择起止时间：初次按周期分块加载，向左拖动时继续补更早历史，至少可追溯两年。Massive Stocks Basic 和 Mock 在两年边界停止；升级版 Massive、港股/A 股和 Binance 会继续加载，直到上游返回空数据。REST、SDK 和 CLI 的 `from/to` 参数保持不变。
 
 页面的“管理指标”支持创建主图或副图公式，直接粘贴通达信技术指标语法，先执行参数识别和当前 K 线预览，再保存。指标在独立 Web Worker 中计算，单次最多 250000 根 K 线并有 10 秒超时，不会阻塞图表交互。系统最多保存 50 个个人指标，同时启用 12 个；公式最大 64 KiB、参数最多 32 个。
 
 NX 牛熊分界线和 MX MACD 背离作为内置模板随每个团队账号自动创建。模板公式只读，但可以修改参数、开关显示，或点击“复制”生成可编辑的个人公式。配置通过 `GET/POST/PUT/DELETE /v1/me/indicators` 保存到 go-server，按账号隔离；go-client 会在浏览器中保留最近一次配置，在服务端暂时不可用时只读回退。API Key 需要 `indicators:read` / `indicators:write` scope，升级时现有角色 Key 会自动补齐。
 
-公式支持常见行情字段、算术与逻辑表达式、EMA/MA/REF/LLV/HHV/BARSLAST 等技术函数，以及 `STICKLINE`、`DRAWTEXT` 等绘图语句。含 `REFX` 等未来函数时界面会醒目标注“历史信号可能重绘”。跨标的、选股、交易下单和公式中的外部数据源不在本功能范围；缺少参数或预览 K 线时不会保存。指标只根据当前加载范围计算，长周期 EMA 与背离指标应保留足够的预热数据。
+公式支持常见行情字段、算术与逻辑表达式、EMA/MA/REF/LLV/HHV/BARSLAST 等技术函数，以及 `STICKLINE`、`DRAWTEXT` 等绘图语句。含 `REFX` 等未来函数时界面会醒目标注“历史信号可能重绘”。跨标的、选股、交易下单和公式中的外部数据源不在本功能范围；缺少参数或预览 K 线时不会保存。指标根据当前已经加载的范围计算，向左加载历史后会用合并、去重后的全部 K 线重新计算。
 
 KLineChart 使用 Apache License 2.0；公式解析器基于固定提交的 formula-ts（MIT）并包含项目兼容补丁。版本、许可证和修改说明记录在 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
 

@@ -17,6 +17,25 @@ type fakeUsageReader struct{ snapshot provider.UsageSnapshot }
 
 type factorProvider struct{ version string }
 
+type pinnedDatasetProvider struct {
+	version string
+	used    chan string
+}
+
+func (p *pinnedDatasetProvider) Name() string        { return "pinned-test" }
+func (p *pinnedDatasetProvider) DataVersion() string { return "bars-v1" }
+func (p *pinnedDatasetProvider) Bars(context.Context, market.DatasetSpec) ([]market.Bar, error) {
+	p.used <- "unpinned"
+	return nil, nil
+}
+func (p *pinnedDatasetProvider) ForwardAdjustmentFactors(_ context.Context, symbol string) (market.ForwardFactors, error) {
+	return market.ForwardFactors{Symbol: symbol, Mode: market.ForwardAdjusted, AsOf: "2026-08-25", Version: p.version}, nil
+}
+func (p *pinnedDatasetProvider) BarsWithForwardFactors(_ context.Context, _ market.DatasetSpec, curves map[string]market.ForwardFactors) ([]market.Bar, error) {
+	p.used <- curves["SNDK"].Version
+	return nil, nil
+}
+
 func (p *factorProvider) Name() string        { return "factor-test" }
 func (p *factorProvider) DataVersion() string { return "bars-v1" }
 func (p *factorProvider) Bars(context.Context, market.DatasetSpec) ([]market.Bar, error) {
@@ -108,5 +127,33 @@ func TestForwardAdjustmentEndpointIsProtectedAndVersioned(t *testing.T) {
 	}
 	if first.DataVersion == second.DataVersion || !strings.Contains(first.DataVersion, "factor-v1") || !strings.Contains(second.DataVersion, "factor-v2") {
 		t.Fatalf("first=%q second=%q", first.DataVersion, second.DataVersion)
+	}
+}
+
+func TestDatasetBuildUsesFactorsCapturedDuringAdmission(t *testing.T) {
+	p := &pinnedDatasetProvider{version: "factor-v1", used: make(chan string, 1)}
+	store, err := NewStore(t.TempDir(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	spec := market.DatasetSpec{Symbols: []string{"SNDK"}, Interval: "1d", From: now.Add(-24 * time.Hour), To: now, Session: market.RegularSession, Adjustment: market.ForwardAdjusted}
+	status, err := store.Ensure(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.version = "factor-v2"
+	select {
+	case used := <-p.used:
+		if used != "factor-v1" {
+			t.Fatalf("build used %q", used)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("build did not start")
+	}
+	waitForState(t, store, status.DatasetID, "ready")
+	manifest, err := store.Manifest(status.DatasetID)
+	if err != nil || !strings.Contains(manifest.DataVersion, "factor-v1") {
+		t.Fatalf("manifest=%+v err=%v", manifest, err)
 	}
 }

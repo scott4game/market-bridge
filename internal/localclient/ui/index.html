@@ -13,8 +13,6 @@
     <label>股市<select id="market"><option value="us">美股</option><option value="hk">港股</option><option value="cn">A股</option></select></label>
     <label>标的<input id="symbol" value="AAPL" list="symbol-options" placeholder="输入代码搜索，例如 SNDK" autocomplete="off"><datalist id="symbol-options"></datalist><small id="symbol-options-state">正在加载美股代码</small></label>
     <label>周期<select id="interval"><option>1m</option><option>3m</option><option>5m</option><option>10m</option><option>15m</option><option>30m</option><option>1h</option><option>2h</option><option>3h</option><option>4h</option><option selected>1d</option><option>1w</option><option>1mo</option><option>1y</option></select></label>
-    <label>开始<input id="from" type="datetime-local"></label>
-    <label>结束<input id="to" type="datetime-local"></label>
     <button>加载</button>
   </form>
   <section class="meta"><span id="source">缓存：—</span><span id="count">Bars：—</span><span id="updated">更新：—</span><span>滚轮缩放 · 拖动平移 · 悬停查看 OHLC</span></section>
@@ -49,6 +47,7 @@
   <pre id="error"></pre>
 </main>
 <script src="/klinecharts.min.js"></script>
+<script src="/history.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

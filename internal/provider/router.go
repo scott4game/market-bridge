@@ -96,13 +96,23 @@ func (r *Router) Describe(spec market.DatasetSpec) (Description, error) {
 }
 
 func (r *Router) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar, error) {
+	return r.BarsWithForwardFactors(ctx, spec, nil)
+}
+
+func (r *Router) BarsWithForwardFactors(ctx context.Context, spec market.DatasetSpec, curves map[string]market.ForwardFactors) ([]market.Bar, error) {
 	routes, err := r.route(spec)
 	if err != nil {
 		return nil, err
 	}
 	var bars []market.Bar
 	for _, route := range routes {
-		part, err := route.provider.Bars(ctx, route.spec)
+		childCurves := make(map[string]market.ForwardFactors, len(route.spec.Symbols))
+		for _, symbol := range route.spec.Symbols {
+			if curve, ok := curves[symbol]; ok {
+				childCurves[symbol] = curve
+			}
+		}
+		part, err := BarsWithForwardFactors(ctx, route.provider, route.spec, childCurves)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", route.provider.Name(), err)
 		}

@@ -40,7 +40,7 @@ GO_SERVER_LIVE_PROVIDERS=longbridge,binance
 
 一个 dataset 不能混合证券与币圈代码。页面对美股显式发送 `forward_adjusted`；API 为兼容已有调用，省略 adjustment 或传 `auto` 时，美股仍解析为 `split_adjusted`。港股/A 股的 `auto` 为 `forward_adjusted`，Binance 为 `raw`。
 
-美股 `regular` 的 `1h/2h/3h/4h` 统一从 Massive 30 分钟母线按纽约时间 `09:30` 锚定聚合，最后不足完整周期的 K 线仍返回。美股 `forward_adjusted` 使用拆股调整行情叠加累计分红因子；Stocks Basic 只支持最近两年，超出范围需升级 Massive 套餐或改用 `split_adjusted`。
+美股 `regular` 的 `1h/2h/3h/4h` 统一从 Massive 30 分钟母线按纽约时间 `09:30` 锚定聚合，最后不足完整周期的 K 线仍返回。美股 `forward_adjusted` 使用拆股调整行情叠加累计分红因子；Stocks Basic 只支持最近两年，超出范围需升级 Massive 套餐或改用 `split_adjusted`。浏览器不提供起止时间控件，会按周期分块加载并在左拖时补齐至少两年；REST 接口仍要求显式 `from/to`。
 
 ## 2. Docker Compose 运维
 

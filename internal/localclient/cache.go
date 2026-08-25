@@ -455,7 +455,7 @@ func (c *Cache) semanticCacheVersion(ctx context.Context, spec market.DatasetSpe
 	}
 	versions := make([]string, 0, len(spec.Symbols))
 	for _, symbol := range spec.Symbols {
-		versions = append(versions, curves[symbol].Version)
+		versions = append(versions, symbol+"="+curves[symbol].Version)
 	}
 	return market.SemanticDataVersion(spec, base, time.Now(), versions...), nil
 }

@@ -41,6 +41,12 @@ type buildJob struct {
 	userID       string
 	providerName string
 	dataVersion  string
+	factorCurves map[string]market.ForwardFactors
+}
+
+type datasetDescription struct {
+	provider.Description
+	factorCurves map[string]market.ForwardFactors
 }
 
 var ErrBuildQuota = errors.New("concurrent dataset build quota exceeded")
@@ -97,11 +103,11 @@ func (s *Store) EnsureForAdmission(ctx context.Context, spec market.DatasetSpec,
 	if err != nil {
 		return market.DatasetStatus{}, err
 	}
-	description, err := s.describe(ctx, spec)
+	described, err := s.describeDataset(ctx, spec)
 	if err != nil {
 		return market.DatasetStatus{}, err
 	}
-	id, err := spec.Hash(market.SchemaVersion, description.DataVersion)
+	id, err := spec.Hash(market.SchemaVersion, described.DataVersion)
 	if err != nil {
 		return market.DatasetStatus{}, err
 	}
@@ -130,7 +136,7 @@ func (s *Store) EnsureForAdmission(ctx context.Context, spec market.DatasetSpec,
 	s.active[userID]++
 	s.mu.Unlock()
 	select {
-	case s.queue <- buildJob{id: id, spec: spec, userID: userID, providerName: description.Name, dataVersion: description.DataVersion}:
+	case s.queue <- buildJob{id: id, spec: spec, userID: userID, providerName: described.Name, dataVersion: described.DataVersion, factorCurves: described.factorCurves}:
 	default:
 		s.mu.Lock()
 		delete(s.tasks, id)
@@ -183,23 +189,30 @@ func (s *Store) ForwardAdjustmentFactors(ctx context.Context, symbol string) (ma
 }
 
 func (s *Store) describe(ctx context.Context, spec market.DatasetSpec) (provider.Description, error) {
+	described, err := s.describeDataset(ctx, spec)
+	return described.Description, err
+}
+
+func (s *Store) describeDataset(ctx context.Context, spec market.DatasetSpec) (datasetDescription, error) {
 	description, err := provider.Describe(s.provider, spec)
 	if err != nil {
-		return provider.Description{}, err
+		return datasetDescription{}, err
 	}
 	if !market.IsUSForwardAdjusted(spec) {
-		return description, nil
+		return datasetDescription{Description: description}, nil
 	}
 	versions := make([]string, 0, len(spec.Symbols))
+	curves := make(map[string]market.ForwardFactors, len(spec.Symbols))
 	for _, symbol := range spec.Symbols {
 		curve, err := s.ForwardAdjustmentFactors(ctx, symbol)
 		if err != nil {
-			return provider.Description{}, err
+			return datasetDescription{}, err
 		}
-		versions = append(versions, curve.Version)
+		curves[symbol] = curve
+		versions = append(versions, symbol+"="+curve.Version)
 	}
 	description.DataVersion = market.SemanticDataVersion(spec, description.DataVersion, time.Now(), versions...)
-	return description, nil
+	return datasetDescription{Description: description, factorCurves: curves}, nil
 }
 
 func (s *Store) Universe(ctx context.Context) ([]string, error) {
@@ -322,7 +335,7 @@ func (s *Store) generate(ctx context.Context, job buildJob) {
 		s.failedAt[id] = time.Now()
 		s.mu.Unlock()
 	}
-	bars, err := s.provider.Bars(ctx, spec)
+	bars, err := provider.BarsWithForwardFactors(ctx, s.provider, spec, job.factorCurves)
 	if err != nil {
 		fail(err)
 		return

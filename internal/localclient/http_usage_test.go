@@ -21,12 +21,14 @@ func TestEmbeddedKLineChartAssets(t *testing.T) {
 		want string
 	}{
 		{path: "/", want: "/klinecharts.min.js"},
+		{path: "/", want: "/history.js"},
 		{path: "/", want: "管理指标"},
 		{path: "/", want: "WebSocket 实时"},
 		{path: "/", want: "symbol-options"},
 		{path: "/", want: "<label>股市"},
 		{path: "/app.js", want: "applyFormulaIndicators"},
 		{path: "/app.js", want: "loadSymbolOptions"},
+		{path: "/history.js", want: "MAX_BARS_PER_REQUEST"},
 		{path: "/formula-worker.js", want: "Market Bridge TDX formula worker"},
 		{path: "/klinecharts.min.js", want: "KLineChart v10.0.2"},
 		{path: "/klinecharts.LICENSE.txt", want: "Apache License"},
@@ -40,6 +42,20 @@ func TestEmbeddedKLineChartAssets(t *testing.T) {
 		if recorder.Code != http.StatusOK || !strings.Contains(string(body), test.want) {
 			t.Fatalf("path=%s status=%d missing=%q", test.path, recorder.Code, test.want)
 		}
+	}
+}
+
+func TestKLinePageUsesLazyHistoryWithoutDateControls(t *testing.T) {
+	raw, err := ui.ReadFile("ui/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(raw)
+	if strings.Contains(source, `id="from"`) || strings.Contains(source, `id="to"`) {
+		t.Fatal("date controls remain in page")
+	}
+	if !strings.Contains(source, `/history.js`) {
+		t.Fatal("history policy is not loaded")
 	}
 }
 
@@ -105,6 +121,37 @@ func TestForwardFactorsAreCachedUntilNextNewYorkDayAndVersionCacheKeys(t *testin
 	}
 	if requests != 2 || third == first || !strings.Contains(third, factorVersion) {
 		t.Fatalf("requests=%d first=%q third=%q", requests, first, third)
+	}
+}
+
+func TestForwardFactorCacheVersionBindsVersionsToSymbols(t *testing.T) {
+	versions := map[string]string{"AAPL": "factor-a", "SNDK": "factor-b"}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		symbol := strings.TrimPrefix(r.URL.Path, "/v1/market-history/adjustments/")
+		_ = json.NewEncoder(w).Encode(market.ForwardFactors{Symbol: symbol, Mode: market.ForwardAdjusted, AsOf: "2026-08-26", Version: versions[symbol]})
+	}))
+	defer upstream.Close()
+	cache, err := NewCache(config.Client{CacheDir: t.TempDir(), ServerURL: upstream.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cache.Close()
+	now := time.Now()
+	spec := market.DatasetSpec{Symbols: []string{"AAPL", "SNDK"}, Interval: "1d", From: now.Add(-time.Hour), To: now, Session: market.RegularSession, Adjustment: market.ForwardAdjusted}
+	first, err := cache.semanticCacheVersion(context.Background(), spec, "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	versions["AAPL"], versions["SNDK"] = versions["SNDK"], versions["AAPL"]
+	cache.factorMu.Lock()
+	cache.factorCache = map[string]cachedForwardFactors{}
+	cache.factorMu.Unlock()
+	second, err := cache.semanticCacheVersion(context.Background(), spec, "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatalf("symbol/version swap collided: %q", first)
 	}
 }
 

@@ -14,7 +14,7 @@ func TestUSForwardAdjustmentIsAcceptedAndVersionedDaily(t *testing.T) {
 		t.Fatal(err)
 	}
 	version := SemanticDataVersion(normalized, "v1", time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC))
-	if version == "v1" || !IsUSForwardAdjusted(normalized) {
+	if version == "v1" || !strings.Contains(version, "us-qfq-v3") || !IsUSForwardAdjusted(normalized) {
 		t.Fatalf("version=%q normalized=%+v", version, normalized)
 	}
 }

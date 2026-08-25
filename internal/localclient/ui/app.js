@@ -16,6 +16,8 @@ let universeSymbols = []
 const wsMonitor = { state: 'disabled', symbol: '', interval: '', count: 0, connectedAt: 0, lastMessageAt: 0, lastType: '', detail: '实时推送目前仅支持 1m 周期' }
 let activeQuery = null
 let lastBars = []
+let providerStatus = null
+let queryGeneration = 0
 let cloudIndicators = []
 let selectedIndicator = null
 let activeFormulaCharts = []
@@ -158,6 +160,7 @@ async function refreshAccount() {
     $('account-live').textContent = `连接 ${usage.live.connections} / ${usage.quotas.live_connections}`
     $('account-symbols').textContent = `标的 ${usage.live.symbols} / ${usage.quotas.live_symbols}`
     const massive = providers.massive || {}
+    providerStatus = providers
     $('massive-status').textContent = massive.state || 'unknown'
     $('massive-plan').textContent = massive.plan || '—'
     const longbridge = providers.longbridge || {}
@@ -181,8 +184,10 @@ async function refreshAccount() {
     $('watchlist-symbols').value = (watchlist.symbols || []).join(',')
     $('watchlist-state').textContent = `已收藏 ${(watchlist.symbols || []).length} / ${watchlist.max_symbols ?? usage.quotas.live_symbols} · 不自动订阅`
     if (!socket || socket.readyState !== WebSocket.OPEN) setStatus('账号在线', 'ok')
+    return providers
   } catch (error) {
     setStatus('账号状态不可用', 'bad')
+    return null
   }
 }
 
@@ -479,19 +484,6 @@ function periodToInterval(period) {
   return `${period.span}${suffixes[period.type] || 'd'}`
 }
 
-function localDateTimeValue(date) {
-  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
-}
-
-function monthsAgo(date, months) {
-  const result = new Date(date)
-  const day = result.getDate()
-  result.setDate(1)
-  result.setMonth(result.getMonth() - months)
-  result.setDate(Math.min(day, new Date(result.getFullYear(), result.getMonth() + 1, 0).getDate()))
-  return result
-}
-
 function marketDefaults(symbol) {
   const upper = symbol.toUpperCase()
   if (upper.endsWith('.BINANCE')) return { session: 'continuous', adjustment: 'raw', market: 'Binance Spot', timezone: 'UTC' }
@@ -593,31 +585,51 @@ function startLive(symbol, period, callback) {
 }
 
 chart.setDataLoader({
-  async getBars({ type, symbol, period, callback }) {
-    if (type !== 'init' || !activeQuery) {
+  async getBars({ type, timestamp, symbol, period, callback }) {
+    if ((type !== 'init' && type !== 'forward') || !activeQuery) {
       callback([], false)
+      return
+    }
+    const generation = activeQuery.generation
+    const interval = periodToInterval(period)
+    let range
+    if (type === 'init') {
+      range = window.marketHistory.initialRange(activeQuery.to, interval)
+    } else {
+      const upper = Math.min(Number(timestamp) || activeQuery.loadedFrom, activeQuery.loadedFrom)
+      range = window.marketHistory.olderRange(upper, interval, activeQuery.floor, activeQuery.allowBeyondFloor)
+    }
+    if (!range) {
+      callback([], { forward: false, backward: false })
       return
     }
     $('error').textContent = ''
     $('source').textContent = '缓存：加载中'
     try {
       const query = new URLSearchParams({
-        interval: periodToInterval(period),
-        from: activeQuery.from,
-        to: activeQuery.to,
+        interval,
+        from: new Date(range.from).toISOString(),
+        to: new Date(range.to).toISOString(),
         session: activeQuery.session,
         adjustment: activeQuery.adjustment
       })
       const data = await getJSON(`/v1/bars/${encodeURIComponent(symbol.ticker)}?${query}`)
+      if (!activeQuery || activeQuery.generation !== generation) {
+        callback([], false)
+        return
+      }
       const bars = (Array.isArray(data.bars) ? data.bars : []).map(normalizeBar).sort((a, b) => a.timestamp - b.timestamp)
-      lastBars = bars
-      callback(bars, false)
+      activeQuery.loadedFrom = Math.min(activeQuery.loadedFrom, range.from)
+      lastBars = window.marketHistory.mergeBars(lastBars, bars)
+      const hasOlder = window.marketHistory.canRequestOlder(range.from, activeQuery.floor, activeQuery.allowBeyondFloor, bars.length)
+      callback(bars, { forward: hasOlder, backward: false })
       $('source').textContent = `缓存：${data.source}`
-      $('count').textContent = `Bars：${bars.length}`
+      $('count').textContent = `Bars：${lastBars.length}`
       $('updated').textContent = `更新：${new Date().toLocaleTimeString()}`
-      if (bars.length) setTimeout(() => chart.scrollToRealTime(), 0)
+      if (type === 'init' && bars.length) setTimeout(() => chart.scrollToRealTime(), 0)
     } catch (error) {
       callback([], false)
+      if (!activeQuery || activeQuery.generation !== generation) return
       $('error').textContent = error.message
       $('source').textContent = '缓存：加载失败'
     }
@@ -897,11 +909,6 @@ async function analyzeEditor() {
   return result
 }
 
-const now = new Date()
-const past = monthsAgo(now, 24)
-$('from').value = localDateTimeValue(past)
-$('to').value = localDateTimeValue(now)
-
 $('manage-indicators').addEventListener('click', () => { $('indicator-manager').hidden = !$('indicator-manager').hidden })
 $('close-indicators').addEventListener('click', () => { $('indicator-manager').hidden = true })
 $('new-indicator').addEventListener('click', () => selectIndicator(null))
@@ -961,17 +968,26 @@ $('query').addEventListener('submit', event => {
     const symbol = normalizeSelectedMarketSymbol($('symbol').value)
     if (!symbol) throw new Error('请输入股票代码')
     $('symbol').value = symbol
-    const from = new Date($('from').value)
-    const to = new Date($('to').value)
-    if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) || from >= to) throw new Error('请选择有效的开始和结束时间')
     const interval = $('interval').value
     const defaults = marketDefaults(symbol)
-    activeQuery = { from: from.toISOString(), to: to.toISOString(), interval, session: defaults.session, adjustment: defaults.adjustment }
+    const to = Date.now()
+    const initial = window.marketHistory.initialRange(to, interval)
+    activeQuery = {
+      to,
+      floor: initial.floor,
+      loadedFrom: to,
+      allowBeyondFloor: window.marketHistory.allowHistoryBeyondTwoYears(symbol, providerStatus),
+      interval,
+      session: defaults.session,
+      adjustment: defaults.adjustment,
+      generation: ++queryGeneration
+    }
+    lastBars = []
     $('source').textContent = `市场：${defaults.market} · ${defaults.timezone} · 加载中`
     chart.setTimezone(defaults.timezone)
     chart.setPeriod(intervalToPeriod(interval))
-	const crypto = symbol.endsWith('.BINANCE')
-	chart.setSymbol({ ticker: symbol, pricePrecision: crypto ? 8 : 4, volumePrecision: crypto ? 8 : 0 })
+    const crypto = symbol.endsWith('.BINANCE')
+    chart.setSymbol({ ticker: symbol, pricePrecision: crypto ? 8 : 4, volumePrecision: crypto ? 8 : 0 })
     chart.resetData()
   } catch (error) {
     $('error').textContent = error.message
@@ -981,7 +997,12 @@ $('query').addEventListener('submit', event => {
 resetFormulaWorker()
 loadIndicators().catch(error => { $('indicator-state').textContent = error.message })
 loadSymbolOptions()
-refreshAccount()
 setInterval(refreshAccount, 10000)
 setInterval(renderWSStatus, 1000)
-$('query').requestSubmit()
+
+async function bootstrap() {
+  await refreshAccount()
+  $('query').requestSubmit()
+}
+
+bootstrap()

@@ -18,6 +18,19 @@ func massiveTestSpec() market.DatasetSpec {
 	return market.DatasetSpec{Symbols: []string{"AAPL"}, Interval: "1m", From: from, To: from.Add(time.Minute), Session: market.RegularSession, Adjustment: market.SplitAdjusted}
 }
 
+func TestMockSupportsUSForwardAdjustment(t *testing.T) {
+	mock := &Mock{}
+	curve, err := mock.ForwardAdjustmentFactors(context.Background(), "sndk.us")
+	if err != nil || curve.Symbol != "SNDK" || curve.Version == "" || len(curve.Factors) != 0 {
+		t.Fatalf("curve=%+v err=%v", curve, err)
+	}
+	spec := massiveTestSpec()
+	spec.Adjustment = market.ForwardAdjusted
+	if _, err := mock.Bars(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMassiveReportsHTTPStatusBeforeJSONDecode(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
@@ -119,10 +132,10 @@ func TestMassiveDividendFactorsPaginateAndAccumulate(t *testing.T) {
 			t.Fatalf("query=%s", r.URL.RawQuery)
 		}
 		if requests == 1 {
-			_ = json.NewEncoder(w).Encode(map[string]any{"next_url": server.URL + "/page/2", "results": []map[string]any{{"ex_dividend_date": firstDate, "historical_adjustment_factor": 0.9}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "OK", "next_url": server.URL + "/page/2", "results": []map[string]any{{"ex_dividend_date": firstDate, "historical_adjustment_factor": 0.9}}})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"results": []map[string]any{{"ex_dividend_date": secondDate, "historical_adjustment_factor": 0.8}}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "OK", "results": []map[string]any{{"ex_dividend_date": secondDate, "historical_adjustment_factor": 0.8}}})
 	}))
 	defer server.Close()
 	curve, err := (&Massive{APIKey: "test", BaseURL: server.URL, HTTP: server.Client()}).ForwardAdjustmentFactors(context.Background(), "sndk.us")
@@ -140,7 +153,7 @@ func TestMassiveDividendFactorsPaginateAndAccumulate(t *testing.T) {
 func TestMassiveDividendFactorsRejectCrossOriginAndReportHTTPStatus(t *testing.T) {
 	t.Run("cross_origin", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			fmt.Fprint(w, `{"next_url":"https://example.com/page/2","results":[]}`)
+			fmt.Fprint(w, `{"status":"OK","next_url":"https://example.com/page/2","results":[]}`)
 		}))
 		defer server.Close()
 		_, err := (&Massive{APIKey: "test", BaseURL: server.URL, HTTP: server.Client()}).ForwardAdjustmentFactors(context.Background(), "SNDK")
@@ -161,6 +174,46 @@ func TestMassiveDividendFactorsRejectCrossOriginAndReportHTTPStatus(t *testing.T
 	})
 }
 
+func TestMassiveDividendFactorsRequireExplicitLogicalSuccess(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "logical_error", body: `{"status":"ERROR","error":"not entitled","results":[]}`, want: "not entitled"},
+		{name: "missing_status", body: `{"results":[]}`, want: "unexpected status"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				fmt.Fprint(w, test.body)
+			}))
+			defer server.Close()
+			_, err := (&Massive{APIKey: "test", BaseURL: server.URL, HTTP: server.Client()}).ForwardAdjustmentFactors(context.Background(), "SNDK")
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("err=%v", err)
+			}
+		})
+	}
+}
+
+func TestMassiveForwardAdjustmentCanUsePinnedFactors(t *testing.T) {
+	location, _ := time.LoadLocation("America/New_York")
+	day := time.Date(2026, 8, 24, 9, 30, 0, 0, location)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/stocks/v1/dividends" {
+			t.Fatal("pinned build fetched a new factor curve")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "OK", "results": []map[string]any{{"o": 100, "h": 100, "l": 100, "c": 100, "v": 10, "t": day.UnixMilli()}}})
+	}))
+	defer server.Close()
+	spec := market.DatasetSpec{Symbols: []string{"SNDK"}, Interval: "1d", From: day.Add(-time.Hour).UTC(), To: day.AddDate(0, 0, 1).UTC(), Session: market.RegularSession, Adjustment: market.ForwardAdjusted}
+	curve := market.ForwardFactors{Symbol: "SNDK", Mode: market.ForwardAdjusted, AsOf: "2026-08-25", Version: "pinned-v1"}
+	bars, err := (&Massive{APIKey: "test", BaseURL: server.URL, HTTP: server.Client()}).BarsWithForwardFactors(context.Background(), spec, map[string]market.ForwardFactors{"SNDK": curve})
+	if err != nil || len(bars) != 1 {
+		t.Fatalf("bars=%+v err=%v", bars, err)
+	}
+}
+
 func TestMassiveWeeklyForwardAdjustmentAppliesBeforeAggregation(t *testing.T) {
 	location, _ := time.LoadLocation("America/New_York")
 	monday := time.Date(2026, 8, 17, 9, 30, 0, 0, location)
@@ -168,7 +221,7 @@ func TestMassiveWeeklyForwardAdjustmentAppliesBeforeAggregation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/stocks/v1/dividends":
-			_ = json.NewEncoder(w).Encode(map[string]any{"results": []map[string]any{{"ex_dividend_date": wednesday.Format("2006-01-02"), "historical_adjustment_factor": 0.5}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "OK", "results": []map[string]any{{"ex_dividend_date": wednesday.Format("2006-01-02"), "historical_adjustment_factor": 0.5}}})
 		case strings.Contains(r.URL.Path, "/range/1/day/"):
 			var results []map[string]any
 			for day := 0; day < 5; day++ {
@@ -187,6 +240,53 @@ func TestMassiveWeeklyForwardAdjustmentAppliesBeforeAggregation(t *testing.T) {
 	}
 	if len(bars) != 1 || bars[0].Open != market.DecimalFromFloat(50) || bars[0].High != market.DecimalFromFloat(100) || bars[0].Close != market.DecimalFromFloat(100) || bars[0].Volume != 50 || bars[0].Timestamp.In(location).Day() != monday.Day() {
 		t.Fatalf("bars=%+v", bars)
+	}
+}
+
+func TestMassiveWeeklyForwardAdjustmentDoesNotReturnPartialFirstWeek(t *testing.T) {
+	location, _ := time.LoadLocation("America/New_York")
+	monday := time.Date(2026, 8, 17, 9, 30, 0, 0, location)
+	from := monday.AddDate(0, 0, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/stocks/v1/dividends":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "OK", "results": []any{}})
+		case strings.Contains(r.URL.Path, "/range/1/day/"):
+			parts := strings.Split(r.URL.Path, "/")
+			requestedFrom, err := time.ParseDuration(parts[len(parts)-2] + "ms")
+			if err != nil || requestedFrom.Milliseconds() > monday.UnixMilli() {
+				t.Fatalf("daily fetch did not expand to period start: %s", r.URL.Path)
+			}
+			var results []map[string]any
+			for week := 0; week < 2; week++ {
+				for day := 0; day < 5; day++ {
+					ts := monday.AddDate(0, 0, week*7+day)
+					results = append(results, map[string]any{"o": 100 + week, "h": 100 + week, "l": 100 + week, "c": 100 + week, "v": 10, "t": ts.UnixMilli()})
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "OK", "results": results})
+		default:
+			t.Fatalf("unexpected request %s", r.URL.String())
+		}
+	}))
+	defer server.Close()
+	spec := market.DatasetSpec{Symbols: []string{"SNDK"}, Interval: "1w", From: from.UTC(), To: monday.AddDate(0, 0, 14).UTC(), Session: market.RegularSession, Adjustment: market.ForwardAdjusted}
+	bars, err := (&Massive{APIKey: "test", BaseURL: server.URL, HTTP: server.Client()}).Bars(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bars) != 1 || bars[0].Timestamp.In(location).Day() != monday.AddDate(0, 0, 7).Day() || bars[0].Open != market.DecimalFromFloat(101) {
+		t.Fatalf("bars=%+v", bars)
+	}
+}
+
+func TestStartOfUSCalendarPeriod(t *testing.T) {
+	location, _ := time.LoadLocation("America/New_York")
+	value := time.Date(2026, 8, 26, 12, 0, 0, 0, location)
+	for interval, want := range map[string]string{"1w": "2026-08-24", "1mo": "2026-08-01", "1y": "2026-01-01"} {
+		if got := startOfUSCalendarPeriod(value, interval, location).In(location).Format("2006-01-02"); got != want {
+			t.Fatalf("interval=%s got=%s want=%s", interval, got, want)
+		}
 	}
 }
 

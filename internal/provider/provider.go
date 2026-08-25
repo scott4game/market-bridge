@@ -37,6 +37,19 @@ type ForwardAdjustmentProvider interface {
 	ForwardAdjustmentFactors(context.Context, string) (market.ForwardFactors, error)
 }
 
+// ForwardFactorBarsProvider lets callers pin the exact corporate-action curves
+// used to identify and build a forward-adjusted dataset.
+type ForwardFactorBarsProvider interface {
+	BarsWithForwardFactors(context.Context, market.DatasetSpec, map[string]market.ForwardFactors) ([]market.Bar, error)
+}
+
+func BarsWithForwardFactors(ctx context.Context, p Provider, spec market.DatasetSpec, curves map[string]market.ForwardFactors) ([]market.Bar, error) {
+	if builder, ok := p.(ForwardFactorBarsProvider); ok {
+		return builder.BarsWithForwardFactors(ctx, spec, curves)
+	}
+	return p.Bars(ctx, spec)
+}
+
 func ForwardAdjustmentFactors(ctx context.Context, p Provider, symbol string) (market.ForwardFactors, error) {
 	adjuster, ok := p.(ForwardAdjustmentProvider)
 	if !ok {
@@ -109,6 +122,24 @@ func (m *Mock) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar,
 	return out, nil
 }
 
+func (m *Mock) ForwardAdjustmentFactors(_ context.Context, symbol string) (market.ForwardFactors, error) {
+	normalized, venue, err := market.NormalizeSymbol(symbol)
+	if err != nil || venue != market.VenueUS {
+		return market.ForwardFactors{}, fmt.Errorf("forward adjustment requires a US symbol")
+	}
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return market.ForwardFactors{}, err
+	}
+	asOf := time.Now().In(location).Format("2006-01-02")
+	return market.ForwardFactors{
+		Symbol:  normalized,
+		Mode:    market.ForwardAdjusted,
+		AsOf:    asOf,
+		Version: fmt.Sprintf("mock-qfq-v1:%s:%s", normalized, asOf),
+	}, nil
+}
+
 type Massive struct {
 	APIKey, BaseURL, Version string
 	PlanName                 string
@@ -138,6 +169,14 @@ func (m *Massive) Describe(spec market.DatasetSpec) (Description, error) {
 }
 
 func (m *Massive) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar, error) {
+	return m.bars(ctx, spec, nil)
+}
+
+func (m *Massive) BarsWithForwardFactors(ctx context.Context, spec market.DatasetSpec, curves map[string]market.ForwardFactors) ([]market.Bar, error) {
+	return m.bars(ctx, spec, curves)
+}
+
+func (m *Massive) bars(ctx context.Context, spec market.DatasetSpec, pinnedCurves map[string]market.ForwardFactors) ([]market.Bar, error) {
 	if m.APIKey == "" {
 		return nil, fmt.Errorf("MASSIVE_API_KEY is required")
 	}
@@ -166,6 +205,7 @@ func (m *Massive) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.B
 	}
 	if market.IsUSForwardAdjusted(spec) && (target == "1w" || target == "1mo" || target == "1y") {
 		fetchSpec.Interval = "1d"
+		fetchSpec.From = startOfUSCalendarPeriod(spec.From, target, location)
 	}
 	bars, err := m.fetchBars(ctx, fetchSpec)
 	if err != nil {
@@ -174,9 +214,16 @@ func (m *Massive) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.B
 	if market.IsUSForwardAdjusted(spec) {
 		curves := make(map[string]market.ForwardFactors, len(spec.Symbols))
 		for _, symbol := range spec.Symbols {
-			curve, factorErr := m.ForwardAdjustmentFactors(ctx, symbol)
-			if factorErr != nil {
-				return nil, factorErr
+			curve, ok := pinnedCurves[symbol]
+			if !ok {
+				var factorErr error
+				curve, factorErr = m.ForwardAdjustmentFactors(ctx, symbol)
+				if factorErr != nil {
+					return nil, factorErr
+				}
+			}
+			if curve.Symbol != symbol || curve.Version == "" {
+				return nil, fmt.Errorf("invalid pinned forward-adjustment factors for %s", symbol)
 			}
 			curves[symbol] = curve
 		}
@@ -395,6 +442,8 @@ func (m *Massive) ForwardAdjustmentFactors(ctx context.Context, symbol string) (
 			return market.ForwardFactors{}, fmt.Errorf("massive dividends: status %d: %s", resp.StatusCode, message)
 		}
 		var payload struct {
+			Status  string `json:"status"`
+			Error   string `json:"error"`
 			NextURL string `json:"next_url"`
 			Results []struct {
 				Date   string       `json:"ex_dividend_date"`
@@ -404,10 +453,20 @@ func (m *Massive) ForwardAdjustmentFactors(ctx context.Context, symbol string) (
 		decoder := json.NewDecoder(bytes.NewReader(body))
 		decoder.UseNumber()
 		decodeErr := decoder.Decode(&payload)
-		finish(resp.StatusCode, decodeErr)
 		if decodeErr != nil {
+			finish(resp.StatusCode, decodeErr)
 			return market.ForwardFactors{}, decodeErr
 		}
+		if !strings.EqualFold(payload.Status, "OK") || strings.TrimSpace(payload.Error) != "" {
+			message := strings.TrimSpace(payload.Error)
+			if message == "" {
+				message = fmt.Sprintf("unexpected status %q", payload.Status)
+			}
+			logicalErr := fmt.Errorf("massive dividends: %s", message)
+			finish(resp.StatusCode, logicalErr)
+			return market.ForwardFactors{}, logicalErr
+		}
+		finish(resp.StatusCode, nil)
 		for _, item := range payload.Results {
 			if item.Date == "" || item.Factor == nil {
 				return market.ForwardFactors{}, fmt.Errorf("massive dividends returned an incomplete adjustment factor for %s", normalized)
@@ -427,7 +486,7 @@ func (m *Massive) ForwardAdjustmentFactors(ctx context.Context, symbol string) (
 	}
 	raw, _ := json.Marshal(curve.Factors)
 	digest := sha256.Sum256(raw)
-	curve.Version = fmt.Sprintf("massive-qfq-v2:%s:%x", curve.AsOf, digest[:8])
+	curve.Version = fmt.Sprintf("massive-qfq-v3:%s:%s:%x", normalized, curve.AsOf, digest[:8])
 	expiresAt := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, location)
 	m.factorMu.Lock()
 	if m.factorCache == nil {

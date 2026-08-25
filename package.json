@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "build:web": "esbuild web/formula-worker.js --bundle --format=iife --target=es2022 --outfile=internal/localclient/ui/formula-worker.js --banner:js=\"/* Market Bridge TDX formula worker; formula-ts MIT notices in THIRD_PARTY_NOTICES.md */\"",
-    "check:web": "node --check internal/localclient/ui/app.js && node --check internal/localclient/ui/formula-worker.js && node web/formula-worker.test.js"
+    "check:web": "node --check internal/localclient/ui/history.js && node --check internal/localclient/ui/app.js && node --check internal/localclient/ui/formula-worker.js && node web/history.test.js && node web/formula-worker.test.js"
   },
   "devDependencies": {
     "esbuild": "0.25.12"

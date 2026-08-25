@@ -120,6 +120,22 @@ func aggregateUSCalendar(input []market.Bar, target string, location *time.Locat
 	return output, nil
 }
 
+func startOfUSCalendarPeriod(value time.Time, target string, location *time.Location) time.Time {
+	local := value.In(location)
+	day := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, location)
+	switch target {
+	case "1w":
+		daysSinceMonday := (int(day.Weekday()) + 6) % 7
+		return day.AddDate(0, 0, -daysSinceMonday).UTC()
+	case "1mo":
+		return time.Date(local.Year(), local.Month(), 1, 0, 0, 0, 0, location).UTC()
+	case "1y":
+		return time.Date(local.Year(), time.January, 1, 0, 0, 0, 0, location).UTC()
+	default:
+		return value.UTC()
+	}
+}
+
 func filterRequestedRange(input []market.Bar, from, to time.Time) []market.Bar {
 	output := make([]market.Bar, 0, len(input))
 	for _, bar := range input {
