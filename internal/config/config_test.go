@@ -9,7 +9,7 @@ import (
 
 func TestServerFromEnv(t *testing.T) {
 	t.Setenv("GO_SERVER_LISTEN", ":27601")
-	t.Setenv("GO_SERVER_WATCHLIST", " AAPL, ,NVDA ")
+	t.Setenv("GO_SERVER_CLICKHOUSE_RETENTION", "")
 	t.Setenv("GO_SERVER_DATASET_TTL", "48h")
 	t.Setenv("GO_SERVER_DATASET_WORKERS", "4")
 	t.Setenv("GO_SERVER_DATASET_QUEUE_SIZE", "50")
@@ -34,11 +34,11 @@ func TestServerFromEnv(t *testing.T) {
 	if got.ClickHouseEnabled {
 		t.Fatal("ClickHouse must remain disabled unless explicitly enabled")
 	}
+	if got.ClickHouseRetention != 730*24*time.Hour {
+		t.Fatalf("unexpected server ClickHouse retention: %v", got.ClickHouseRetention)
+	}
 	if err := got.Validate(); err != nil {
 		t.Fatalf("disabled ClickHouse settings must be ignored: %v", err)
-	}
-	if !reflect.DeepEqual(got.Watchlist, []string{"AAPL", "NVDA"}) {
-		t.Fatalf("unexpected watchlist: %#v", got.Watchlist)
 	}
 	if got.MassivePlanName != "stocks_developer" || got.MassivePerMinute != 0 || got.MassivePerMonth != 10000 {
 		t.Fatalf("unexpected Massive usage settings: %+v", got)
@@ -78,13 +78,13 @@ func TestEffectiveLiveProviders(t *testing.T) {
 
 func TestClientFromEnv(t *testing.T) {
 	t.Setenv("GO_CLIENT_PARQUET_TTL", "168h")
+	t.Setenv("GO_CLIENT_CLICKHOUSE_RETENTION", "")
 	t.Setenv("GO_CLIENT_REDIS_ENABLED", "true")
 	t.Setenv("GO_CLIENT_REDIS_ADDRESS", "redis.example:6379")
 	t.Setenv("GO_CLIENT_REDIS_USERNAME", "bridge")
 	t.Setenv("GO_CLIENT_REDIS_PASSWORD", "secret")
 	t.Setenv("GO_CLIENT_REDIS_DB", "3")
 	t.Setenv("GO_CLIENT_REDIS_TTL", "12h")
-	t.Setenv("GO_CLIENT_MIRROR_WATCHLIST", " AAPL, NVDA ")
 	t.Setenv("GO_CLIENT_CLICKHOUSE_ENABLED", "true")
 	t.Setenv("GO_CLIENT_CLICKHOUSE_COMPLETED_BARS_ONLY", "false")
 	t.Setenv("CLICKHOUSE_URL", "http://clickhouse.example:8123")
@@ -99,23 +99,25 @@ func TestClientFromEnv(t *testing.T) {
 	if !got.RedisEnabled || got.RedisAddress != "redis.example:6379" || got.RedisUsername != "bridge" || got.RedisPassword != "secret" || got.RedisDB != 3 {
 		t.Fatalf("unexpected Redis settings: %+v", got)
 	}
-	if !got.ClickHouseEnabled || got.ClickHouseCompletedBarsOnly || !reflect.DeepEqual(got.MirrorWatchlist, []string{"AAPL", "NVDA"}) {
+	if !got.ClickHouseEnabled || got.ClickHouseCompletedBarsOnly {
 		t.Fatalf("unexpected client ClickHouse settings: %+v", got)
+	}
+	if got.ClickHouseRetention != 730*24*time.Hour {
+		t.Fatalf("unexpected client ClickHouse retention: %v", got.ClickHouseRetention)
 	}
 	if err := got.Validate(); err != nil {
 		t.Fatalf("unexpected client validation error: %v", err)
 	}
 }
 
-func TestClientClickHouseOptInValidation(t *testing.T) {
+func TestClientClickHouseDoesNotRequirePersistentLiveSymbols(t *testing.T) {
 	t.Setenv("GO_CLIENT_CLICKHOUSE_ENABLED", "true")
 	t.Setenv("CLICKHOUSE_URL", "http://clickhouse.example:8123")
 	t.Setenv("CLICKHOUSE_DATABASE", "market")
 	t.Setenv("CLICKHOUSE_USER", "market")
 	t.Setenv("CLICKHOUSE_PASSWORD", "secret")
-	t.Setenv("GO_CLIENT_MIRROR_WATCHLIST", "")
-	if err := ClientFromEnv().Validate(); err == nil || !strings.Contains(err.Error(), "GO_CLIENT_MIRROR_WATCHLIST") {
-		t.Fatalf("expected missing mirror watchlist error, got %v", err)
+	if err := ClientFromEnv().Validate(); err != nil {
+		t.Fatalf("ClickHouse should support on-demand live data without a persistent watchlist: %v", err)
 	}
 }
 

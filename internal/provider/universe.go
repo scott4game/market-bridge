@@ -93,7 +93,8 @@ func (p *Longbridge) Universe(ctx context.Context) ([]string, error) {
 
 func (r *Router) Universe(ctx context.Context) ([]string, error) {
 	var symbols []string
-	for _, candidate := range []Provider{r.US, r.Longbridge} {
+	candidates := append([]Provider{r.US, r.Longbridge}, r.UniverseProviders...)
+	for _, candidate := range candidates {
 		if candidate == nil {
 			continue
 		}

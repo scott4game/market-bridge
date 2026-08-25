@@ -149,6 +149,13 @@ func (s *LongbridgeSource) Run(ctx context.Context, symbols []string, emit func(
 	if err := q.Subscribe(ctx, lbSymbols, subTypes, true); err != nil {
 		return err
 	}
+	defer func() {
+		unsubscribeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := q.Unsubscribe(unsubscribeCtx, false, lbSymbols, subTypes); err != nil {
+			log.Printf("Longbridge unsubscribe failed: %v", err)
+		}
+	}()
 	if s.OnConnected != nil {
 		s.OnConnected()
 	}
@@ -162,45 +169,31 @@ type subscriber struct {
 	queue   chan market.LiveEvent
 }
 type Hub struct {
-	source      Source
-	sink        Sink
-	watchlist   []string
-	mu          sync.RWMutex
-	subs        map[*subscriber]struct{}
-	access      *access.Store
-	limiter     *access.Limiter
-	statusMu    sync.RWMutex
-	state       string
-	lastError   string
-	connectedAt time.Time
-	reconnects  int64
+	source            Source
+	sink              Sink
+	mu                sync.RWMutex
+	subs              map[*subscriber]struct{}
+	changed           chan struct{}
+	access            *access.Store
+	limiter           *access.Limiter
+	statusMu          sync.RWMutex
+	state             string
+	lastError         string
+	connectedAt       time.Time
+	reconnects        int64
+	subscribedSymbols int
 }
 
-func NewHub(source Source, sink Sink, watchlist []string) (*Hub, error) {
-	if len(watchlist) == 0 {
-		return nil, fmt.Errorf("watchlist is empty")
+const maxProviderLiveSymbols = 500
+
+func NewHub(source Source, sink Sink) (*Hub, error) {
+	if source == nil {
+		return nil, fmt.Errorf("live source is required")
 	}
-	if len(watchlist) > 200 {
-		return nil, fmt.Errorf("watchlist exceeds 200 symbols")
-	}
-	set := map[string]struct{}{}
-	var normalized []string
-	for _, s := range watchlist {
-		var err error
-		s, _, err = market.NormalizeSymbol(s)
-		if err != nil {
-			return nil, fmt.Errorf("invalid watchlist symbol %q: %w", s, err)
-		}
-		if _, ok := set[s]; !ok {
-			set[s] = struct{}{}
-			normalized = append(normalized, s)
-		}
-	}
-	sort.Strings(normalized)
 	if sink == nil {
 		sink = NopSink{}
 	}
-	return &Hub{source: source, sink: sink, watchlist: normalized, subs: map[*subscriber]struct{}{}, state: "connecting"}, nil
+	return &Hub{source: source, sink: sink, subs: map[*subscriber]struct{}{}, changed: make(chan struct{}, 1), state: "idle"}, nil
 }
 func (h *Hub) ConfigureAccess(store *access.Store, limiter *access.Limiter) {
 	h.access, h.limiter = store, limiter
@@ -212,14 +205,54 @@ func (h *Hub) ProviderStatus() map[string]any {
 	if h.lastError != "" {
 		lastError = "connection failed; inspect server logs"
 	}
-	return map[string]any{"longbridge": map[string]any{"state": h.state, "last_error": lastError, "connected_at": h.connectedAt, "reconnects": h.reconnects, "subscribed_symbols": len(h.watchlist)}}
+	return map[string]any{"longbridge": map[string]any{"state": h.state, "last_error": lastError, "connected_at": h.connectedAt, "reconnects": h.reconnects, "subscribed_symbols": h.subscribedSymbols}}
 }
 func (h *Hub) Run(ctx context.Context) {
+	backoff := time.Second
 	for {
-		h.statusMu.Lock()
-		h.state = "connecting"
-		h.statusMu.Unlock()
-		err := h.source.Run(ctx, h.watchlist, h.publish)
+		symbols := h.symbols()
+		if len(symbols) == 0 {
+			h.setState("idle", "", 0)
+			select {
+			case <-ctx.Done():
+				return
+			case <-h.changed:
+				continue
+			}
+		}
+
+		h.setState("connecting", "", len(symbols))
+		runCtx, cancel := context.WithCancel(ctx)
+		if aware, ok := h.source.(connectionAwareSource); ok {
+			aware.SetOnConnected(func() {
+				h.statusMu.Lock()
+				h.state = "connected"
+				h.connectedAt = time.Now().UTC()
+				h.lastError = ""
+				h.statusMu.Unlock()
+			})
+		}
+		errC := make(chan error, 1)
+		go func() { errC <- h.source.Run(runCtx, symbols, h.publish) }()
+
+		var err error
+		changed := false
+		select {
+		case <-ctx.Done():
+			cancel()
+			<-errC
+			return
+		case <-h.changed:
+			changed = true
+			cancel()
+			err = <-errC
+		case err = <-errC:
+			cancel()
+		}
+		if changed {
+			backoff = time.Second
+			continue
+		}
 		if ctx.Err() != nil {
 			return
 		}
@@ -232,14 +265,64 @@ func (h *Hub) Run(ctx context.Context) {
 		if err != nil {
 			log.Printf("Longbridge live provider disconnected: %v", err)
 		}
+		timer := time.NewTimer(backoff)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-time.After(time.Second):
+		case <-h.changed:
+			timer.Stop()
+			backoff = time.Second
+		case <-timer.C:
+			if backoff < 30*time.Second {
+				backoff *= 2
+				if backoff > 30*time.Second {
+					backoff = 30 * time.Second
+				}
+			}
 		}
 	}
 }
+
+func (h *Hub) setState(state, lastError string, symbols int) {
+	h.statusMu.Lock()
+	h.state = state
+	h.lastError = lastError
+	h.subscribedSymbols = symbols
+	h.statusMu.Unlock()
+}
+
+func (h *Hub) symbols() []string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	set := map[string]struct{}{}
+	for s := range h.subs {
+		for symbol := range s.symbols {
+			set[symbol] = struct{}{}
+		}
+	}
+	symbols := make([]string, 0, len(set))
+	for symbol := range set {
+		symbols = append(symbols, symbol)
+	}
+	sort.Strings(symbols)
+	return symbols
+}
+
+func (h *Hub) signal() {
+	select {
+	case h.changed <- struct{}{}:
+	default:
+	}
+}
 func (h *Hub) publish(event market.LiveEvent) {
+	h.statusMu.Lock()
+	if h.state == "connecting" {
+		h.state = "connected"
+		h.connectedAt = time.Now().UTC()
+		h.lastError = ""
+	}
+	h.statusMu.Unlock()
 	_ = h.sink.Write(context.Background(), event)
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -288,20 +371,12 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		req.Events = []market.EventType{market.BarEvent}
 	}
 	p, secured := access.PrincipalFromContext(r.Context())
-	allowed := map[string]struct{}{}
-	for _, symbol := range h.watchlist {
-		allowed[symbol] = struct{}{}
-	}
 	normalized := map[string]struct{}{}
 	for _, symbol := range req.Symbols {
 		var err error
 		symbol, _, err = market.NormalizeSymbol(symbol)
 		if err != nil {
 			_ = c.Close(websocket.StatusPolicyViolation, "invalid symbol")
-			return
-		}
-		if _, ok := allowed[symbol]; !ok {
-			_ = c.Close(websocket.StatusPolicyViolation, "symbol outside global watchlist")
 			return
 		}
 		normalized[symbol] = struct{}{}
@@ -321,9 +396,29 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.events[x] = struct{}{}
 	}
 	h.mu.Lock()
+	allSymbols := map[string]struct{}{}
+	for existing := range h.subs {
+		for symbol := range existing.symbols {
+			allSymbols[symbol] = struct{}{}
+		}
+	}
+	for symbol := range s.symbols {
+		allSymbols[symbol] = struct{}{}
+	}
+	if len(allSymbols) > maxProviderLiveSymbols {
+		h.mu.Unlock()
+		_ = c.Close(websocket.StatusPolicyViolation, "global live symbol capacity exceeded")
+		return
+	}
 	h.subs[s] = struct{}{}
 	h.mu.Unlock()
-	defer func() { h.mu.Lock(); delete(h.subs, s); h.mu.Unlock() }()
+	h.signal()
+	defer func() {
+		h.mu.Lock()
+		delete(h.subs, s)
+		h.mu.Unlock()
+		h.signal()
+	}()
 	revalidate := time.NewTicker(time.Minute)
 	defer revalidate.Stop()
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")

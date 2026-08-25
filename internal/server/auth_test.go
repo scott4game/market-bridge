@@ -36,7 +36,7 @@ func TestMultiUserHTTPAuthenticationAndProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := (&HTTP{Store: data, Access: auth, Limiter: access.NewLimiter(), Watchlist: []string{"AAPL", "NVDA"}}).Handler()
+	h := (&HTTP{Store: data, Access: auth, Limiter: access.NewLimiter()}).Handler()
 
 	unauthorized := httptest.NewRecorder()
 	h.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/v1/me", nil))
@@ -72,12 +72,12 @@ func TestMultiUserHTTPAuthenticationAndProfile(t *testing.T) {
 		t.Fatalf("watchlist status=%d body=%s", watchlist.Code, watchlist.Body.String())
 	}
 
-	rejected := httptest.NewRecorder()
+	secondWatchlist := httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPut, "/v1/me/watchlist", bytes.NewBufferString(`{"symbols":["TSLA"]}`))
 	req.Header.Set("Authorization", "Bearer "+token)
-	h.ServeHTTP(rejected, req)
-	if rejected.Code != http.StatusForbidden {
-		t.Fatalf("outside watchlist status=%d", rejected.Code)
+	h.ServeHTTP(secondWatchlist, req)
+	if secondWatchlist.Code != http.StatusOK || !strings.Contains(secondWatchlist.Body.String(), `"subscription_mode":"on_demand"`) {
+		t.Fatalf("on-demand watchlist status=%d body=%s", secondWatchlist.Code, secondWatchlist.Body.String())
 	}
 
 	indicators := httptest.NewRecorder()
@@ -116,14 +116,14 @@ func TestAuthenticatedLiveWebSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	limiter := access.NewLimiter()
-	hub, err := live.NewHub(live.MockSource{}, live.NopSink{}, []string{"AAPL"})
+	hub, err := live.NewHub(live.MockSource{}, live.NopSink{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	hub.ConfigureAccess(auth, limiter)
 	go hub.Run(ctx)
 	data, _ := NewStore(t.TempDir(), &provider.Mock{Version: "v1"})
-	srv := httptest.NewServer((&HTTP{Store: data, Access: auth, Limiter: limiter, Watchlist: []string{"AAPL"}, Live: hub}).Handler())
+	srv := httptest.NewServer((&HTTP{Store: data, Access: auth, Limiter: limiter, Live: hub}).Handler())
 	defer srv.Close()
 	headers := http.Header{"Authorization": []string{"Bearer " + token}}
 	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/v1/live/ws", &websocket.DialOptions{HTTPHeader: headers})

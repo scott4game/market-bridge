@@ -87,9 +87,10 @@ func TestLongbridgeHistoricalPaginationAndSuffix(t *testing.T) {
 }
 
 type routeProvider struct {
-	name    string
-	version string
-	calls   []market.DatasetSpec
+	name     string
+	version  string
+	calls    []market.DatasetSpec
+	universe []string
 }
 
 func (p *routeProvider) Name() string        { return p.name }
@@ -97,6 +98,9 @@ func (p *routeProvider) DataVersion() string { return p.version }
 func (p *routeProvider) Bars(_ context.Context, spec market.DatasetSpec) ([]market.Bar, error) {
 	p.calls = append(p.calls, spec)
 	return nil, nil
+}
+func (p *routeProvider) Universe(context.Context) ([]string, error) {
+	return append([]string(nil), p.universe...), nil
 }
 
 func TestRouterSelectsProviderBySuffix(t *testing.T) {
@@ -116,5 +120,22 @@ func TestRouterSelectsProviderBySuffix(t *testing.T) {
 	}
 	if len(us.calls) != 1 || len(us.calls[0].Symbols) != 1 || len(lb.calls) != 1 || len(lb.calls[0].Symbols) != 2 {
 		t.Fatalf("us=%v lb=%v", us.calls, lb.calls)
+	}
+}
+
+func TestRouterCanListMarketsWithoutEnablingTheirHistoryRoute(t *testing.T) {
+	us := &routeProvider{name: "massive", version: "us-v1", universe: []string{"SNDK"}}
+	liveDirectory := &routeProvider{name: "longbridge", version: "directory-v1", universe: []string{"700.HK", "600519.SH"}}
+	router := &Router{US: us, UniverseProviders: []Provider{liveDirectory}}
+	symbols, err := router.Universe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(symbols, ","); got != "600519.SH,700.HK,SNDK" {
+		t.Fatalf("universe=%s", got)
+	}
+	spec := market.DatasetSpec{Symbols: []string{"700.HK"}, Interval: "1d", From: time.Now().Add(-24 * time.Hour), To: time.Now(), Session: market.RegularSession, Adjustment: market.Raw}
+	if _, err := router.Bars(context.Background(), spec); err == nil || !strings.Contains(err.Error(), "historical provider is not enabled") {
+		t.Fatalf("unexpected history route error: %v", err)
 	}
 }

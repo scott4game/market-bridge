@@ -1,5 +1,9 @@
 # go-client 本地数据接口与策略验证指南
 
+Grok、Claude Code、Codex 等本地 Agent 需要一份精简接口契约时，优先使用
+[go-client 本地 AI Agent API](local-ai-agent-api.md)。本文继续说明缓存、ClickHouse、
+dataset 生命周期和策略验证细节。
+
 本文面向运行在本机的交易机器人、研究脚本和回测程序。机器人只需要访问
 `go-client`，不应直接访问远端 `go-server`，也不需要持有远端 API Key。
 
@@ -59,7 +63,6 @@ GO_SERVER_CLICKHOUSE_ENABLED=false
 
 ```dotenv
 COMPOSE_PROFILES=clickhouse
-GO_CLIENT_MIRROR_WATCHLIST=AAPL,NVDA,MSFT
 GO_CLIENT_CLICKHOUSE_ENABLED=true
 GO_CLIENT_CLICKHOUSE_COMPLETED_BARS_ONLY=true
 GO_CLIENT_CLICKHOUSE_URL=http://clickhouse:8123
@@ -70,10 +73,9 @@ CLICKHOUSE_MEMORY_LIMIT=2g
 CLICKHOUSE_CPUS=2
 ```
 
-`GO_CLIENT_MIRROR_WATCHLIST` 应是服务端 `GO_SERVER_WATCHLIST` 的子集。它不依赖图表
-或 SDK 是否在线：go-client 会维持共享的上游 WebSocket。默认只把已完成 bar 写入
-`market.kline_1m`，适合 10 个以内标的的分钟级观察，也能显著降低本地 ClickHouse 的写入
-和磁盘压力。若确实需要逐笔、深度和未完成 bar，可以把
+go-client 根据页面或 SDK 的活跃 WebSocket 连接维持共享的上游按需订阅；没有客户端时
+不会保留长期实时代码池。默认只把订阅期间收到的已完成 bar 写入 `market.kline_1m`，
+以降低本地 ClickHouse 的写入和磁盘压力。若确实需要逐笔、深度和未完成 bar，可以把
 `GO_CLIENT_CLICKHOUSE_COMPLETED_BARS_ONLY` 改为 `false`。
 
 若服务端设置 `GO_SERVER_CLICKHOUSE_ENABLED=true`，客户端自动使用远端 ClickHouse，
@@ -81,10 +83,10 @@ CLICKHOUSE_CPUS=2
 时客户端保持远端模式并告警，不会自动切成本地双写。服务端明确关闭 CH 后，本地 CH
 才重新开始工作。
 
-最近365天的一分钟数据进入当前唯一启用的 ClickHouse；清理器每720小时删除超过365天
-的完整日分区。早于365天的查询始终绕过两侧 ClickHouse，经 go-server 直接访问
+最近730天的一分钟数据进入当前唯一启用的 ClickHouse；清理器每720小时删除超过730天
+的完整日分区。早于730天的查询始终绕过两侧 ClickHouse，经 go-server 直接访问
 Massive/Longbridge，并按股票、周期和自然月缓存在本地 Redis，默认 TTL 为24小时。
-跨越365天边界的请求会合并 CH 近期数据与 Provider 历史数据后去重排序。
+跨越730天边界的请求会合并 CH 近期数据与 Provider 历史数据后去重排序。
 
 可查看实际存储模式：
 
@@ -126,7 +128,7 @@ ORDER BY symbol, ts;
 首次回填最近一年的全市场 1 分钟数据（美股来自 Massive，A/H 股来自 Longbridge）：
 
 ```bash
-docker compose run --rm go-client market-history --days 365 --workers 2
+docker compose run --rm go-client market-history --days 730 --workers 2
 ```
 
 回填中途失败后可安全重跑，ClickHouse 使用版本列替换重复行；同一精确查询区间登记完整后
@@ -372,9 +374,13 @@ func main() {
 {
   "action": "subscribe",
   "symbols": ["AAPL", "NVDA"],
-  "events": ["bar"]
+  "events": ["bar"],
+  "status": true
 }
 ```
+
+`status=true` 会额外返回本地代理的 `connecting`、`connected` 和 `reconnecting`
+状态消息；省略时保持原有纯行情事件协议，适合现有 SDK 客户端。
 
 K 线事件示例：
 
@@ -421,9 +427,9 @@ K 线事件示例：
 收到 `gap`、WebSocket 重连、`stream_epoch` 改变或 `sequence` 非递增时，不应继续
 盲算。应重新调用历史 REST 接口补齐缺口，按 `(symbol, timestamp)` 去重后再恢复策略。
 
-实时标的必须在服务端全局关注列表中。个人关注列表用于保存当前账号常用的标的，
-并会受全局列表和账号标的配额约束；当前订阅协议不要求标的预先出现在个人列表里。
-可通过本地代理查询全局允许范围并修改个人列表：
+实时标的由活跃 WebSocket 连接按需订阅，并受账号标的配额约束；不需要预先配置服务端
+代码池，也不要求标的出现在个人收藏中。个人收藏只用于保存当前账号常用标的，可通过
+本地代理查询和修改：
 
 ```bash
 curl -fsS http://127.0.0.1:17600/v1/me/watchlist

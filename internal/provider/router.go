@@ -10,9 +10,10 @@ import (
 )
 
 type Router struct {
-	US         Provider
-	Longbridge Provider
-	Binance    Provider
+	US                Provider
+	Longbridge        Provider
+	Binance           Provider
+	UniverseProviders []Provider
 }
 
 func (r *Router) Name() string        { return "router" }

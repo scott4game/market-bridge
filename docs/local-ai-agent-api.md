@@ -1,0 +1,329 @@
+# go-client 本地 AI Agent API
+
+本文是提供给本机 Grok、Claude Code、Codex 及自动化脚本的接口契约。Agent 应只访问
+`go-client`，不要直接访问远端 `go-server` 或行情供应商。
+
+```text
+REST Base URL: http://127.0.0.1:17600
+WebSocket URL: ws://127.0.0.1:17600/v1/live/ws
+Content-Type: application/json
+时间格式: RFC3339，统一使用 UTC
+```
+
+本地接口默认不需要 `Authorization`。远端凭据由 `go-client` 持有并自动转发，不要把
+`GO_CLIENT_SERVER_TOKEN` 写进 Agent 的提示词、代码或请求头。服务应继续只监听
+`127.0.0.1`，不要直接暴露到公网。
+
+## 1. Agent 调用规则
+
+1. 开始任务前调用 `/healthz`、`/v1/providers/status` 和 `/v1/storage/status`。
+2. 不确定代码时先查询 `/v1/market-history/universe`，不要猜测股票代码。
+3. 历史查询始终显式传 `from`、`to`、`interval`、`session` 和 `adjustment`。
+4. 时间范围采用 `[from, to)`：包含 `from`，不包含 `to`。
+5. `open/high/low/close/turnover` 是十进制字符串。资金或指标计算应使用 Decimal，
+   不要先转为二进制浮点数。
+6. WebSocket 收到 `gap`、发生重连，或本地超过预期时间没有行情时，重新拉取最近一段
+   REST K 线，并按 `(symbol, timestamp, interval)` 去重。
+7. `completed=false` 是仍会变化的快照；`completed=true` 才是已定型 K 线。
+
+## 2. 市场与代码格式
+
+| 市场 | 代码示例 | 默认 session | 默认 adjustment |
+| --- | --- | --- | --- |
+| 美股 | `SNDK`、`AAPL`（也接受 `AAPL.US`） | `regular` | `split_adjusted` |
+| 港股 | `700.HK` | `regular` | `forward_adjusted` |
+| A 股上海 | `600519.SH` | `regular` | `forward_adjusted` |
+| A 股深圳 | `000001.SZ` | `regular` | `forward_adjusted` |
+| Binance Spot | `BTCUSDT.BINANCE` | `continuous` | `raw` |
+
+代码不区分大小写，响应中返回规范化后的大写代码。一个 dataset 内不能混合证券与币圈
+代码。
+
+## 3. 接口速查
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| GET | `/healthz` | 检查 go-client HTTP 进程 |
+| GET | `/readyz` | 检查 HTTP 是否可接收请求 |
+| GET | `/v1/providers/status` | 查看历史/实时行情供应商状态 |
+| GET | `/v1/storage/status` | 查看当前 ClickHouse、本地缓存模式 |
+| GET | `/v1/market-history/universe` | 获取可搜索的全部标的代码 |
+| GET | `/v1/bars/{symbol}` | 查询单标的历史 K 线 |
+| POST | `/v1/datasets/ensure` | 查询多个同市场标的的历史 K 线 |
+| GET | `/v1/me/usage` | 查看当前账号用量和配额 |
+| GET/PUT | `/v1/me/watchlist` | 读取/保存个人收藏；不触发实时订阅 |
+| WS | `/v1/live/ws` | 按连接、按需订阅实时行情 |
+
+`/readyz` 只表示本地 HTTP 已就绪，不保证上游行情一定可用，因此不能替代 provider
+状态检查。
+
+## 4. 查询标的目录
+
+```bash
+curl -fsS 'http://127.0.0.1:17600/v1/market-history/universe'
+```
+
+响应：
+
+```json
+{
+  "symbols": ["000001.SZ", "600519.SH", "700.HK", "AAPL", "SNDK"],
+  "updated_at": "2026-08-25T08:00:00Z",
+  "data_version": "v1"
+}
+```
+
+按市场筛选时使用后缀：`.HK` 为港股，`.SH/.SZ` 为 A 股，`.BINANCE` 为币圈；没有
+这些后缀的代码为美股。目录可能包含数千个代码，Agent 应在本地做前缀或子串筛选，
+不要为每个候选代码发一次网络请求。
+
+Python 搜索示例：
+
+```python
+import json
+import urllib.request
+
+BASE = "http://127.0.0.1:17600"
+with urllib.request.urlopen(f"{BASE}/v1/market-history/universe", timeout=30) as r:
+    symbols = json.load(r)["symbols"]
+
+query = "SNDK"
+matches = [s for s in symbols if query.upper() in s][:20]
+print(matches)
+```
+
+## 5. 单标的历史 K 线
+
+```http
+GET /v1/bars/{symbol}?from=...&to=...&interval=...&session=...&adjustment=...
+```
+
+查询 SNDK 最近一段 1 小时 K 线：
+
+```bash
+curl --fail --get 'http://127.0.0.1:17600/v1/bars/SNDK' \
+  --data-urlencode 'from=2026-08-01T00:00:00Z' \
+  --data-urlencode 'to=2026-08-26T00:00:00Z' \
+  --data-urlencode 'interval=1h' \
+  --data-urlencode 'session=regular' \
+  --data-urlencode 'adjustment=split_adjusted'
+```
+
+参数：
+
+| 参数 | 必填 | 说明 |
+| --- | --- | --- |
+| `from` | 是 | RFC3339 UTC 起点，闭区间 |
+| `to` | 是 | RFC3339 UTC 终点，开区间，必须晚于 `from` |
+| `interval` | 建议显式传 | `1m/3m/5m/10m/15m/30m/1h/2h/3h/4h/1d/1w/1mo/1y`；缺省为 `1m` |
+| `session` | 建议显式传 | `regular`、`extended` 或 `continuous` |
+| `adjustment` | 建议显式传 | `auto`、`raw`、`split_adjusted` 或 `forward_adjusted` |
+
+响应：
+
+```json
+{
+  "source": "clickhouse",
+  "bars": [
+    {
+      "symbol": "SNDK",
+      "timestamp": "2026-08-24T14:00:00Z",
+      "open": "45.120000",
+      "high": "45.900000",
+      "low": "44.980000",
+      "close": "45.700000",
+      "volume": 1234567,
+      "turnover": "56123456.000000",
+      "session": "regular",
+      "source": "massive",
+      "completed": true
+    }
+  ]
+}
+```
+
+响应头 `X-Cache-Source` 与响应体 `source` 表示本次读取层，可能是 `redis`、`parquet`、
+`clickhouse`、`go-server` 或混合来源；每根 bar 的 `source` 才表示原始行情供应商。
+`turnover` 未知时会缺省，不代表零。币圈应优先读取可能存在的精确字符串字段
+`volume_decimal`。
+
+### SNDK 1 小时线注意事项
+
+Massive 的自然小时聚合边界和 Futu 的美股常规盘 `09:30` 锚定小时边界可能不同。
+另外，当前 Massive Provider 的 `session` 会进入数据集身份，但不会自动把盘前盘后数据
+过滤掉。若 Agent 要与 Futu 严格逐根对比，应先按纽约交易所日历过滤常规盘，再用相同的
+`09:30` 起点重新聚合，不能只比较两个接口都名为 `1h` 的结果。
+
+## 6. 多标的历史 K 线
+
+同一市场、相同周期和时间范围的多标的查询使用：
+
+```bash
+curl -fsS -X POST 'http://127.0.0.1:17600/v1/datasets/ensure' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "symbols": ["SNDK", "AAPL", "NVDA"],
+    "interval": "1h",
+    "from": "2026-01-01T00:00:00Z",
+    "to": "2026-08-26T00:00:00Z",
+    "session": "regular",
+    "adjustment": "split_adjusted"
+  }'
+```
+
+响应为：
+
+```json
+{"source":"go-server","count":3,"bars":[]}
+```
+
+实际 `bars` 字段与单标的格式相同，按 `timestamp`、`symbol` 排序。首次查询两年范围
+可能触发上游下载，Agent 应使用分钟级 HTTP 超时。默认 ClickHouse 保留最近 730 天；
+API 不会替 Agent 猜时间范围，仍必须显式传 `from/to`。
+
+## 7. 实时 WebSocket
+
+连接后立即发送一次 JSON 订阅消息：
+
+```json
+{
+  "action": "subscribe",
+  "symbols": ["SNDK", "AAPL"],
+  "events": ["bar", "trade", "depth"],
+  "status": true
+}
+```
+
+`symbols` 是必填项。`status:true` 是 go-client 的本地扩展，用于接收连接状态帧；纯行情
+SDK 如果不需要状态帧可以省略。当前本地代理按 `symbols` 过滤，Agent 仍应检查每条消息
+的 `type`，不要假设 `events` 已在本地完成过滤。
+
+Python 示例需要先安装 `websockets`：
+
+```python
+import asyncio
+import json
+import websockets
+
+async def main():
+    uri = "ws://127.0.0.1:17600/v1/live/ws"
+    async with websockets.connect(uri, open_timeout=10) as ws:
+        await ws.send(json.dumps({
+            "action": "subscribe",
+            "symbols": ["SNDK"],
+            "events": ["bar", "trade", "depth"],
+            "status": True,
+        }))
+        async for raw in ws:
+            event = json.loads(raw)
+            print(event)
+            if event.get("type") == "gap":
+                # 重新调用 REST 拉取最近 K 线，再按时间戳去重。
+                pass
+
+asyncio.run(main())
+```
+
+状态帧示例：
+
+```json
+{
+  "type": "status",
+  "state": "connected",
+  "symbols": ["AAPL", "SNDK"],
+  "detail": "上游 WebSocket 已连接",
+  "timestamp": "2026-08-25T08:00:00Z"
+}
+```
+
+`state` 可能为 `connecting`、`connected` 或 `reconnecting`。收到 `connected` 只代表
+传输和订阅成功；应以最近一条实际行情事件时间判断数据是否仍在流动，并考虑休市状态。
+
+Bar 事件示例：
+
+```json
+{
+  "type": "bar",
+  "symbol": "SNDK",
+  "timestamp": "2026-08-25T14:31:00Z",
+  "cursor": {
+    "stream_epoch": "example-epoch",
+    "event_type": "bar",
+    "symbol": "SNDK",
+    "sequence": 123
+  },
+  "bar": {
+    "symbol": "SNDK",
+    "timestamp": "2026-08-25T14:31:00Z",
+    "open": "45.120000",
+    "high": "45.180000",
+    "low": "45.100000",
+    "close": "45.160000",
+    "volume": 3210,
+    "session": "regular",
+    "source": "longbridge",
+    "completed": false
+  }
+}
+```
+
+行情事件类型包括 `bar`、`trade`、`depth` 和 `gap`。`gap` 示例：
+
+```json
+{"type":"gap","symbol":"SNDK","reason":"slow_consumer"}
+```
+
+本地每个 WebSocket 连接最多订阅 200 个不同代码，符合默认账号实时配额。多个本地连接
+的代码会自动求并集并复用一个上游连接；最后一个连接关闭后，上游订阅自动取消。服务端
+没有固定“实时盯盘代码配置”。供应商总并集另有 500 个代码的安全上限。
+
+实时推送目前以供应商的 1 分钟 bar 为准；`1h/2h/3h/4h` 等高周期应通过历史 K 线
+接口查询或由 Agent 从 1 分钟数据按明确的交易时段边界聚合。
+
+## 8. 个人收藏与实时订阅的区别
+
+读取收藏：
+
+```bash
+curl -fsS 'http://127.0.0.1:17600/v1/me/watchlist'
+```
+
+保存收藏：
+
+```bash
+curl -fsS -X PUT 'http://127.0.0.1:17600/v1/me/watchlist' \
+  -H 'Content-Type: application/json' \
+  -d '{"symbols":["SNDK","AAPL","700.HK"]}'
+```
+
+响应包含 `subscription_mode:"on_demand"`。收藏只用于保存用户偏好，不会让服务器常驻
+订阅这些代码。真正的实时盯盘集合始终来自当前 WebSocket 连接中的 `symbols`。
+
+## 9. 错误和恢复
+
+| 状态/现象 | 含义 | Agent 行为 |
+| --- | --- | --- |
+| HTTP 400 | 参数、代码或时间格式错误 | 修正请求，不要原样重试 |
+| HTTP 403 | 浏览器跨域 Origin 被拒绝 | 从本机同源调用或移除错误 Origin |
+| HTTP 404 | dataset/cache 项不存在 | 重新 ensure 或查询 bars |
+| HTTP 429 | 账号或供应商配额限制 | 读取 `/v1/me/usage`，指数退避 |
+| HTTP 502/503 | go-server 或行情供应商不可用 | 查看 provider 状态，带抖动重试 |
+| WS close 1008 | 缺少代码、代码无效或超过配额 | 修正订阅后重连 |
+| `type=gap` | 慢消费者导致消息缺口 | REST 补最近数据并去重 |
+| 长时间无行情 | 可能休市、断流或未配置真实 Provider | 对照 status、交易日历和最近事件时间 |
+
+所有网络重试都应使用有上限的指数退避。历史 GET 可以安全重试；写收藏前避免并发覆盖。
+
+## 10. 可交给 Agent 的最小提示词
+
+```text
+只通过 http://127.0.0.1:17600 访问 go-client，不直接连接 go-server 或供应商。
+先检查 health、providers/status、storage/status；不确定代码时查询 market-history/universe。
+历史 K 线显式使用 RFC3339 UTC 的 [from,to) 范围，并明确 interval/session/adjustment。
+把价格字符串解析为 Decimal。实时连接使用 /v1/live/ws，订阅消息设置 status=true；
+遇到 reconnecting、gap 或序列缺口时，用 REST 补最近 K 线并按 symbol+timestamp+interval 去重。
+收藏列表不是实时订阅列表，不要通过修改收藏来启动盯盘。
+```
+
+更完整的缓存、ClickHouse、dataset 生命周期和策略验证说明见
+[go-client 本地数据接口与策略验证指南](go-client-data-api.md)。

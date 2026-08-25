@@ -18,7 +18,11 @@ func TestEmbeddedKLineChartAssets(t *testing.T) {
 	}{
 		{path: "/", want: "/klinecharts.min.js"},
 		{path: "/", want: "管理指标"},
+		{path: "/", want: "WebSocket 实时"},
+		{path: "/", want: "symbol-options"},
+		{path: "/", want: "<label>股市"},
 		{path: "/app.js", want: "applyFormulaIndicators"},
+		{path: "/app.js", want: "loadSymbolOptions"},
 		{path: "/formula-worker.js", want: "Market Bridge TDX formula worker"},
 		{path: "/klinecharts.min.js", want: "KLineChart v10.0.2"},
 		{path: "/klinecharts.LICENSE.txt", want: "Apache License"},
@@ -55,6 +59,29 @@ func TestProviderUsageProxyForwardsServerToken(t *testing.T) {
 	(&HTTP{Cache: cache}).Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/providers/massive/usage", nil))
 	if rec.Code != http.StatusOK || rec.Body.String() != "{\"provider\":\"massive\",\"totals\":{\"requests\":7}}\n" {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUniverseProxyForwardsServerToken(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/market-history/universe" || r.Header.Get("Authorization") != "Bearer secret" {
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"symbols":["AAPL","SNDK"]}`))
+	}))
+	defer upstream.Close()
+
+	cache, err := NewCache(config.Client{CacheDir: t.TempDir(), ServerURL: upstream.URL, ServerToken: "secret", RedisEnabled: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cache.Close()
+	recorder := httptest.NewRecorder()
+	(&HTTP{Cache: cache}).Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/market-history/universe", nil))
+	if recorder.Code != http.StatusOK || recorder.Body.String() != `{"symbols":["AAPL","SNDK"]}` {
+		t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
 	}
 }
 

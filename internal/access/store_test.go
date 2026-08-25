@@ -122,6 +122,12 @@ func TestAPIKeyLifecycleAndQuotas(t *testing.T) {
 	}
 }
 
+func TestMemberDefaultAllowsLargeLiveWatchlist(t *testing.T) {
+	if got := DefaultQuotas("member").LiveSymbols; got != 200 {
+		t.Fatalf("member live symbol quota=%d, want 200", got)
+	}
+}
+
 func TestDisabledAndExpiredKeysAreRejected(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(filepath.Join(t.TempDir(), "auth.db"), "")

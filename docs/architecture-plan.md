@@ -403,7 +403,7 @@ deploy/compose.client.yaml  # go-client + optional Redis
 - go-client 本地 REST、WebSocket、Web UI 和 Go SDK。
 - SQLite 团队账号、个人 API Key、角色 scope、用户配额、审计和 legacy admin Token 兼容。
 - 有界数据集任务队列、服务端数据集 TTL 和客户端缓存 TTL。
-- Longbridge 全局 Watchlist 子集授权、用户级 WebSocket/标的配额和 Provider 状态。
+- Longbridge 按活跃 WebSocket 连接动态订阅、用户级连接/标的配额和 Provider 状态。
 - 可选 ClickHouse 实时事件写入。
 - Docker、原生二进制及自动化发布流程。
 

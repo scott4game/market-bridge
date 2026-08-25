@@ -26,14 +26,13 @@ func TestLogEnabledProviders(t *testing.T) {
 		MassivePlanName: "stocks_basic",
 		MassiveAPIKey:   "must-not-be-logged",
 		LiveProvider:    "longbridge",
-		Watchlist:       []string{"AAPL", "NVDA"},
 	}
 	logEnabledProviders(cfg)
 
 	got := output.String()
 	for _, want := range []string{
 		"Massive historical provider enabled: plan=stocks_basic, data_version=massive-v1",
-		"Longbridge live provider enabled: watchlist=AAPL,NVDA",
+		"Longbridge live provider enabled: subscription_mode=on_demand",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("startup log %q does not contain %q", got, want)

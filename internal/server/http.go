@@ -36,7 +36,6 @@ type HTTP struct {
 	Token             string
 	Access            *access.Store
 	Limiter           *access.Limiter
-	Watchlist         []string
 	Live              http.Handler
 	Usage             UsageReader
 	ProviderStatus    func() any
@@ -121,7 +120,7 @@ func (h *HTTP) historyBars(w http.ResponseWriter, r *http.Request) {
 	}
 	retention := h.HistoryRetention
 	if retention <= 0 {
-		retention = 365 * 24 * time.Hour
+		retention = 730 * 24 * time.Hour
 	}
 	recent := !spec.From.Before(time.Now().UTC().Add(-retention))
 	canonical := recent && spec.Interval == "1m" && h.ClickHouseEnabled && h.ClickHouse != nil
@@ -335,7 +334,7 @@ func (h *HTTP) getWatchlist(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"symbols": symbols, "allowed_symbols": h.Watchlist})
+	writeJSON(w, 200, map[string]any{"symbols": symbols, "max_symbols": p.Quotas.LiveSymbols, "subscription_mode": "on_demand"})
 }
 
 func (h *HTTP) putWatchlist(w http.ResponseWriter, r *http.Request) {
@@ -347,21 +346,17 @@ func (h *HTTP) putWatchlist(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": err.Error()})
 		return
 	}
-	allowed := map[string]struct{}{}
-	for _, symbol := range h.Watchlist {
-		allowed[normalizeSymbol(symbol)] = struct{}{}
-	}
 	set := map[string]struct{}{}
 	symbols := make([]string, 0, len(body.Symbols))
 	for _, symbol := range body.Symbols {
-		symbol = normalizeSymbol(symbol)
-		if _, ok := allowed[symbol]; !ok {
-			writeJSON(w, 403, map[string]string{"error": "symbol is outside the global watchlist: " + symbol})
+		normalized, _, err := market.NormalizeSymbol(symbol)
+		if err != nil {
+			writeJSON(w, 400, map[string]string{"error": err.Error()})
 			return
 		}
-		if _, ok := set[symbol]; !ok {
-			set[symbol] = struct{}{}
-			symbols = append(symbols, symbol)
+		if _, ok := set[normalized]; !ok {
+			set[normalized] = struct{}{}
+			symbols = append(symbols, normalized)
 		}
 	}
 	if len(symbols) > p.Quotas.LiveSymbols {
@@ -372,7 +367,7 @@ func (h *HTTP) putWatchlist(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"symbols": symbols})
+	writeJSON(w, 200, map[string]any{"symbols": symbols, "max_symbols": p.Quotas.LiveSymbols, "subscription_mode": "on_demand"})
 }
 
 func (h *HTTP) getIndicators(w http.ResponseWriter, r *http.Request) {

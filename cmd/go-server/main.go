@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -68,13 +67,17 @@ func main() {
 	if cfg.LongbridgeHistoryEnabled {
 		longbridgeHistory = &provider.Longbridge{Quote: longbridgeQuote, Version: "longbridge-v1-" + cfg.DataVersion}
 	}
+	var universeProviders []provider.Provider
+	if longbridgeQuote != nil && longbridgeHistory == nil {
+		universeProviders = append(universeProviders, &provider.Longbridge{Quote: longbridgeQuote, Version: "longbridge-universe-v1-" + cfg.DataVersion})
+	}
 	var binanceHistory provider.Provider
 	if cfg.BinanceEnabled {
 		binanceHistory = &provider.Binance{BaseURL: cfg.BinanceRESTURL, Version: "binance-spot-v1-" + cfg.DataVersion}
 	}
 	var p provider.Provider = usProvider
-	if longbridgeHistory != nil || binanceHistory != nil {
-		p = &provider.Router{US: usProvider, Longbridge: longbridgeHistory, Binance: binanceHistory}
+	if longbridgeHistory != nil || binanceHistory != nil || len(universeProviders) > 0 {
+		p = &provider.Router{US: usProvider, Longbridge: longbridgeHistory, Binance: binanceHistory, UniverseProviders: universeProviders}
 	}
 	if err := os.MkdirAll(filepath.Dir(cfg.AuthDB), 0o755); err != nil {
 		log.Fatal(err)
@@ -165,7 +168,7 @@ func main() {
 			}()
 		}
 	}
-	hub, err := live.NewHub(source, sink, cfg.Watchlist)
+	hub, err := live.NewHub(source, sink)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -206,7 +209,7 @@ func main() {
 	}
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           (&marketserver.HTTP{Store: store, Token: cfg.BearerToken, Access: auth, Limiter: limiter, Watchlist: cfg.Watchlist, Live: hub, Usage: usage, ProviderStatus: providerStatus, ClickHouseEnabled: cfg.ClickHouseEnabled, ClickHouse: historicalClickHouse, HistoryCatalog: historyCatalog, DataVersion: cfg.DataVersion, EmptyCoverageTTL: cfg.EmptyCoverageTTL, HistoryRetention: cfg.ClickHouseRetention}).Handler(),
+		Handler:           (&marketserver.HTTP{Store: store, Token: cfg.BearerToken, Access: auth, Limiter: limiter, Live: hub, Usage: usage, ProviderStatus: providerStatus, ClickHouseEnabled: cfg.ClickHouseEnabled, ClickHouse: historicalClickHouse, HistoryCatalog: historyCatalog, DataVersion: cfg.DataVersion, EmptyCoverageTTL: cfg.EmptyCoverageTTL, HistoryRetention: cfg.ClickHouseRetention}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    1 << 20,
@@ -232,7 +235,7 @@ func logEnabledProviders(cfg config.Server) {
 		log.Printf("Longbridge historical provider enabled: markets=HK,SH,SZ, data_version=%s", cfg.DataVersion)
 	}
 	if contains(cfg.EffectiveLiveProviders(), "longbridge") {
-		log.Printf("Longbridge live provider enabled: watchlist=%s, depth=%t", strings.Join(cfg.Watchlist, ","), cfg.LongbridgeDepthEnabled)
+		log.Printf("Longbridge live provider enabled: subscription_mode=on_demand, depth=%t", cfg.LongbridgeDepthEnabled)
 	}
 	if cfg.BinanceEnabled {
 		log.Printf("Binance Spot historical provider enabled: rest=%s", cfg.BinanceRESTURL)

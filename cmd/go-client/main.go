@@ -55,7 +55,7 @@ func main() {
 		go cache.RunCleanup(ctx)
 		go cache.RunMarketHistorySync(ctx)
 		if clickhouse != nil {
-			log.Printf("client ClickHouse available for %s; server capability decides whether it is active", strings.Join(cfg.MirrorWatchlist, ","))
+			log.Printf("client ClickHouse available for on-demand live data; server capability decides whether it is active")
 		}
 		live := localclient.NewLiveProxy(cfg, cache)
 		go live.Run(ctx)
@@ -84,11 +84,11 @@ func main() {
 
 func marketHistoryCommand(ctx context.Context, cache *localclient.Cache) {
 	set := flag.NewFlagSet("market-history", flag.ExitOnError)
-	days := set.Int("days", 365, "rolling number of days to backfill")
+	days := set.Int("days", 730, "rolling number of days to backfill")
 	workers := set.Int("workers", 2, "concurrent symbols")
 	_ = set.Parse(os.Args[2:])
-	if *days < 1 || *days > 365 || *workers < 1 || *workers > 16 {
-		log.Fatal("days must be 1..365 and workers must be 1..16")
+	if *days < 1 || *days > 730 || *workers < 1 || *workers > 16 {
+		log.Fatal("days must be 1..730 and workers must be 1..16")
 	}
 	status := cache.StorageStatus(ctx)
 	if status["mode"] == "provider_only" || status["mode"] == "unknown" {

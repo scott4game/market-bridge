@@ -22,7 +22,6 @@ GO_SERVER_BINANCE_ENABLED=true
 
 # 同时运行多个实时源
 GO_SERVER_LIVE_PROVIDERS=longbridge,binance
-GO_SERVER_WATCHLIST=AAPL,700.HK,600519.SH,000001.SZ,BTCUSDT.BINANCE
 ```
 
 不要把 `GO_SERVER_PROVIDER` 设置为 `longbridge` 或 `binance`。它只选择裸代码美股的基础历史 Provider；服务会根据代码后缀把 `.HK/.SH/.SZ` 路由到 Longbridge，把 `.BINANCE` 路由到 Binance。旧配置 `GO_SERVER_LIVE_PROVIDER=longbridge` 仍可用；需要多个实时源时使用复数配置。
@@ -218,7 +217,7 @@ curl \
 
 #### 2.5.5 配额管理
 
-`member` 的默认配额为每分钟 600 个普通请求、20 个数据集请求、2 个并发数据集构建、3 条实时连接和合计 20 个实时标的。可以为指定用户覆盖默认值：
+`member` 的默认配额为每分钟 600 个普通请求、20 个数据集请求、2 个并发数据集构建、3 条实时连接和合计 200 个实时标的。可以为指定用户覆盖默认值：
 
 ```bash
 docker compose exec go-server go-server admin quota set --user alice \
@@ -226,7 +225,7 @@ docker compose exec go-server go-server admin quota set --user alice \
   --datasets-per-minute 30 \
   --concurrent-builds 3 \
   --live-connections 5 \
-  --live-symbols 30
+  --live-symbols 200
 ```
 
 清除覆盖值并恢复角色默认配额：
@@ -267,7 +266,7 @@ PUT /v1/me/watchlist
 GET /v1/providers/status
 ```
 
-`GET /v1/providers/massive/usage` 只允许 admin 使用。个人 Watchlist 和实时订阅标的必须属于 `GO_SERVER_WATCHLIST` 配置的全局池。
+`GET /v1/providers/massive/usage` 只允许 admin 使用。个人 Watchlist 只是收藏列表；实时代码由活跃 WebSocket 连接按需订阅，并受账户实时标的额度约束。
 
 ## 3. Nginx/OpenResty 反向代理
 
@@ -429,7 +428,6 @@ docker compose exec go-server sh -c '
 for name in \
   GO_SERVER_LIVE_PROVIDER \
   GO_SERVER_LIVE_PROVIDERS \
-  GO_SERVER_WATCHLIST \
   GO_SERVER_LONGBRIDGE_HISTORY_ENABLED \
   GO_SERVER_LONGBRIDGE_DEPTH_ENABLED \
   GO_SERVER_BINANCE_ENABLED \
@@ -496,7 +494,7 @@ npx --yes wscat \
 {"symbols":["AAPL"],"events":["bar","trade","depth"]}
 ```
 
-订阅标的必须存在于 `GO_SERVER_WATCHLIST`。直接把这段 JSON 输入普通 shell 会被 zsh/bash 当作命令，必须在 `wscat` 或 `websocat` 的连接内发送。
+服务端会按连接中的 `symbols` 动态订阅，单个 member 默认最多 200 个标的。直接把这段 JSON 输入普通 shell 会被 zsh/bash 当作命令，必须在 `wscat` 或 `websocat` 的连接内发送。
 
 macOS 也可以使用 `websocat`：
 

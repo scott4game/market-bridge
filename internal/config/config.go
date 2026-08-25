@@ -22,7 +22,6 @@ type Server struct {
 	MassivePerMonth           int
 	LiveProvider              string
 	LiveProviders             []string
-	Watchlist                 []string
 	LongbridgeHistoryEnabled  bool
 	LongbridgeDepthEnabled    bool
 	BinanceEnabled            bool
@@ -50,12 +49,12 @@ func ServerFromEnv() Server {
 		Provider: env("GO_SERVER_PROVIDER", "mock"), DataVersion: env("GO_SERVER_DATA_VERSION", "market-v1"),
 		BearerToken: os.Getenv("GO_SERVER_TOKEN"), MassiveAPIKey: os.Getenv("MASSIVE_API_KEY"), MassiveBaseURL: env("MASSIVE_BASE_URL", "https://api.massive.com"),
 		MassivePlanName: env("MASSIVE_PLAN_NAME", "stocks_basic"), MassivePerMinute: integer("MASSIVE_REQUESTS_PER_MINUTE", 5), MassivePerMonth: integer("MASSIVE_REQUESTS_PER_MONTH", 0),
-		LiveProvider: env("GO_SERVER_LIVE_PROVIDER", "mock"), LiveProviders: split(os.Getenv("GO_SERVER_LIVE_PROVIDERS")), Watchlist: split(env("GO_SERVER_WATCHLIST", "AAPL,NVDA")),
+		LiveProvider: env("GO_SERVER_LIVE_PROVIDER", "mock"), LiveProviders: split(os.Getenv("GO_SERVER_LIVE_PROVIDERS")),
 		LongbridgeHistoryEnabled: boolean("GO_SERVER_LONGBRIDGE_HISTORY_ENABLED", false), LongbridgeDepthEnabled: boolean("GO_SERVER_LONGBRIDGE_DEPTH_ENABLED", false),
 		BinanceEnabled: boolean("GO_SERVER_BINANCE_ENABLED", false), BinanceRESTURL: env("BINANCE_REST_BASE_URL", "https://data-api.binance.vision"), BinanceWSURL: env("BINANCE_WS_URL", "wss://data-stream.binance.vision"),
 		ClickHouseEnabled: boolean("GO_SERVER_CLICKHOUSE_ENABLED", false),
 		ClickHouseURL:     os.Getenv("CLICKHOUSE_URL"), ClickHouseDatabase: env("CLICKHOUSE_DATABASE", "market"), ClickHouseUser: env("CLICKHOUSE_USER", "market"), ClickHousePassword: os.Getenv("CLICKHOUSE_PASSWORD"),
-		ClickHouseRetention: duration("GO_SERVER_CLICKHOUSE_RETENTION", 365*24*time.Hour), ClickHouseCleanupInterval: duration("GO_SERVER_CLICKHOUSE_CLEANUP_INTERVAL", 720*time.Hour),
+		ClickHouseRetention: duration("GO_SERVER_CLICKHOUSE_RETENTION", 730*24*time.Hour), ClickHouseCleanupInterval: duration("GO_SERVER_CLICKHOUSE_CLEANUP_INTERVAL", 720*time.Hour),
 		MarketHistorySyncEnabled: boolean("GO_SERVER_MARKET_HISTORY_SYNC_ENABLED", false), MarketHistorySyncInterval: duration("GO_SERVER_MARKET_HISTORY_SYNC_INTERVAL", 24*time.Hour),
 		DatasetTTL: duration("GO_SERVER_DATASET_TTL", 24*time.Hour), DatasetWorkers: integer("GO_SERVER_DATASET_WORKERS", 2), DatasetQueueSize: integer("GO_SERVER_DATASET_QUEUE_SIZE", 100),
 		DatasetBuildTimeout: duration("GO_SERVER_DATASET_BUILD_TIMEOUT", 10*time.Minute), EmptyCoverageTTL: duration("GO_SERVER_EMPTY_COVERAGE_TTL", 15*time.Minute),
@@ -122,7 +121,6 @@ type Client struct {
 	CacheDir                    string
 	ServerURL                   string
 	ServerToken                 string
-	MirrorWatchlist             []string
 	ParquetTTL                  time.Duration
 	CleanupInterval             time.Duration
 	RedisEnabled                bool
@@ -149,12 +147,11 @@ func ClientFromEnv() Client {
 	return Client{
 		Listen: env("GO_CLIENT_LISTEN", "127.0.0.1:17600"), CacheDir: env("GO_CLIENT_CACHE_DIRECTORY", "./data/client"),
 		ServerURL: env("GO_CLIENT_SERVER_URL", "http://127.0.0.1:17601"), ServerToken: os.Getenv("GO_CLIENT_SERVER_TOKEN"),
-		MirrorWatchlist: split(os.Getenv("GO_CLIENT_MIRROR_WATCHLIST")),
-		ParquetTTL:      duration("GO_CLIENT_PARQUET_TTL", 720*time.Hour), CleanupInterval: duration("GO_CLIENT_CLEANUP_INTERVAL", 6*time.Hour),
+		ParquetTTL: duration("GO_CLIENT_PARQUET_TTL", 720*time.Hour), CleanupInterval: duration("GO_CLIENT_CLEANUP_INTERVAL", 6*time.Hour),
 		RedisEnabled: boolean("GO_CLIENT_REDIS_ENABLED", true), RedisAddress: env("GO_CLIENT_REDIS_ADDRESS", "127.0.0.1:6379"), RedisUsername: os.Getenv("GO_CLIENT_REDIS_USERNAME"), RedisPassword: os.Getenv("GO_CLIENT_REDIS_PASSWORD"), RedisDB: integer("GO_CLIENT_REDIS_DB", 0), RedisTTL: duration("GO_CLIENT_REDIS_TTL", 24*time.Hour),
 		ClickHouseEnabled: boolean("GO_CLIENT_CLICKHOUSE_ENABLED", false), ClickHouseURL: firstEnv("GO_CLIENT_CLICKHOUSE_URL", "CLICKHOUSE_URL"), ClickHouseDatabase: env("CLICKHOUSE_DATABASE", "market"), ClickHouseUser: env("CLICKHOUSE_USER", "market"), ClickHousePassword: os.Getenv("CLICKHOUSE_PASSWORD"),
 		ClickHouseCompletedBarsOnly: boolean("GO_CLIENT_CLICKHOUSE_COMPLETED_BARS_ONLY", true),
-		ClickHouseRetention:         duration("GO_CLIENT_CLICKHOUSE_RETENTION", 365*24*time.Hour), ClickHouseCleanupInterval: duration("GO_CLIENT_CLICKHOUSE_CLEANUP_INTERVAL", 720*time.Hour), StorageCapabilityInterval: duration("GO_CLIENT_STORAGE_CAPABILITY_INTERVAL", 5*time.Minute),
+		ClickHouseRetention:         duration("GO_CLIENT_CLICKHOUSE_RETENTION", 730*24*time.Hour), ClickHouseCleanupInterval: duration("GO_CLIENT_CLICKHOUSE_CLEANUP_INTERVAL", 720*time.Hour), StorageCapabilityInterval: duration("GO_CLIENT_STORAGE_CAPABILITY_INTERVAL", 5*time.Minute),
 		MarketHistorySyncEnabled: boolean("GO_CLIENT_MARKET_HISTORY_SYNC_ENABLED", false), MarketHistorySyncInterval: duration("GO_CLIENT_MARKET_HISTORY_SYNC_INTERVAL", 24*time.Hour),
 		EmptyCoverageTTL: duration("GO_CLIENT_EMPTY_COVERAGE_TTL", 15*time.Minute),
 	}
@@ -174,9 +171,6 @@ func (c Client) Validate() error {
 		if strings.TrimSpace(item.value) == "" {
 			return fmt.Errorf("%s is required when GO_CLIENT_CLICKHOUSE_ENABLED=true", item.name)
 		}
-	}
-	if len(c.MirrorWatchlist) == 0 {
-		return fmt.Errorf("GO_CLIENT_MIRROR_WATCHLIST is required when GO_CLIENT_CLICKHOUSE_ENABLED=true")
 	}
 	return nil
 }

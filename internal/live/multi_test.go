@@ -60,7 +60,7 @@ func TestMultiSourceRoutesAndTracksProvidersIndependently(t *testing.T) {
 }
 
 func TestHubRejectsInvalidMarketSuffix(t *testing.T) {
-	if _, err := NewHub(MockSource{}, NopSink{}, []string{"AAPL.UNKNOWN"}); err == nil {
-		t.Fatal("invalid watchlist suffix should fail")
+	if _, err := NewHub(nil, NopSink{}); err == nil {
+		t.Fatal("nil live source should fail")
 	}
 }

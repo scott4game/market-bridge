@@ -27,7 +27,7 @@ func DefaultQuotas(role string) Quotas {
 	if role == "admin" {
 		return Quotas{RequestsPerMinute: 3000, DatasetsPerMinute: 120, ConcurrentBuilds: 8, LiveConnections: 10, LiveSymbols: 200}
 	}
-	return Quotas{RequestsPerMinute: 600, DatasetsPerMinute: 20, ConcurrentBuilds: 2, LiveConnections: 3, LiveSymbols: 20}
+	return Quotas{RequestsPerMinute: 600, DatasetsPerMinute: 20, ConcurrentBuilds: 2, LiveConnections: 3, LiveSymbols: 200}
 }
 
 type Principal struct {

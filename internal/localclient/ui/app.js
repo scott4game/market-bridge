@@ -1,4 +1,5 @@
 const $ = id => document.getElementById(id)
+const UNIVERSE_STORAGE_KEY = 'market-bridge:market-universe-v2'
 const NX_STORAGE_KEY = 'market-bridge:nx-indicator'
 const MX_STORAGE_KEY = 'market-bridge:mx-macd-indicator'
 const MX_INDICATOR_NAME = 'MX_MACD'
@@ -11,6 +12,8 @@ const PURPLE = '#e970dc'
 const RED = '#ff4d5a'
 const GREEN = '#2ac99a'
 let socket = null
+let universeSymbols = []
+const wsMonitor = { state: 'disabled', symbol: '', interval: '', count: 0, connectedAt: 0, lastMessageAt: 0, lastType: '', detail: '实时推送目前仅支持 1m 周期' }
 let activeQuery = null
 let lastBars = []
 let cloudIndicators = []
@@ -26,6 +29,108 @@ const INDICATOR_MIGRATION_KEY = 'market-bridge:formula-indicators:migrated-v1'
 function setStatus(text, state = '') {
   $('status').textContent = text
   $('status').className = state
+}
+
+function formatDuration(timestamp) {
+  if (!timestamp) return '—'
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000))
+  if (seconds < 2) return '不足 2 秒'
+  if (seconds < 60) return `${seconds} 秒`
+  return `${Math.floor(seconds / 60)} 分钟`
+}
+
+function formatAge(timestamp) {
+  return timestamp ? `${formatDuration(timestamp)}前` : '—'
+}
+
+function renderWSStatus() {
+  const labels = {
+    disabled: ['未启用', ''],
+    connecting: ['连接中', 'warn'],
+    reconnecting: ['正在重连', 'warn'],
+    connected: [wsMonitor.count ? '正在推送' : '已连接 · 等待数据', wsMonitor.count ? 'ok' : 'warn'],
+    stale: ['已连接 · 暂无新数据', 'warn'],
+    gap: ['推送有缺口', 'bad'],
+    error: ['连接异常', 'bad'],
+    closed: ['已断开', 'bad']
+  }
+  let state = wsMonitor.state
+  const latestActivity = wsMonitor.lastMessageAt || wsMonitor.connectedAt
+  if (state === 'connected' && latestActivity && Date.now() - latestActivity >= 15000) state = 'stale'
+  const [label, className] = labels[state] || labels.error
+  $('ws-status').textContent = label
+  $('ws-status').className = className
+  if (state === 'connected' || state === 'stale') {
+    $('ws-detail').textContent = wsMonitor.count
+      ? `${wsMonitor.symbol} · 累计 ${wsMonitor.count} 条 · 最后 ${wsMonitor.lastType} ${formatAge(wsMonitor.lastMessageAt)}`
+      : `${wsMonitor.symbol} · 0 条 · 已等待 ${formatDuration(wsMonitor.connectedAt)}；可能未开市或上游无行情`
+    return
+  }
+  $('ws-detail').textContent = wsMonitor.detail
+}
+
+function setWSState(state, values = {}) {
+  Object.assign(wsMonitor, values, { state })
+  renderWSStatus()
+}
+
+function closeSocket() {
+  if (!socket) return
+  socket.onopen = null
+  socket.onmessage = null
+  socket.onerror = null
+  socket.onclose = null
+  socket.close()
+  socket = null
+}
+
+function selectedMarketSymbols() {
+  const market = $('market').value
+  return universeSymbols.filter(symbol => {
+    if (market === 'hk') return symbol.endsWith('.HK')
+    if (market === 'cn') return symbol.endsWith('.SH') || symbol.endsWith('.SZ')
+    return !/\.(HK|SH|SZ|BINANCE)$/.test(symbol)
+  })
+}
+
+function renderSymbolOptions() {
+  const symbols = selectedMarketSymbols()
+  const fragment = document.createDocumentFragment()
+  for (const symbol of symbols) {
+    const option = document.createElement('option')
+    option.value = symbol
+    fragment.appendChild(option)
+  }
+  $('symbol-options').replaceChildren(fragment)
+  const marketName = { us: '美股', hk: '港股', cn: 'A股' }[$('market').value]
+  $('symbol-options-state').textContent = `可搜索 ${symbols.length.toLocaleString()} 只${marketName}`
+}
+
+function normalizeSelectedMarketSymbol(value) {
+  const symbol = value.trim().toUpperCase()
+  if (!symbol || symbol.includes('.')) return symbol
+  if ($('market').value === 'hk') return `${symbol}.HK`
+  if ($('market').value === 'cn') return `${symbol}.${/^[569]/.test(symbol) ? 'SH' : 'SZ'}`
+  return symbol
+}
+
+async function loadSymbolOptions() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(UNIVERSE_STORAGE_KEY) || 'null')
+    if (cached && Array.isArray(cached.symbols) && Date.now() - cached.savedAt < 24 * 3600 * 1000) {
+      universeSymbols = cached.symbols
+      renderSymbolOptions()
+      return
+    }
+  } catch (_) {}
+  try {
+    const data = await getJSON('/v1/market-history/universe')
+    universeSymbols = (data.symbols || []).map(value => String(value).toUpperCase()).filter(value => !value.endsWith('.BINANCE'))
+    renderSymbolOptions()
+    localStorage.setItem(UNIVERSE_STORAGE_KEY, JSON.stringify({ savedAt: Date.now(), symbols: universeSymbols }))
+  } catch (error) {
+    $('symbol-options-state').textContent = `代码列表加载失败，仍可直接输入：${error.message}`
+  }
 }
 
 async function getJSON(path, options) {
@@ -74,7 +179,7 @@ async function refreshAccount() {
       ? `本地 ClickHouse 存储关闭 · revision ${storage.history_revision ?? 0}`
       : `revision ${storage.history_revision ?? 0} · ${storage.data_version || '—'}`
     $('watchlist-symbols').value = (watchlist.symbols || []).join(',')
-    $('watchlist-state').textContent = `允许 ${(watchlist.allowed_symbols || []).join(',')}`
+    $('watchlist-state').textContent = `已收藏 ${(watchlist.symbols || []).length} / ${watchlist.max_symbols ?? usage.quotas.live_symbols} · 不自动订阅`
     if (!socket || socket.readyState !== WebSocket.OPEN) setStatus('账号在线', 'ok')
   } catch (error) {
     setStatus('账号状态不可用', 'bad')
@@ -378,12 +483,21 @@ function localDateTimeValue(date) {
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
 }
 
+function monthsAgo(date, months) {
+  const result = new Date(date)
+  const day = result.getDate()
+  result.setDate(1)
+  result.setMonth(result.getMonth() - months)
+  result.setDate(Math.min(day, new Date(result.getFullYear(), result.getMonth() + 1, 0).getDate()))
+  return result
+}
+
 function marketDefaults(symbol) {
   const upper = symbol.toUpperCase()
-  if (upper.endsWith('.BINANCE')) return { session: 'continuous', adjustment: 'raw', market: 'Binance Spot' }
-  if (upper.endsWith('.HK')) return { session: 'regular', adjustment: 'forward_adjusted', market: '港股' }
-  if (upper.endsWith('.SH') || upper.endsWith('.SZ')) return { session: 'regular', adjustment: 'forward_adjusted', market: 'A 股' }
-  return { session: 'regular', adjustment: 'split_adjusted', market: '美股' }
+  if (upper.endsWith('.BINANCE')) return { session: 'continuous', adjustment: 'raw', market: 'Binance Spot', timezone: 'UTC' }
+  if (upper.endsWith('.HK')) return { session: 'regular', adjustment: 'forward_adjusted', market: '港股', timezone: 'Asia/Hong_Kong' }
+  if (upper.endsWith('.SH') || upper.endsWith('.SZ')) return { session: 'regular', adjustment: 'forward_adjusted', market: 'A 股', timezone: 'Asia/Shanghai' }
+  return { session: 'regular', adjustment: 'split_adjusted', market: '美股', timezone: 'America/New_York' }
 }
 
 if (!window.klinecharts) {
@@ -393,7 +507,7 @@ if (!window.klinecharts) {
 
 const chart = window.klinecharts.init('chart', {
   locale: 'zh-CN',
-  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  timezone: marketDefaults($('symbol').value).timezone,
   zoomAnchor: 'cursor',
   styles: {
     grid: { horizontal: { color: '#17352c' }, vertical: { color: '#17352c' } },
@@ -423,29 +537,58 @@ chart.overrideXAxis({ scrollZoomEnabled: true })
 chart.overrideYAxis({ paneId: 'candle_pane', scrollZoomEnabled: true })
 
 function stopLive() {
-  if (socket) {
-    socket.onclose = null
-    socket.close()
-    socket = null
-  }
+  closeSocket()
 }
 
 function startLive(symbol, period, callback) {
   stopLive()
-  if (periodToInterval(period) !== '1m') return
-  const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
-  socket = new WebSocket(`${scheme}://${location.host}/v1/live/ws`)
-  socket.onopen = () => {
-    socket.send(JSON.stringify({ action: 'subscribe', symbols: [symbol], events: ['bar'] }))
-    setStatus('实时已连接', 'ok')
+  const interval = periodToInterval(period)
+  const monitorBase = { symbol, interval, count: 0, connectedAt: 0, lastMessageAt: 0, lastType: '' }
+  if (interval !== '1m') {
+    setWSState('disabled', { ...monitorBase, detail: `${interval} 周期只展示历史数据；实时推送目前仅支持 1m` })
+    return
   }
-  socket.onmessage = event => {
-    const payload = JSON.parse(event.data)
+  const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
+  const ws = new WebSocket(`${scheme}://${location.host}/v1/live/ws`)
+  socket = ws
+  setWSState('connecting', { ...monitorBase, detail: `正在连接并订阅 ${symbol}` })
+  ws.onopen = () => {
+    if (socket !== ws) return
+    ws.send(JSON.stringify({ action: 'subscribe', symbols: [symbol], events: ['bar'], status: true }))
+    setWSState('connecting', { detail: `本地 WebSocket 已连接，正在按需订阅 ${symbol}` })
+  }
+  ws.onmessage = event => {
+    if (socket !== ws) return
+    let payload
+    try {
+      payload = JSON.parse(event.data)
+    } catch (_) {
+      setWSState('error', { detail: '收到无法解析的 WebSocket 消息' })
+      return
+    }
+    if (payload.type === 'status') {
+      const state = payload.state === 'connected' ? 'connected' : payload.state === 'reconnecting' ? 'reconnecting' : 'connecting'
+      const values = { detail: payload.detail || `正在按需订阅 ${symbol}` }
+      if (state === 'connected') values.connectedAt = Date.now()
+      setWSState(state, values)
+      return
+    }
+    const now = Date.now()
+    if (payload.type === 'gap') {
+      setWSState('gap', { count: wsMonitor.count + 1, lastMessageAt: now, lastType: 'gap', detail: `${symbol} 推送出现缺口：${payload.reason || 'unknown'}` })
+      return
+    }
+    setWSState('connected', { count: wsMonitor.count + 1, lastMessageAt: now, lastType: payload.type || 'message' })
     if (payload.type === 'bar' && payload.bar) callback(normalizeBar(payload.bar))
   }
-  socket.onerror = () => setStatus('实时连接异常', 'bad')
-  socket.onclose = () => {
+  ws.onerror = () => {
+    if (socket === ws) setWSState('error', { detail: `${symbol} WebSocket 连接异常` })
+  }
+  ws.onclose = event => {
+    if (socket !== ws) return
     socket = null
+    const reason = event.reason ? `：${event.reason}` : ''
+    setWSState('closed', { detail: `${symbol} 连接已关闭（code ${event.code}）${reason}` })
   }
 }
 
@@ -755,7 +898,7 @@ async function analyzeEditor() {
 }
 
 const now = new Date()
-const past = new Date(now.getTime() - 180 * 24 * 3600 * 1000)
+const past = monthsAgo(now, 24)
 $('from').value = localDateTimeValue(past)
 $('to').value = localDateTimeValue(now)
 
@@ -804,19 +947,28 @@ $('save-watchlist').addEventListener('click', async () => {
   }
 })
 
+$('market').addEventListener('change', () => {
+  const placeholders = { us: '输入代码搜索，例如 SNDK', hk: '输入代码搜索，例如 700.HK', cn: '输入代码搜索，例如 600519.SH' }
+  $('symbol').value = ''
+  $('symbol').placeholder = placeholders[$('market').value]
+  renderSymbolOptions()
+})
+
 $('query').addEventListener('submit', event => {
   event.preventDefault()
   $('error').textContent = ''
   try {
-    const symbol = $('symbol').value.trim().toUpperCase()
+    const symbol = normalizeSelectedMarketSymbol($('symbol').value)
     if (!symbol) throw new Error('请输入股票代码')
+    $('symbol').value = symbol
     const from = new Date($('from').value)
     const to = new Date($('to').value)
     if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) || from >= to) throw new Error('请选择有效的开始和结束时间')
     const interval = $('interval').value
     const defaults = marketDefaults(symbol)
     activeQuery = { from: from.toISOString(), to: to.toISOString(), interval, session: defaults.session, adjustment: defaults.adjustment }
-    $('source').textContent = `市场：${defaults.market} · 加载中`
+    $('source').textContent = `市场：${defaults.market} · ${defaults.timezone} · 加载中`
+    chart.setTimezone(defaults.timezone)
     chart.setPeriod(intervalToPeriod(interval))
 	const crypto = symbol.endsWith('.BINANCE')
 	chart.setSymbol({ ticker: symbol, pricePrecision: crypto ? 8 : 4, volumePrecision: crypto ? 8 : 0 })
@@ -828,6 +980,8 @@ $('query').addEventListener('submit', event => {
 
 resetFormulaWorker()
 loadIndicators().catch(error => { $('indicator-state').textContent = error.message })
+loadSymbolOptions()
 refreshAccount()
 setInterval(refreshAccount, 10000)
+setInterval(renderWSStatus, 1000)
 $('query').requestSubmit()

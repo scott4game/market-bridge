@@ -40,6 +40,7 @@ func (m *MultiSource) Run(ctx context.Context, symbols []string, emit func(marke
 	}
 	m.mu.Unlock()
 	var started int
+	var wg sync.WaitGroup
 	for _, route := range m.Routes {
 		var selected []string
 		for _, symbol := range symbols {
@@ -53,12 +54,17 @@ func (m *MultiSource) Run(ctx context.Context, symbols []string, emit func(marke
 		}
 		started++
 		route, selected := route, selected
-		go m.runRoute(ctx, route, selected, emit)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			m.runRoute(ctx, route, selected, emit)
+		}()
 	}
 	if started == 0 {
 		return fmt.Errorf("no live source matches the configured watchlist")
 	}
 	<-ctx.Done()
+	wg.Wait()
 	return ctx.Err()
 }
 
@@ -122,14 +128,24 @@ func (m *MultiSource) setState(name string, mutate func(*sourceState)) {
 func (m *MultiSource) ProviderStatus() map[string]any {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	names := make([]string, 0, len(m.states))
+	nameSet := map[string]struct{}{}
 	for name := range m.states {
+		nameSet[name] = struct{}{}
+	}
+	for _, route := range m.Routes {
+		nameSet[route.Name] = struct{}{}
+	}
+	names := make([]string, 0, len(nameSet))
+	for name := range nameSet {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	status := map[string]any{}
 	for _, name := range names {
-		state := m.states[name]
+		state, ok := m.states[name]
+		if !ok {
+			state.State = "idle"
+		}
 		status[name] = map[string]any{"state": state.State, "last_error": state.LastError, "connected_at": state.Connected, "reconnects": state.Reconnects, "subscribed_symbols": state.Symbols}
 	}
 	return status

@@ -999,5 +999,5 @@ func (c *Cache) clickhouseRetention() time.Duration {
 	if c.cfg.ClickHouseRetention > 0 {
 		return c.cfg.ClickHouseRetention
 	}
-	return 365 * 24 * time.Hour
+	return 730 * 24 * time.Hour
 }
