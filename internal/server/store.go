@@ -176,6 +176,10 @@ func (s *Store) ProviderBars(ctx context.Context, spec market.DatasetSpec) ([]ma
 	return s.provider.Bars(ctx, spec)
 }
 
+func (s *Store) ForwardAdjustmentFactors(ctx context.Context, symbol string) (market.ForwardFactors, error) {
+	return provider.ForwardAdjustmentFactors(ctx, s.provider, symbol)
+}
+
 func (s *Store) Universe(ctx context.Context) ([]string, error) {
 	lister, ok := s.provider.(provider.UniverseLister)
 	if !ok {

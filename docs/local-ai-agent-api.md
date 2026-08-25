@@ -30,7 +30,7 @@ Content-Type: application/json
 
 | 市场 | 代码示例 | 默认 session | 默认 adjustment |
 | --- | --- | --- | --- |
-| 美股 | `SNDK`、`AAPL`（也接受 `AAPL.US`） | `regular` | `split_adjusted` |
+| 美股 | `SNDK`、`AAPL`（也接受 `AAPL.US`） | `regular` | 页面 `forward_adjusted`；API `auto` 为 `split_adjusted` |
 | 港股 | `700.HK` | `regular` | `forward_adjusted` |
 | A 股上海 | `600519.SH` | `regular` | `forward_adjusted` |
 | A 股深圳 | `000001.SZ` | `regular` | `forward_adjusted` |
@@ -48,6 +48,7 @@ Content-Type: application/json
 | GET | `/v1/providers/status` | 查看历史/实时行情供应商状态 |
 | GET | `/v1/storage/status` | 查看当前 ClickHouse、本地缓存模式 |
 | GET | `/v1/market-history/universe` | 获取可搜索的全部标的代码 |
+| GET | `/v1/market-history/adjustments/{symbol}` | 获取美股前复权累计因子及版本 |
 | GET | `/v1/bars/{symbol}` | 查询单标的历史 K 线 |
 | POST | `/v1/datasets/ensure` | 查询多个同市场标的的历史 K 线 |
 | GET | `/v1/me/usage` | 查看当前账号用量和配额 |
@@ -106,7 +107,7 @@ curl --fail --get 'http://127.0.0.1:17600/v1/bars/SNDK' \
   --data-urlencode 'to=2026-08-26T00:00:00Z' \
   --data-urlencode 'interval=1h' \
   --data-urlencode 'session=regular' \
-  --data-urlencode 'adjustment=split_adjusted'
+  --data-urlencode 'adjustment=forward_adjusted'
 ```
 
 参数：
@@ -149,10 +150,10 @@ curl --fail --get 'http://127.0.0.1:17600/v1/bars/SNDK' \
 
 ### SNDK 1 小时线注意事项
 
-Massive 的自然小时聚合边界和 Futu 的美股常规盘 `09:30` 锚定小时边界可能不同。
-另外，当前 Massive Provider 的 `session` 会进入数据集身份，但不会自动把盘前盘后数据
-过滤掉。若 Agent 要与 Futu 严格逐根对比，应先按纽约交易所日历过滤常规盘，再用相同的
-`09:30` 起点重新聚合，不能只比较两个接口都名为 `1h` 的结果。
+美股 `regular` 分钟线会过滤到美东 `09:30–16:00`；`1h/2h/3h/4h` 使用 Futu 风格的
+`09:30` 开盘锚点，最后不足一个完整周期的 K 线仍会返回。`forward_adjusted` 使用
+Massive 的拆股调整行情和累计现金分红因子实现美股连乘前复权。时间边界应与 Futu
+一致，但两家供应商对有效成交的筛选可能不同，因此 OHLC 和成交量不保证逐值相同。
 
 ## 6. 多标的历史 K 线
 
@@ -167,7 +168,7 @@ curl -fsS -X POST 'http://127.0.0.1:17600/v1/datasets/ensure' \
     "from": "2026-01-01T00:00:00Z",
     "to": "2026-08-26T00:00:00Z",
     "session": "regular",
-    "adjustment": "split_adjusted"
+    "adjustment": "forward_adjusted"
   }'
 ```
 

@@ -60,6 +60,7 @@ func (h *HTTP) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/storage/capabilities", h.auth("profile:read", h.storageCapabilities))
 	mux.HandleFunc("POST /v1/history/bars", h.auth("history:read", h.historyBars))
 	mux.HandleFunc("GET /v1/market-history/universe", h.auth("history:read", h.historyUniverse))
+	mux.HandleFunc("GET /v1/market-history/adjustments/{symbol}", h.auth("history:read", h.historyAdjustments))
 	mux.HandleFunc("GET /v1/me", h.auth("profile:read", h.me))
 	mux.HandleFunc("GET /v1/me/usage", h.auth("profile:read", h.myUsage))
 	mux.HandleFunc("GET /v1/me/watchlist", h.auth("profile:read", h.getWatchlist))
@@ -70,6 +71,15 @@ func (h *HTTP) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/me/indicators/{id}", h.auth("indicators:write", h.deleteIndicator))
 	mux.HandleFunc("POST /v1/me/indicators/{id}/copy", h.auth("indicators:write", h.copyIndicator))
 	return mux
+}
+
+func (h *HTTP) historyAdjustments(w http.ResponseWriter, r *http.Request) {
+	curve, err := h.Store.ForwardAdjustmentFactors(r.Context(), r.PathValue("symbol"))
+	if err != nil {
+		writeJSON(w, 502, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, curve)
 }
 
 func (h *HTTP) historyUniverse(w http.ResponseWriter, r *http.Request) {
@@ -124,27 +134,22 @@ func (h *HTTP) historyBars(w http.ResponseWriter, r *http.Request) {
 	}
 	recent := !spec.From.Before(time.Now().UTC().Add(-retention))
 	canonical := recent && spec.Interval == "1m" && h.ClickHouseEnabled && h.ClickHouse != nil
-	if !canonical || body.ProviderOnly || h.HistoryCatalog == nil {
+	if body.ProviderOnly || !canonical || h.HistoryCatalog == nil {
 		bars, err := h.Store.ProviderBars(r.Context(), spec)
 		if err != nil {
 			writeJSON(w, 502, map[string]string{"error": err.Error()})
 			return
 		}
-		if canonical {
-			if err := h.persistHistory(r.Context(), spec, bars); err != nil {
-				writeJSON(w, 503, map[string]string{"error": err.Error()})
-				return
-			}
-		}
-		source := "provider"
-		if canonical {
-			source = "provider+server-clickhouse"
-		}
-		writeJSON(w, 200, map[string]any{"source": source, "bars": nonNilBars(bars)})
+		writeJSON(w, 200, map[string]any{"source": "provider", "bars": nonNilBars(bars)})
 		return
 	}
+	storageSpec := spec
+	applyForward := market.IsUSForwardAdjusted(spec)
+	if applyForward {
+		storageSpec.Adjustment = market.SplitAdjusted
+	}
 
-	missing, err := h.HistoryCatalog.Missing(r.Context(), spec, h.DataVersion)
+	missing, err := h.HistoryCatalog.Missing(r.Context(), storageSpec, h.DataVersion)
 	if err != nil {
 		writeJSON(w, 503, map[string]string{"error": err.Error()})
 		return
@@ -162,7 +167,7 @@ func (h *HTTP) historyBars(w http.ResponseWriter, r *http.Request) {
 		}
 		fetched = true
 	}
-	bars, err := h.ClickHouse.QueryBars(r.Context(), spec)
+	bars, err := h.ClickHouse.QueryBars(r.Context(), storageSpec)
 	if err != nil {
 		writeJSON(w, 503, map[string]string{"error": err.Error()})
 		return
@@ -171,7 +176,30 @@ func (h *HTTP) historyBars(w http.ResponseWriter, r *http.Request) {
 	if fetched {
 		source = "provider+server-clickhouse"
 	}
+	if applyForward {
+		bars, err = h.forwardAdjustBars(r.Context(), spec, bars)
+		if err != nil {
+			writeJSON(w, 502, map[string]string{"error": err.Error()})
+			return
+		}
+	}
 	writeJSON(w, 200, map[string]any{"source": source, "bars": nonNilBars(bars)})
+}
+
+func (h *HTTP) forwardAdjustBars(ctx context.Context, spec market.DatasetSpec, bars []market.Bar) ([]market.Bar, error) {
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return nil, err
+	}
+	curves := make(map[string]market.ForwardFactors, len(spec.Symbols))
+	for _, symbol := range spec.Symbols {
+		curve, factorErr := h.Store.ForwardAdjustmentFactors(ctx, symbol)
+		if factorErr != nil {
+			return nil, factorErr
+		}
+		curves[symbol] = curve
+	}
+	return market.ApplyForwardFactors(bars, curves, location)
 }
 
 func (h *HTTP) persistHistory(ctx context.Context, spec market.DatasetSpec, bars []market.Bar) error {

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/scott4game/market-bridge/internal/market"
@@ -28,6 +30,18 @@ type Description struct {
 
 type SpecDescriber interface {
 	Describe(market.DatasetSpec) (Description, error)
+}
+
+type ForwardAdjustmentProvider interface {
+	ForwardAdjustmentFactors(context.Context, string) (market.ForwardFactors, error)
+}
+
+func ForwardAdjustmentFactors(ctx context.Context, p Provider, symbol string) (market.ForwardFactors, error) {
+	adjuster, ok := p.(ForwardAdjustmentProvider)
+	if !ok {
+		return market.ForwardFactors{}, fmt.Errorf("provider %s does not support forward adjustment", p.Name())
+	}
+	return adjuster.ForwardAdjustmentFactors(ctx, symbol)
 }
 
 func Describe(p Provider, spec market.DatasetSpec) (Description, error) {
@@ -96,8 +110,16 @@ func (m *Mock) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar,
 
 type Massive struct {
 	APIKey, BaseURL, Version string
+	PlanName                 string
 	HTTP                     *http.Client
 	Usage                    *UsageTracker
+	factorMu                 sync.Mutex
+	factorCache              map[string]massiveFactorCache
+}
+
+type massiveFactorCache struct {
+	curve     market.ForwardFactors
+	expiresAt time.Time
 }
 
 func (m *Massive) Name() string { return "massive" }
@@ -107,6 +129,14 @@ func (m *Massive) DataVersion() string {
 	}
 	return m.Version
 }
+func (m *Massive) Describe(spec market.DatasetSpec) (Description, error) {
+	normalized, err := spec.Normalize()
+	if err != nil {
+		return Description{}, err
+	}
+	return Description{Name: m.Name(), DataVersion: market.SemanticDataVersion(normalized, m.DataVersion(), time.Now())}, nil
+}
+
 func (m *Massive) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar, error) {
 	if m.APIKey == "" {
 		return nil, fmt.Errorf("MASSIVE_API_KEY is required")
@@ -115,6 +145,67 @@ func (m *Massive) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.B
 	if err != nil {
 		return nil, err
 	}
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return nil, fmt.Errorf("load New York timezone: %w", err)
+	}
+	if market.IsUSForwardAdjusted(spec) && strings.EqualFold(m.PlanName, "stocks_basic") {
+		oldest := time.Now().In(location).AddDate(-2, 0, 0)
+		if spec.From.Before(oldest) {
+			return nil, fmt.Errorf("Massive Stocks Basic forward_adjusted history is limited to the most recent two years")
+		}
+	}
+	target := spec.Interval
+	fetchSpec := spec
+	if market.IsUSForwardAdjusted(spec) {
+		fetchSpec.Adjustment = market.SplitAdjusted
+	}
+	if spec.Session == market.RegularSession && isUSHour(target) {
+		fetchSpec.Interval = "30m"
+	}
+	if market.IsUSForwardAdjusted(spec) && (target == "1w" || target == "1mo" || target == "1y") {
+		fetchSpec.Interval = "1d"
+	}
+	bars, err := m.fetchBars(ctx, fetchSpec)
+	if err != nil {
+		return nil, err
+	}
+	if market.IsUSForwardAdjusted(spec) {
+		curves := make(map[string]market.ForwardFactors, len(spec.Symbols))
+		for _, symbol := range spec.Symbols {
+			curve, factorErr := m.ForwardAdjustmentFactors(ctx, symbol)
+			if factorErr != nil {
+				return nil, factorErr
+			}
+			curves[symbol] = curve
+		}
+		bars, err = market.ApplyForwardFactors(bars, curves, location)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if spec.Session == market.RegularSession && isUSIntraday(target) {
+		if isUSHour(target) {
+			bars, err = aggregateUSRegularHours(bars, target, location)
+		} else {
+			bars = filterUSRegularBars(bars, location)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	if market.IsUSForwardAdjusted(spec) && (target == "1w" || target == "1mo" || target == "1y") {
+		bars, err = aggregateUSCalendar(bars, target, location)
+		if err != nil {
+			return nil, err
+		}
+	}
+	bars = filterRequestedRange(bars, spec.From, spec.To)
+	market.SortBars(bars)
+	return bars, nil
+}
+
+func (m *Massive) fetchBars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar, error) {
 	multiplier, span, err := massiveInterval(spec.Interval)
 	if err != nil {
 		return nil, err
@@ -216,6 +307,116 @@ func (m *Massive) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.B
 	}
 	market.SortBars(bars)
 	return bars, nil
+}
+
+func (m *Massive) ForwardAdjustmentFactors(ctx context.Context, symbol string) (market.ForwardFactors, error) {
+	normalized, venue, err := market.NormalizeSymbol(symbol)
+	if err != nil || venue != market.VenueUS {
+		return market.ForwardFactors{}, fmt.Errorf("forward adjustment requires a US symbol")
+	}
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return market.ForwardFactors{}, err
+	}
+	now := time.Now().In(location)
+	m.factorMu.Lock()
+	if entry, ok := m.factorCache[normalized]; ok && now.Before(entry.expiresAt) {
+		m.factorMu.Unlock()
+		return entry.curve, nil
+	}
+	m.factorMu.Unlock()
+
+	client := m.HTTP
+	if client == nil {
+		client = &http.Client{Timeout: 45 * time.Second}
+	}
+	baseURL := strings.TrimRight(m.BaseURL, "/")
+	if baseURL == "" {
+		baseURL = "https://api.massive.com"
+	}
+	base, err := url.Parse(baseURL)
+	if err != nil {
+		return market.ForwardFactors{}, fmt.Errorf("invalid Massive base URL: %w", err)
+	}
+	next := baseURL + "/stocks/v1/dividends"
+	visited := map[string]struct{}{}
+	var factors []market.ForwardFactor
+	for next != "" {
+		u, parseErr := url.Parse(next)
+		if parseErr != nil {
+			return market.ForwardFactors{}, parseErr
+		}
+		if u.Scheme != base.Scheme || !strings.EqualFold(u.Host, base.Host) {
+			return market.ForwardFactors{}, fmt.Errorf("massive dividends: rejected cross-origin next_url %q", next)
+		}
+		if _, ok := visited[u.String()]; ok {
+			return market.ForwardFactors{}, fmt.Errorf("massive dividends: pagination cycle")
+		}
+		visited[u.String()] = struct{}{}
+		q := u.Query()
+		q.Set("apiKey", m.APIKey)
+		q.Set("ticker", normalized)
+		q.Set("limit", "5000")
+		q.Set("sort", "ex_dividend_date.asc")
+		q.Set("ex_dividend_date.lte", now.Format("2006-01-02"))
+		u.RawQuery = q.Encode()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+		finish := func(int, error) {}
+		if m.Usage != nil {
+			finish = m.Usage.Begin("massive", "stocks_dividends")
+		}
+		resp, requestErr := client.Do(req)
+		if requestErr != nil {
+			finish(0, requestErr)
+			return market.ForwardFactors{}, requestErr
+		}
+		var payload struct {
+			NextURL string `json:"next_url"`
+			Error   string `json:"error"`
+			Results []struct {
+				Date   string       `json:"ex_dividend_date"`
+				Factor *json.Number `json:"historical_adjustment_factor"`
+			} `json:"results"`
+		}
+		decoder := json.NewDecoder(resp.Body)
+		decoder.UseNumber()
+		decodeErr := decoder.Decode(&payload)
+		resp.Body.Close()
+		finish(resp.StatusCode, decodeErr)
+		if decodeErr != nil {
+			return market.ForwardFactors{}, decodeErr
+		}
+		if resp.StatusCode/100 != 2 {
+			return market.ForwardFactors{}, fmt.Errorf("massive dividends: status %d: %s", resp.StatusCode, payload.Error)
+		}
+		for _, item := range payload.Results {
+			if item.Date == "" || item.Factor == nil {
+				return market.ForwardFactors{}, fmt.Errorf("massive dividends returned an incomplete adjustment factor for %s", normalized)
+			}
+			factor, factorErr := market.DecimalFromString(item.Factor.String())
+			if factorErr != nil {
+				return market.ForwardFactors{}, fmt.Errorf("massive dividends factor for %s: %w", normalized, factorErr)
+			}
+			factors = append(factors, market.ForwardFactor{EffectiveDate: item.Date, Factor: factor})
+		}
+		next = payload.NextURL
+	}
+	curve := market.ForwardFactors{Symbol: normalized, Mode: market.ForwardAdjusted, AsOf: now.Format("2006-01-02"), Factors: factors}
+	curve, err = market.NormalizeForwardFactors(curve)
+	if err != nil {
+		return market.ForwardFactors{}, err
+	}
+	raw, _ := json.Marshal(curve.Factors)
+	digest := sha256.Sum256(raw)
+	curve.Version = fmt.Sprintf("massive-qfq-v1:%s:%x", curve.AsOf, digest[:8])
+	expiresAt := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, location)
+	m.factorMu.Lock()
+	if m.factorCache == nil {
+		m.factorCache = map[string]massiveFactorCache{}
+	}
+	m.factorCache[normalized] = massiveFactorCache{curve: curve, expiresAt: expiresAt}
+	m.factorMu.Unlock()
+	return curve, nil
 }
 
 func massiveInterval(v string) (int, string, error) {

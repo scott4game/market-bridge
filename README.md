@@ -267,7 +267,7 @@ docker compose --profile local up --build
 - 设置 `GO_SERVER_LONGBRIDGE_HISTORY_ENABLED=true` 后，`700.HK`、`600519.SH`、`000001.SZ` 的历史 K 线由 Longbridge 提供；Longbridge 三项凭据仍由服务端统一保存。裸代码和 `.US` 继续走原有美股 Provider。
 - 设置 `GO_SERVER_BINANCE_ENABLED=true` 后，`BTCUSDT.BINANCE` 这类代码使用 Binance Spot 公共行情，无需 Binance API Key。币种成交量同时返回精确字符串字段 `volume_decimal`。
 - `GO_SERVER_LIVE_PROVIDERS=longbridge,binance` 可同时采集证券和币圈实时行情；兼容旧的单值 `GO_SERVER_LIVE_PROVIDER`。代码由活跃 WebSocket 连接按需订阅，无需服务端代码池。
-- 标准代码格式为 `AAPL`/`AAPL.US`、`700.HK`、`600519.SH`、`000001.SZ` 和 `BTCUSDT.BINANCE`。证券默认 `regular` 时段，币圈默认 `continuous`；港股/A 股默认前复权，币圈固定原始价格。
+- 标准代码格式为 `AAPL`/`AAPL.US`、`700.HK`、`600519.SH`、`000001.SZ` 和 `BTCUSDT.BINANCE`。证券默认 `regular` 时段，币圈默认 `continuous`；页面中的美股、港股和 A 股默认前复权，币圈固定原始价格。美股 `1h/2h/3h/4h` 按 Futu 风格从美东 `09:30` 锚定。
 - 服务端 ClickHouse 默认关闭且不随服务端部署。资源受限的 `go-server` 可以一直保持 `GO_SERVER_CLICKHOUSE_ENABLED=false`。
 - 客户端可设置 `GO_CLIENT_CLICKHOUSE_ENABLED=true`。go-client 会自动探测服务端：服务端 CH 开启时只使用远端 CH，并将本地 CH 逻辑关闭；服务端明确未开启 CH 时才写本地 CH。两者不会自动双写。最近730天进入唯一启用的 CH，超过730天的数据绕过 CH、按需从 Provider 拉取并缓存到客户端 Redis。详细配置见 [go-client 本地数据接口与策略验证指南](docs/go-client-data-api.md#2-客户端-clickhouse-实时镜像)。
 

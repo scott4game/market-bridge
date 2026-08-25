@@ -148,7 +148,7 @@ curl --get 'http://127.0.0.1:17600/v1/bars/AAPL' \
   --data-urlencode 'from=2025-01-01T00:00:00Z' \
   --data-urlencode 'to=2026-01-01T00:00:00Z' \
   --data-urlencode 'session=regular' \
-  --data-urlencode 'adjustment=split_adjusted'
+  --data-urlencode 'adjustment=forward_adjusted'
 ```
 
 查询参数：
@@ -174,12 +174,13 @@ curl --get 'http://127.0.0.1:17600/v1/bars/AAPL' \
 `BTCUSDT.BINANCE`。`.HK/.SH/.SZ` 由 Longbridge 提供，`.BINANCE` 由 Binance
 Spot 提供。证券和币圈代码不能放进同一个 dataset。
 
-`session` 会参与数据集标识并写入 bar。Massive Provider 没有把它转换成
-交易时段过滤条件。若策略严格区分盘前、盘中和盘后，机器人仍需按交易所日历和 UTC
-时间自行过滤，不能只依赖返回的 `session` 字段。
+`session` 会参与数据集标识并写入 bar。美股 `regular` 分钟线会过滤到美东
+`09:30–16:00`，`1h/2h/3h/4h` 从 30 分钟母线按 `09:30` 锚点重新聚合；
+`extended` 仍采用 Massive 原生边界。
 
-市场默认值为：美股 `regular + split_adjusted`，港股/A 股
-`regular + forward_adjusted`，Binance Spot `continuous + raw`。币圈成交量可能含
+页面默认值为：美股、港股/A 股 `regular + forward_adjusted`，Binance Spot
+`continuous + raw`。API 的美股 `auto` 为兼容已有调用仍解析为 `split_adjusted`，
+Agent 若要与页面一致应显式传 `forward_adjusted`。币圈成交量可能含
 小数，读取时优先使用 `volume_decimal`；旧的 `volume` int64 字段为兼容字段。
 
 响应示例：
@@ -220,7 +221,7 @@ curl -fsS -X POST 'http://127.0.0.1:17600/v1/datasets/ensure' \
     "from": "2025-01-01T00:00:00Z",
     "to": "2026-01-01T00:00:00Z",
     "session": "regular",
-    "adjustment": "split_adjusted"
+    "adjustment": "forward_adjusted"
   }'
 ```
 
@@ -286,7 +287,7 @@ params = {
     "from": "2025-01-01T00:00:00Z",
     "to": "2026-01-01T00:00:00Z",
     "session": "regular",
-    "adjustment": "split_adjusted",
+    "adjustment": "forward_adjusted",
 }
 
 response = requests.get(
@@ -471,9 +472,10 @@ bar[t] 收盘 -> 计算 signal[t] -> 最早在 bar[t+1] 的可成交价格执行
 前视偏差。涉及 EMA、MACD 等递推指标时，查询范围应早于正式评估区间；例如最长参数
 为 90，可先加载至少数倍于 90 的 K 线作为预热，只统计预热区间之后的结果。
 
-复权模式会直接改变历史价格：研究收益连续性通常使用 `split_adjusted`，核对真实历史
-成交价时使用 `raw`。同一组训练、验证和实盘对照不得混用两种模式。当前 Massive 的
-`split_adjusted` 表示拆股调整，不等同于股息复权。
+复权模式会直接改变历史价格：核对真实历史成交价使用 `raw`。港股/A 股的
+`forward_adjusted` 来自 Longbridge；美股前复权由 Massive 拆股调整行情叠加累计现金
+分红因子生成。该算法与 Futu 美股连乘前复权语义一致，但公司行动覆盖和成交筛选来源
+不同，不承诺价格逐值完全相同。Massive Stocks Basic 的前复权支持最近两个自然年。
 
 ## 7. 与浏览器公式指标对照
 

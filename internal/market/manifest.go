@@ -2,7 +2,7 @@ package market
 
 import "time"
 
-const SchemaVersion = "1"
+const SchemaVersion = "2"
 
 type Partition struct {
 	Name      string    `json:"name"`

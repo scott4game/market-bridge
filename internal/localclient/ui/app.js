@@ -497,7 +497,7 @@ function marketDefaults(symbol) {
   if (upper.endsWith('.BINANCE')) return { session: 'continuous', adjustment: 'raw', market: 'Binance Spot', timezone: 'UTC' }
   if (upper.endsWith('.HK')) return { session: 'regular', adjustment: 'forward_adjusted', market: '港股', timezone: 'Asia/Hong_Kong' }
   if (upper.endsWith('.SH') || upper.endsWith('.SZ')) return { session: 'regular', adjustment: 'forward_adjusted', market: 'A 股', timezone: 'Asia/Shanghai' }
-  return { session: 'regular', adjustment: 'split_adjusted', market: '美股', timezone: 'America/New_York' }
+  return { session: 'regular', adjustment: 'forward_adjusted', market: '美股', timezone: 'America/New_York' }
 }
 
 if (!window.klinecharts) {

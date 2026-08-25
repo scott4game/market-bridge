@@ -45,7 +45,7 @@ func main() {
 			log.Fatal(err)
 		}
 		defer usage.Close()
-		usProvider = &provider.Massive{APIKey: cfg.MassiveAPIKey, BaseURL: cfg.MassiveBaseURL, Version: cfg.DataVersion, Usage: usage}
+		usProvider = &provider.Massive{APIKey: cfg.MassiveAPIKey, BaseURL: cfg.MassiveBaseURL, Version: cfg.DataVersion, PlanName: cfg.MassivePlanName, Usage: usage}
 	default:
 		usProvider = &provider.Mock{Version: cfg.DataVersion}
 	}

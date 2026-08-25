@@ -111,3 +111,15 @@ func (r *Router) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.Ba
 	market.SortBars(bars)
 	return bars, nil
 }
+
+func (r *Router) ForwardAdjustmentFactors(ctx context.Context, symbol string) (market.ForwardFactors, error) {
+	_, venue, err := market.NormalizeSymbol(symbol)
+	if err != nil {
+		return market.ForwardFactors{}, err
+	}
+	p, err := r.providerFor(venue)
+	if err != nil {
+		return market.ForwardFactors{}, err
+	}
+	return ForwardAdjustmentFactors(ctx, p, symbol)
+}

@@ -172,9 +172,8 @@ func (s DatasetSpec) Normalize() (DatasetSpec, error) {
 	for venue := range venues {
 		switch venue {
 		case VenueUS:
-			if s.Adjustment == ForwardAdjusted {
-				return s, errors.New("us symbols do not support forward_adjusted")
-			}
+			// US forward adjustment is produced from split-adjusted Massive bars
+			// plus the provider's cumulative dividend adjustment factors.
 		case VenueHK, VenueSH, VenueSZ:
 			if s.Adjustment == SplitAdjusted {
 				return s, errors.New("hk/cn symbols use forward_adjusted instead of split_adjusted")
@@ -188,6 +187,35 @@ func (s DatasetSpec) Normalize() (DatasetSpec, error) {
 	s.From = s.From.UTC()
 	s.To = s.To.UTC()
 	return s, nil
+}
+
+// IsUSForwardAdjusted reports whether a normalized dataset is an all-US
+// forward-adjusted request.
+func IsUSForwardAdjusted(spec DatasetSpec) bool {
+	if spec.Adjustment != ForwardAdjusted || len(spec.Symbols) == 0 {
+		return false
+	}
+	for _, symbol := range spec.Symbols {
+		venue, err := VenueOf(symbol)
+		if err != nil || venue != VenueUS {
+			return false
+		}
+	}
+	return true
+}
+
+// SemanticDataVersion keeps forward-adjusted caches current as Massive's
+// corporate-action factors are refreshed daily. Other adjustment modes retain
+// their stable cache identity.
+func SemanticDataVersion(spec DatasetSpec, base string, now time.Time) string {
+	if !IsUSForwardAdjusted(spec) {
+		return base
+	}
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		location = time.FixedZone("America/New_York", -5*60*60)
+	}
+	return base + ":us-qfq-v1:" + now.In(location).Format("2006-01-02")
 }
 
 func (s DatasetSpec) Hash(schemaVersion, dataVersion string) (string, error) {

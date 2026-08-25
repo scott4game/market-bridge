@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -177,7 +178,7 @@ func (c *Cache) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar
 }
 
 func (c *Cache) legacyBars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar, string, error) {
-	key, err := spec.Hash(market.SchemaVersion, "request")
+	key, err := spec.Hash(market.SchemaVersion, market.SemanticDataVersion(spec, "request", time.Now()))
 	if err != nil {
 		return nil, "", err
 	}
@@ -274,7 +275,8 @@ func (c *Cache) routedBars(ctx context.Context, spec market.DatasetSpec, capabil
 
 func (c *Cache) recentBars(ctx context.Context, spec market.DatasetSpec, capability StorageCapability) ([]market.Bar, string, error) {
 	if spec.Interval != "1m" {
-		key, _ := spec.Hash(market.SchemaVersion, "provider-recent:"+capability.DataVersion)
+		version := market.SemanticDataVersion(spec, "provider-recent:"+capability.DataVersion, time.Now())
+		key, _ := spec.Hash(market.SchemaVersion, version)
 		if bars, ok := c.redisBars(ctx, "recent:"+key); ok {
 			return bars, "redis", nil
 		}
@@ -291,7 +293,8 @@ func (c *Cache) recentBars(ctx context.Context, spec market.DatasetSpec, capabil
 		mode = "server-clickhouse"
 		version = fmt.Sprintf("%s:%d", capability.DataVersion, capability.HistoryRevision)
 	}
-	key, _ := spec.Hash(market.SchemaVersion, mode+":"+version)
+	cacheVersion := market.SemanticDataVersion(spec, mode+":"+version, time.Now())
+	key, _ := spec.Hash(market.SchemaVersion, cacheVersion)
 	if bars, ok := c.redisBars(ctx, "recent:"+key); ok {
 		return bars, "redis", nil
 	}
@@ -314,7 +317,12 @@ func (c *Cache) recentBars(ctx context.Context, spec market.DatasetSpec, capabil
 		c.setRedisBars(ctx, "recent:"+key, bars, c.recentRedisTTL(bars))
 		return bars, source, nil
 	}
-	missing, err := c.coverage.Missing(ctx, spec, version)
+	storageSpec := spec
+	applyForward := market.IsUSForwardAdjusted(spec)
+	if applyForward {
+		storageSpec.Adjustment = market.SplitAdjusted
+	}
+	missing, err := c.coverage.Missing(ctx, storageSpec, version)
 	if err != nil {
 		return nil, "", err
 	}
@@ -338,9 +346,15 @@ func (c *Cache) recentBars(ctx context.Context, spec market.DatasetSpec, capabil
 		}
 		fetched = true
 	}
-	bars, err := c.clickhouse.QueryBars(ctx, spec)
+	bars, err := c.clickhouse.QueryBars(ctx, storageSpec)
 	if err != nil {
 		return nil, "", err
+	}
+	if applyForward {
+		bars, err = c.forwardAdjustBars(ctx, spec, bars)
+		if err != nil {
+			return nil, "", err
+		}
 	}
 	source := "local-clickhouse"
 	if fetched {
@@ -374,7 +388,8 @@ func (c *Cache) archiveBars(ctx context.Context, spec market.DatasetSpec, dataVe
 		}
 		chunk := spec
 		chunk.From, chunk.To = start, next
-		key, _ := chunk.Hash(market.SchemaVersion, "provider-archive:"+dataVersion)
+		version := market.SemanticDataVersion(chunk, "provider-archive:"+dataVersion, time.Now())
+		key, _ := chunk.Hash(market.SchemaVersion, version)
 		cached, ok := c.redisBars(ctx, "archive:"+key)
 		if !ok {
 			var err error
@@ -396,6 +411,26 @@ func (c *Cache) archiveBars(ctx context.Context, spec market.DatasetSpec, dataVe
 		return all, "redis", nil
 	}
 	return all, "provider", nil
+}
+
+func (c *Cache) forwardAdjustBars(ctx context.Context, spec market.DatasetSpec, bars []market.Bar) ([]market.Bar, error) {
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return nil, err
+	}
+	curves := make(map[string]market.ForwardFactors, len(spec.Symbols))
+	for _, symbol := range spec.Symbols {
+		var curve market.ForwardFactors
+		if err := c.getJSON(ctx, "/v1/market-history/adjustments/"+url.PathEscape(symbol), &curve); err != nil {
+			return nil, err
+		}
+		curve, err = market.NormalizeForwardFactors(curve)
+		if err != nil {
+			return nil, err
+		}
+		curves[symbol] = curve
+	}
+	return market.ApplyForwardFactors(bars, curves, location)
 }
 
 func (c *Cache) remoteHistoryBars(ctx context.Context, spec market.DatasetSpec, providerOnly bool) ([]market.Bar, string, error) {
