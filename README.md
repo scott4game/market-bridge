@@ -242,4 +242,7 @@ docker compose --profile local up --build
 
 完整设计与验收标准见 [docs/architecture-plan.md](docs/architecture-plan.md)。
 
+机器人、研究脚本和回测程序读取本地历史/实时行情时，见
+[go-client 本地数据接口与策略验证指南](docs/go-client-data-api.md)。
+
 生产部署后的 Compose 升级、Nginx/OpenResty 配置、REST/WebSocket 验证及 Longbridge 常见故障排查，见 [go-server 部署、验证与故障排查](docs/server-operations.md)。
