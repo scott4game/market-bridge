@@ -49,11 +49,13 @@ download deploy/compose.client.yaml "$tmp_dir/$COMPOSE_FILE"
 download .env.client.example "$tmp_dir/$ENV_EXAMPLE_FILE"
 
 redis_password="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+clickhouse_password="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
 cp "$tmp_dir/$COMPOSE_FILE" "$COMPOSE_FILE"
 cp "$tmp_dir/$ENV_EXAMPLE_FILE" "$ENV_EXAMPLE_FILE"
 cp "$ENV_EXAMPLE_FILE" "$ENV_FILE"
 set_env_value "$ENV_FILE" REDIS_PASSWORD "$redis_password"
 set_env_value "$ENV_FILE" GO_CLIENT_REDIS_PASSWORD "$redis_password"
+set_env_value "$ENV_FILE" CLICKHOUSE_PASSWORD "$clickhouse_password"
 chmod 600 "$ENV_FILE"
 
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
@@ -63,7 +65,7 @@ else
 fi
 
 log "deployment files are ready in $(pwd)"
-log "configure GO_CLIENT_SERVER_URL and GO_CLIENT_SERVER_TOKEN in .env"
+log "configure GO_CLIENT_SERVER_URL, GO_CLIENT_SERVER_TOKEN and GO_CLIENT_MIRROR_WATCHLIST in .env"
 log "start: docker compose up -d"
 log "logs:  docker compose logs -f go-client"
 log "open:  http://127.0.0.1:17600"

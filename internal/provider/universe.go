@@ -1,0 +1,129 @@
+package provider
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/url"
+	"sort"
+	"strings"
+
+	openapi "github.com/longbridge/openapi-go"
+	lbquote "github.com/longbridge/openapi-go/quote"
+)
+
+type UniverseLister interface {
+	Universe(context.Context) ([]string, error)
+}
+
+func (m *Massive) Universe(ctx context.Context) ([]string, error) {
+	if m.APIKey == "" {
+		return nil, fmt.Errorf("MASSIVE_API_KEY is required")
+	}
+	client := m.HTTP
+	if client == nil {
+		client = &http.Client{}
+	}
+	base := strings.TrimRight(m.BaseURL, "/")
+	if base == "" {
+		base = "https://api.massive.com"
+	}
+	next := base + "/v3/reference/tickers?market=stocks&active=true&limit=1000"
+	var symbols []string
+	for next != "" {
+		u, err := url.Parse(next)
+		if err != nil {
+			return nil, err
+		}
+		q := u.Query()
+		q.Set("apiKey", m.APIKey)
+		u.RawQuery = q.Encode()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		var payload struct {
+			Results []struct{ Ticker, Type string } `json:"results"`
+			NextURL string                          `json:"next_url"`
+			Error   string                          `json:"error"`
+		}
+		err = json.NewDecoder(resp.Body).Decode(&payload)
+		resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode/100 != 2 {
+			return nil, fmt.Errorf("massive universe: status %d: %s", resp.StatusCode, payload.Error)
+		}
+		for _, item := range payload.Results {
+			if item.Type == "CS" && item.Ticker != "" {
+				symbols = append(symbols, strings.ToUpper(item.Ticker))
+			}
+		}
+		next = payload.NextURL
+	}
+	return uniqueSorted(symbols), nil
+}
+
+type longbridgeSecurityLister interface {
+	SecurityList(context.Context, openapi.Market, lbquote.SecurityListCategory) ([]*lbquote.Security, error)
+}
+
+func (p *Longbridge) Universe(ctx context.Context) ([]string, error) {
+	lister, ok := p.Quote.(longbridgeSecurityLister)
+	if !ok {
+		return nil, fmt.Errorf("Longbridge client does not support security lists")
+	}
+	var symbols []string
+	for _, marketName := range []openapi.Market{openapi.MarketHK, openapi.MarketCN} {
+		items, err := lister.SecurityList(ctx, marketName, "")
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range items {
+			if item != nil && item.Symbol != "" {
+				symbols = append(symbols, item.Symbol)
+			}
+		}
+	}
+	return uniqueSorted(symbols), nil
+}
+
+func (r *Router) Universe(ctx context.Context) ([]string, error) {
+	var symbols []string
+	for _, candidate := range []Provider{r.US, r.Longbridge} {
+		if candidate == nil {
+			continue
+		}
+		lister, ok := candidate.(UniverseLister)
+		if !ok {
+			continue
+		}
+		part, err := lister.Universe(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("%s universe: %w", candidate.Name(), err)
+		}
+		symbols = append(symbols, part...)
+	}
+	return uniqueSorted(symbols), nil
+}
+
+func uniqueSorted(input []string) []string {
+	seen := map[string]struct{}{}
+	output := make([]string, 0, len(input))
+	for _, symbol := range input {
+		symbol = strings.ToUpper(strings.TrimSpace(symbol))
+		if symbol == "" {
+			continue
+		}
+		if _, ok := seen[symbol]; ok {
+			continue
+		}
+		seen[symbol] = struct{}{}
+		output = append(output, symbol)
+	}
+	sort.Strings(output)
+	return output
+}

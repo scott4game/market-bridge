@@ -69,6 +69,11 @@ validate_server_env() {
 
 validate_client_env() {
   require_env GO_CLIENT_SERVER_URL GO_CLIENT_SERVER_TOKEN
+  case "${GO_CLIENT_CLICKHOUSE_ENABLED:-false}" in
+    true) require_env GO_CLIENT_MIRROR_WATCHLIST GO_CLIENT_CLICKHOUSE_URL CLICKHOUSE_DATABASE CLICKHOUSE_USER CLICKHOUSE_PASSWORD ;;
+    false) ;;
+    *) die "GO_CLIENT_CLICKHOUSE_ENABLED must be true or false" ;;
+  esac
 }
 
 validate_docker_client_env() {

@@ -37,11 +37,12 @@ async function getJSON(path, options) {
 
 async function refreshAccount() {
   try {
-    const [me, usage, providers, watchlist] = await Promise.all([
+    const [me, usage, providers, watchlist, storage] = await Promise.all([
       getJSON('/v1/me'),
       getJSON('/v1/me/usage'),
       getJSON('/v1/providers/status'),
-      getJSON('/v1/me/watchlist')
+      getJSON('/v1/me/watchlist'),
+      getJSON('/v1/storage/status')
     ])
     $('account-name').textContent = `${me.name} · ${me.role}`
     $('account-key').textContent = `Key ${me.key_name}${me.expires_at ? ` · ${new Date(me.expires_at).toLocaleDateString()} 到期` : ''}`
@@ -60,6 +61,18 @@ async function refreshAccount() {
     const binance = providers.binance || {}
     $('binance-status').textContent = binance.state || 'unknown'
     $('binance-detail').textContent = `订阅池 ${binance.subscribed_symbols ?? 0} · 重连 ${binance.reconnects ?? 0}`
+    const storageLabels = {
+      remote_clickhouse: '远端 ClickHouse 存储',
+      remote_clickhouse_degraded: '远端 ClickHouse 故障',
+      local_clickhouse: '本地 ClickHouse 存储',
+      provider_only: 'Provider / Parquet',
+      unknown: '存储状态不可用'
+    }
+    $('storage-status').textContent = storageLabels[storage.mode] || storage.mode
+    $('storage-status').className = storage.mode === 'remote_clickhouse_degraded' ? 'bad' : 'ok'
+    $('storage-detail').textContent = storage.mode === 'remote_clickhouse'
+      ? `本地 ClickHouse 存储关闭 · revision ${storage.history_revision ?? 0}`
+      : `revision ${storage.history_revision ?? 0} · ${storage.data_version || '—'}`
     $('watchlist-symbols').value = (watchlist.symbols || []).join(',')
     $('watchlist-state').textContent = `允许 ${(watchlist.allowed_symbols || []).join(',')}`
     if (!socket || socket.readyState !== WebSocket.OPEN) setStatus('账号在线', 'ok')

@@ -10,31 +10,50 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/scott4game/market-bridge/internal/config"
 	"github.com/scott4game/market-bridge/internal/localclient"
 	"github.com/scott4game/market-bridge/internal/market"
+	"github.com/scott4game/market-bridge/internal/storage"
 )
 
 func main() {
 	cfg := config.ClientFromEnv()
+	if err := cfg.Validate(); err != nil {
+		log.Fatal(err)
+	}
 	cmd := "serve"
 	if len(os.Args) > 1 {
 		cmd = os.Args[1]
 	}
-	cache, err := localclient.NewCache(cfg)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	var clickhouse *storage.ClickHouseSink
+	if cfg.ClickHouseEnabled && (cmd == "serve" || cmd == "market-history") {
+		var sinkErr error
+		clickhouse, sinkErr = storage.NewClickHouseSink(ctx, cfg.ClickHouseURL, cfg.ClickHouseDatabase, cfg.ClickHouseUser, cfg.ClickHousePassword)
+		if sinkErr != nil {
+			log.Fatalf("initialize client ClickHouse: %v", sinkErr)
+		}
+		go clickhouse.Run(ctx)
+	}
+	cache, err := localclient.NewCacheWithClickHouse(cfg, clickhouse)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer cache.Close()
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
 	switch cmd {
 	case "serve":
 		go cache.RunCleanup(ctx)
-		live := localclient.NewLiveProxy(cfg)
+		go cache.RunMarketHistorySync(ctx)
+		if clickhouse != nil {
+			log.Printf("client ClickHouse available for %s; server capability decides whether it is active", strings.Join(cfg.MirrorWatchlist, ","))
+		}
+		live := localclient.NewLiveProxy(cfg, cache)
 		go live.Run(ctx)
 		srv := &http.Server{Addr: cfg.Listen, Handler: (&localclient.HTTP{Cache: cache, Live: live}).Handler()}
 		go func() {
@@ -52,8 +71,80 @@ func main() {
 		cacheCommand(ctx, cache)
 	case "fetch":
 		fetchCommand(ctx, cache)
+	case "market-history":
+		marketHistoryCommand(ctx, cache)
 	default:
 		log.Fatalf("unknown command %q", cmd)
+	}
+}
+
+func marketHistoryCommand(ctx context.Context, cache *localclient.Cache) {
+	set := flag.NewFlagSet("market-history", flag.ExitOnError)
+	days := set.Int("days", 365, "rolling number of days to backfill")
+	workers := set.Int("workers", 2, "concurrent symbols")
+	_ = set.Parse(os.Args[2:])
+	if *days < 1 || *days > 365 || *workers < 1 || *workers > 16 {
+		log.Fatal("days must be 1..365 and workers must be 1..16")
+	}
+	status := cache.StorageStatus(ctx)
+	if status["mode"] == "provider_only" || status["mode"] == "unknown" {
+		log.Fatalf("ClickHouse storage is unavailable: %#v", status)
+	}
+	symbols, err := cache.Universe(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("backfilling %d symbols into %v", len(symbols), status["mode"])
+	jobs := make(chan string)
+	errc := make(chan error, *workers)
+	var completed atomic.Int64
+	from, to := time.Now().UTC().AddDate(0, 0, -*days), time.Now().UTC()
+	var wg sync.WaitGroup
+	for range *workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for symbol := range jobs {
+				_, venue, normalizeErr := market.NormalizeSymbol(symbol)
+				if normalizeErr != nil {
+					errc <- normalizeErr
+					return
+				}
+				adjustment := market.ForwardAdjusted
+				if venue == market.VenueUS {
+					adjustment = market.SplitAdjusted
+				}
+				spec := market.DatasetSpec{Symbols: []string{symbol}, Interval: "1m", From: from, To: to, Session: market.RegularSession, Adjustment: adjustment}
+				if _, _, barsErr := cache.Bars(ctx, spec); barsErr != nil {
+					errc <- fmt.Errorf("%s: %w", symbol, barsErr)
+					return
+				}
+				n := completed.Add(1)
+				if n%100 == 0 {
+					log.Printf("market-history progress %d/%d", n, len(symbols))
+				}
+			}
+		}()
+	}
+	go func() {
+		defer close(jobs)
+		for _, symbol := range symbols {
+			select {
+			case jobs <- symbol:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case err := <-errc:
+		log.Fatal(err)
+	case <-done:
+		log.Printf("market-history backfill complete: %d symbols", completed.Load())
+	case <-ctx.Done():
+		log.Fatal(ctx.Err())
 	}
 }
 func cacheCommand(ctx context.Context, c *localclient.Cache) {

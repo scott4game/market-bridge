@@ -3,6 +3,7 @@ package localclient
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/url"
 	"sort"
@@ -19,15 +20,30 @@ type liveSubscriber struct {
 	queue   chan []byte
 }
 
-type LiveProxy struct {
-	cfg     config.Client
-	mu      sync.RWMutex
-	subs    map[*liveSubscriber]struct{}
-	changed chan struct{}
+type LiveSink interface {
+	Write(context.Context, market.LiveEvent) error
 }
 
-func NewLiveProxy(cfg config.Client) *LiveProxy {
-	return &LiveProxy{cfg: cfg, subs: map[*liveSubscriber]struct{}{}, changed: make(chan struct{}, 1)}
+type LiveProxy struct {
+	cfg           config.Client
+	sink          LiveSink
+	mirrorSymbols map[string]struct{}
+	mu            sync.RWMutex
+	subs          map[*liveSubscriber]struct{}
+	changed       chan struct{}
+}
+
+func NewLiveProxy(cfg config.Client, sinks ...LiveSink) *LiveProxy {
+	p := &LiveProxy{cfg: cfg, mirrorSymbols: map[string]struct{}{}, subs: map[*liveSubscriber]struct{}{}, changed: make(chan struct{}, 1)}
+	if len(sinks) > 0 {
+		p.sink = sinks[0]
+	}
+	for _, symbol := range cfg.MirrorWatchlist {
+		if normalized, _, err := market.NormalizeSymbol(symbol); err == nil {
+			p.mirrorSymbols[normalized] = struct{}{}
+		}
+	}
+	return p
 }
 
 func (p *LiveProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -119,7 +135,7 @@ func (p *LiveProxy) Run(ctx context.Context) {
 					errc <- e
 					return
 				}
-				p.broadcast(msg)
+				p.handleEvent(readCtx, msg)
 			}
 		}()
 		select {
@@ -146,6 +162,9 @@ func (p *LiveProxy) symbols() []string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	set := map[string]struct{}{}
+	for symbol := range p.mirrorSymbols {
+		set[symbol] = struct{}{}
+	}
 	for s := range p.subs {
 		for symbol := range s.symbols {
 			set[symbol] = struct{}{}
@@ -157,6 +176,31 @@ func (p *LiveProxy) symbols() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+func (p *LiveProxy) handleEvent(ctx context.Context, msg []byte) {
+	var event market.LiveEvent
+	if err := json.Unmarshal(msg, &event); err != nil {
+		return
+	}
+	symbol, _, err := market.NormalizeSymbol(event.Symbol)
+	if err != nil {
+		return
+	}
+	event.Symbol = symbol
+	if p.sink != nil {
+		if _, mirrored := p.mirrorSymbols[symbol]; mirrored {
+			persist := true
+			if p.cfg.ClickHouseCompletedBarsOnly {
+				persist = event.Type == market.BarEvent && event.Bar != nil && event.Bar.Completed
+			}
+			if persist {
+				if err := p.sink.Write(ctx, event); err != nil {
+					log.Printf("write mirrored event for %s: %v", symbol, err)
+				}
+			}
+		}
+	}
+	p.broadcastSymbol(symbol, msg)
 }
 func (p *LiveProxy) signal() {
 	select {
@@ -173,6 +217,9 @@ func (p *LiveProxy) broadcast(msg []byte) {
 	if err != nil {
 		return
 	}
+	p.broadcastSymbol(symbol, msg)
+}
+func (p *LiveProxy) broadcastSymbol(symbol string, msg []byte) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	for s := range p.subs {

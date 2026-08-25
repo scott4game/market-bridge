@@ -24,15 +24,25 @@ type UsageReader interface {
 	Snapshot(context.Context, string) (provider.UsageSnapshot, error)
 }
 
+type HistoricalClickHouse interface {
+	Healthy(context.Context) error
+	QueryBars(context.Context, market.DatasetSpec) ([]market.Bar, error)
+	WriteBars(context.Context, market.AdjustmentMode, []market.Bar, uint64) error
+}
+
 type HTTP struct {
-	Store          *Store
-	Token          string
-	Access         *access.Store
-	Limiter        *access.Limiter
-	Watchlist      []string
-	Live           http.Handler
-	Usage          UsageReader
-	ProviderStatus func() any
+	Store             *Store
+	Token             string
+	Access            *access.Store
+	Limiter           *access.Limiter
+	Watchlist         []string
+	Live              http.Handler
+	Usage             UsageReader
+	ProviderStatus    func() any
+	ClickHouseEnabled bool
+	ClickHouse        HistoricalClickHouse
+	HistoryCatalog    *HistoryCatalog
+	DataVersion       string
 }
 
 func (h *HTTP) Handler() http.Handler {
@@ -45,6 +55,9 @@ func (h *HTTP) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/live/ws", h.auth("live:read", h.live))
 	mux.HandleFunc("GET /v1/providers/massive/usage", h.auth("provider:usage", h.usage))
 	mux.HandleFunc("GET /v1/providers/status", h.auth("profile:read", h.providerStatus))
+	mux.HandleFunc("GET /v1/storage/capabilities", h.auth("profile:read", h.storageCapabilities))
+	mux.HandleFunc("POST /v1/history/bars", h.auth("history:read", h.historyBars))
+	mux.HandleFunc("GET /v1/market-history/universe", h.auth("history:read", h.historyUniverse))
 	mux.HandleFunc("GET /v1/me", h.auth("profile:read", h.me))
 	mux.HandleFunc("GET /v1/me/usage", h.auth("profile:read", h.myUsage))
 	mux.HandleFunc("GET /v1/me/watchlist", h.auth("profile:read", h.getWatchlist))
@@ -55,6 +68,95 @@ func (h *HTTP) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/me/indicators/{id}", h.auth("indicators:write", h.deleteIndicator))
 	mux.HandleFunc("POST /v1/me/indicators/{id}/copy", h.auth("indicators:write", h.copyIndicator))
 	return mux
+}
+
+func (h *HTTP) historyUniverse(w http.ResponseWriter, r *http.Request) {
+	symbols, err := h.Store.Universe(r.Context())
+	if err != nil {
+		writeJSON(w, 503, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"symbols": symbols, "updated_at": time.Now().UTC(), "data_version": h.DataVersion})
+}
+
+func (h *HTTP) storageCapabilities(w http.ResponseWriter, r *http.Request) {
+	revision := uint64(0)
+	updated := time.Unix(0, 0).UTC()
+	if h.HistoryCatalog != nil {
+		revision, updated, _ = h.HistoryCatalog.Current(r.Context())
+	}
+	healthy := false
+	var healthError string
+	if h.ClickHouseEnabled && h.ClickHouse != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := h.ClickHouse.Healthy(ctx); err == nil {
+			healthy = true
+		} else {
+			healthError = err.Error()
+		}
+	}
+	writeJSON(w, 200, map[string]any{
+		"clickhouse":       map[string]any{"enabled": h.ClickHouseEnabled, "healthy": healthy, "error": healthError},
+		"history_revision": revision, "data_version": h.DataVersion, "updated_at": updated,
+	})
+}
+
+func (h *HTTP) historyBars(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Spec         market.DatasetSpec `json:"spec"`
+		ProviderOnly bool               `json:"provider_only"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
+	spec, err := body.Spec.Normalize()
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
+	recent := !spec.From.Before(time.Now().UTC().Add(-365 * 24 * time.Hour))
+	coverageKey, _ := spec.Hash(market.SchemaVersion, "server-clickhouse:"+h.DataVersion)
+	covered := false
+	if h.HistoryCatalog != nil {
+		covered, _ = h.HistoryCatalog.HasCoverage(r.Context(), coverageKey)
+	}
+	if !body.ProviderOnly && recent && spec.Interval == "1m" && h.ClickHouseEnabled && h.ClickHouse != nil && covered {
+		bars, queryErr := h.ClickHouse.QueryBars(r.Context(), spec)
+		if queryErr == nil {
+			writeJSON(w, 200, map[string]any{"source": "server-clickhouse", "bars": bars})
+			return
+		}
+		if queryErr != nil {
+			writeJSON(w, 503, map[string]string{"error": queryErr.Error()})
+			return
+		}
+	}
+	bars, err := h.Store.ProviderBars(r.Context(), spec)
+	if err != nil {
+		writeJSON(w, 502, map[string]string{"error": err.Error()})
+		return
+	}
+	source := "provider"
+	if recent && spec.Interval == "1m" && h.ClickHouseEnabled && h.ClickHouse != nil {
+		revision := uint64(time.Now().UnixMilli())
+		if len(bars) > 0 {
+			if err := h.ClickHouse.WriteBars(r.Context(), spec.Adjustment, bars, revision); err != nil {
+				writeJSON(w, 503, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+		if h.HistoryCatalog != nil {
+			if err := h.HistoryCatalog.RecordCoverage(r.Context(), coverageKey); err != nil {
+				writeJSON(w, 503, map[string]string{"error": err.Error()})
+				return
+			}
+			_, _ = h.HistoryCatalog.Bump(r.Context())
+		}
+		source = "provider+server-clickhouse"
+	}
+	writeJSON(w, 200, map[string]any{"source": source, "bars": bars})
 }
 func (h *HTTP) usage(w http.ResponseWriter, r *http.Request) {
 	if h.Usage == nil {

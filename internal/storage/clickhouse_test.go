@@ -41,7 +41,7 @@ func TestClickHouseSchemaAndBarInsert(t *testing.T) {
 	mu.Lock()
 	joined := strings.Join(queries, "\n")
 	mu.Unlock()
-	if !strings.Contains(joined, "TTL timestamp + INTERVAL 1 YEAR") || !strings.Contains(joined, "INSERT INTO market.bars") || !strings.Contains(joined, "123.450000") {
+	if !strings.Contains(joined, "TTL timestamp + INTERVAL 1 YEAR") || !strings.Contains(joined, "CREATE TABLE IF NOT EXISTS market.kline_1m") || !strings.Contains(joined, "PARTITION BY (market, toDate(timestamp))") || !strings.Contains(joined, "INSERT INTO market.bars") || !strings.Contains(joined, "123.450000") {
 		t.Fatalf("missing schema or insert: %s", joined)
 	}
 }

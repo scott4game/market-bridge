@@ -9,7 +9,7 @@ BIN_DIR="$HOME/.local/bin"
 
 usage(){ cat <<'EOF'
 Usage: ./scripts/install-client.sh --env PATH [--version v0.1.0] [--mode docker|native] [--local-build]
-Docker mode installs go-client + Redis. Native mode installs a verified release binary and systemd/launchd service.
+Docker mode installs go-client + Redis and optionally local ClickHouse. Native mode installs a verified release binary and systemd/launchd service.
 EOF
 }
 while (($#));do case "$1" in --env)INPUT_ENV="${2:?}";shift 2;;--version)VERSION="${2:?}";shift 2;;--mode)MODE="${2:?}";shift 2;;--local-build)LOCAL_BUILD=true;shift;;-h|--help)usage;exit 0;;*)die "unknown argument: $1";;esac;done

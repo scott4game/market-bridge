@@ -52,10 +52,11 @@ func TestEmptyBarsAreEncodedAsArray(t *testing.T) {
 	defer cache.Close()
 	localHTTP := httptest.NewServer((&localclient.HTTP{Cache: cache}).Handler())
 	defer localHTTP.Close()
+	from, to := weekdayRange(1)
 	query := url.Values{
 		"interval":   {"1d"},
-		"from":       {"2025-01-01T00:00:00Z"},
-		"to":         {"2025-01-02T00:00:00Z"},
+		"from":       {from.Format(time.RFC3339)},
+		"to":         {to.Format(time.RFC3339)},
 		"session":    {"regular"},
 		"adjustment": {"split_adjusted"},
 	}
@@ -89,7 +90,8 @@ func TestCacheRemoteThenParquetAndLocalAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cache.Close()
-	spec := market.DatasetSpec{Symbols: []string{"AAPL"}, Interval: "1m", From: time.Date(2025, 1, 2, 14, 30, 0, 0, time.UTC), To: time.Date(2025, 1, 2, 15, 0, 0, 0, time.UTC), Session: market.RegularSession, Adjustment: market.SplitAdjusted}
+	from, to := weekdayRange(1)
+	spec := market.DatasetSpec{Symbols: []string{"AAPL"}, Interval: "1m", From: from, To: to, Session: market.RegularSession, Adjustment: market.SplitAdjusted}
 	bars, source, err := cache.Bars(context.Background(), spec)
 	if err != nil {
 		t.Fatal(err)
@@ -133,7 +135,8 @@ func TestConfigurableTTLPrune(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cache.Close()
-	spec := market.DatasetSpec{Symbols: []string{"AAPL"}, Interval: "1m", From: time.Date(2025, 1, 2, 14, 30, 0, 0, time.UTC), To: time.Date(2025, 1, 2, 14, 31, 0, 0, time.UTC)}
+	from, _ := weekdayRange(1)
+	spec := market.DatasetSpec{Symbols: []string{"AAPL"}, Interval: "1m", From: from, To: from.Add(time.Minute)}
 	if _, _, err := cache.Bars(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}

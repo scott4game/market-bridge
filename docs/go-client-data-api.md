@@ -14,6 +14,7 @@
         |
         +-- Redis 热缓存
         +-- Parquet 本地缓存
+        +-- ClickHouse 实时镜像（可选）
         +-- go-server（缓存未命中时）
 ```
 
@@ -44,9 +45,98 @@ curl -fsS http://127.0.0.1:17600/v1/providers/status
 `GO_CLIENT_SERVER_TOKEN` 访问远端服务。应保持监听地址为 `127.0.0.1:17600`，
 不要直接暴露到公网。
 
-## 2. 推荐的历史 K 线接口
+## 2. 客户端 ClickHouse 实时镜像
 
-### 2.1 单标的：GET `/v1/bars/{symbol}`
+远端服务器内存不足时，不需要在 `go-server` 所在机器部署 ClickHouse。客户端可以
+独立运行 Redis、go-client 和 ClickHouse。go-client 每5分钟探测一次服务端能力，
+并保证只有一侧 ClickHouse 承担业务读写：
+
+```dotenv
+GO_SERVER_CLICKHOUSE_ENABLED=false
+```
+
+客户端 Docker 配置示例：
+
+```dotenv
+COMPOSE_PROFILES=clickhouse
+GO_CLIENT_MIRROR_WATCHLIST=AAPL,NVDA,MSFT
+GO_CLIENT_CLICKHOUSE_ENABLED=true
+GO_CLIENT_CLICKHOUSE_COMPLETED_BARS_ONLY=true
+GO_CLIENT_CLICKHOUSE_URL=http://clickhouse:8123
+CLICKHOUSE_DATABASE=market
+CLICKHOUSE_USER=market
+CLICKHOUSE_PASSWORD=使用随机长密码
+CLICKHOUSE_MEMORY_LIMIT=2g
+CLICKHOUSE_CPUS=2
+```
+
+`GO_CLIENT_MIRROR_WATCHLIST` 应是服务端 `GO_SERVER_WATCHLIST` 的子集。它不依赖图表
+或 SDK 是否在线：go-client 会维持共享的上游 WebSocket。默认只把已完成 bar 写入
+`market.kline_1m`，适合 10 个以内标的的分钟级观察，也能显著降低本地 ClickHouse 的写入
+和磁盘压力。若确实需要逐笔、深度和未完成 bar，可以把
+`GO_CLIENT_CLICKHOUSE_COMPLETED_BARS_ONLY` 改为 `false`。
+
+若服务端设置 `GO_SERVER_CLICKHOUSE_ENABLED=true`，客户端自动使用远端 ClickHouse，
+停止本地 CH 的业务读写并在页面显示“本地 ClickHouse 存储关闭”。远端 CH 暂时故障
+时客户端保持远端模式并告警，不会自动切成本地双写。服务端明确关闭 CH 后，本地 CH
+才重新开始工作。
+
+最近365天的一分钟数据进入当前唯一启用的 ClickHouse；清理器每720小时删除超过365天
+的完整日分区。早于365天的查询始终绕过两侧 ClickHouse，经 go-server 直接访问
+Massive/Longbridge，并按股票、周期和自然月缓存在本地 Redis，默认 TTL 为24小时。
+跨越365天边界的请求会合并 CH 近期数据与 Provider 历史数据后去重排序。
+
+可查看实际存储模式：
+
+```bash
+curl -fsS http://127.0.0.1:17600/v1/storage/status
+```
+
+Docker 部署在宿主机只绑定 `127.0.0.1:18123`。检查数据：
+
+```bash
+curl --user 'market:你的密码' \
+  'http://127.0.0.1:18123/?query=SELECT%20count()%20FROM%20market.kline_1m'
+```
+
+每 3 分钟分析一次时，无需让大模型直接消费逐笔流。让调度器查询最近已完成的 1 分钟
+bar，并在 SQL 中合成 3 分钟窗口：
+
+```sql
+SELECT
+    symbol,
+    toStartOfInterval(timestamp, INTERVAL 3 MINUTE) AS ts,
+    argMin(open, timestamp) AS open,
+    max(high) AS high,
+    min(low) AS low,
+    argMax(close, timestamp) AS close,
+    sum(volume) AS volume
+FROM market.kline_1m FINAL
+WHERE completed = 1
+  AND interval = '1m'
+  AND symbol IN ('AAPL', 'NVDA')
+  AND timestamp >= now() - INTERVAL 2 HOUR
+GROUP BY symbol, ts
+ORDER BY symbol, ts;
+```
+
+这里的 ClickHouse 是实时行情事实库；Redis 和 Parquet 仍承担现有请求缓存职责。首次启用
+时执行 `docker compose up -d`，Compose 会等待本地 ClickHouse 健康后再启动 go-client。
+
+首次回填最近一年的全市场 1 分钟数据（美股来自 Massive，A/H 股来自 Longbridge）：
+
+```bash
+docker compose run --rm go-client market-history --days 365 --workers 2
+```
+
+回填中途失败后可安全重跑，ClickHouse 使用版本列替换重复行；同一精确查询区间登记完整后
+可以直接命中当前 ClickHouse。需要每日补最近两天时，可设置
+`GO_CLIENT_MARKET_HISTORY_SYNC_ENABLED=true`；若 ClickHouse 部署在服务端，则改用对应的
+`GO_SERVER_MARKET_HISTORY_SYNC_ENABLED=true`，两侧不要同时开启。
+
+## 3. 推荐的历史 K 线接口
+
+### 3.1 单标的：GET `/v1/bars/{symbol}`
 
 这是单只股票策略最简单的读取方式。
 
@@ -115,7 +205,7 @@ Spot 提供。证券和币圈代码不能放进同一个 dataset。
 
 `turnover` 没有数据时会整个字段缺省，而不是 `0`。
 
-### 2.2 多标的：POST `/v1/datasets/ensure`
+### 3.2 多标的：POST `/v1/datasets/ensure`
 
 组合策略或横截面策略应一次提交多个标的：
 
@@ -148,7 +238,7 @@ curl -fsS -X POST 'http://127.0.0.1:17600/v1/datasets/ensure' \
 两个历史接口都会等待数据准备和下载完成后才返回。大时间范围首次请求可能较慢，
 机器人应设置分钟级超时；仓库 Go SDK 的默认 HTTP 超时为 10 分钟。
 
-### 2.3 字段约定
+### 3.3 字段约定
 
 | 字段 | 类型 | 策略侧处理 |
 | --- | --- | --- |
@@ -176,9 +266,9 @@ curl -fsS -X POST 'http://127.0.0.1:17600/v1/datasets/ensure' \
 这个 `source` 说明数据从哪一层取出；每根 K 线自身的 `bar.source` 才是原始行情
 提供者。缓存命中不代表数据一定是最新版本。
 
-## 3. 机器人读取示例
+## 4. 机器人读取示例
 
-### 3.1 Python
+### 4.1 Python
 
 依赖：`pip install requests`
 
@@ -224,7 +314,7 @@ assert all(bar["timestamp"].tzinfo is not None for bar in bars)
 print(payload["source"], len(bars))
 ```
 
-### 3.2 Go SDK
+### 4.2 Go SDK
 
 仓库提供 `github.com/scott4game/market-bridge/pkg/client`：
 
@@ -272,7 +362,7 @@ func main() {
 }
 ```
 
-## 4. 实时 WebSocket
+## 5. 实时 WebSocket
 
 地址：`ws://127.0.0.1:17600/v1/live/ws`
 
@@ -343,7 +433,7 @@ curl -fsS -X PUT http://127.0.0.1:17600/v1/me/watchlist \
   -d '{"symbols":["AAPL","NVDA"]}'
 ```
 
-## 5. 策略验证的最小流程
+## 6. 策略验证的最小流程
 
 机器人每次验证都应保存一份运行记录，至少包括：
 
@@ -379,7 +469,7 @@ bar[t] 收盘 -> 计算 signal[t] -> 最早在 bar[t+1] 的可成交价格执行
 成交价时使用 `raw`。同一组训练、验证和实盘对照不得混用两种模式。当前 Massive 的
 `split_adjusted` 表示拆股调整，不等同于股息复权。
 
-## 6. 与浏览器公式指标对照
+## 7. 与浏览器公式指标对照
 
 本地页面 `http://127.0.0.1:17600` 的指标是在浏览器中根据当前加载的 K 线计算，
 接口不会直接返回指标值或买卖信号。
@@ -396,7 +486,7 @@ bar[t] 收盘 -> 计算 signal[t] -> 最早在 bar[t+1] 的可成交价格执行
 若机器人实现的公式与页面不同，应该把它视为另一个策略版本，不要只比较最终收益。
 建议先逐根比较指标值和信号时间，再比较成交与绩效。
 
-## 7. 缓存与可复现性
+## 8. 缓存与可复现性
 
 默认 Redis TTL 为 24 小时，Parquet TTL 为 720 小时。相同的规范化查询会优先复用
 缓存。查看本地缓存：
@@ -443,7 +533,7 @@ curl -fsS -X POST \
 
 不带 `expired=true` 会删除全部当前未被读取的数据集，机器人不应在正常策略运行中调用。
 
-## 8. 错误处理
+## 9. 错误处理
 
 错误响应统一包含 `error` 字段：
 
@@ -468,7 +558,7 @@ curl -fsS -X POST \
 浏览器请求只允许 `Origin` 主机为 `localhost` 或 `127.0.0.1`。普通服务端机器人不发送
 `Origin` 即可；从其他域名网页直接调用会得到 `403`，且接口没有开放通用 CORS。
 
-## 9. 其他本地接口
+## 10. 其他本地接口
 
 | 方法与路径 | 用途 |
 | --- | --- |

@@ -28,6 +28,10 @@ type Store struct {
 	active   map[string]int
 }
 
+type HistoricalBarWriter interface {
+	WriteBars(context.Context, market.AdjustmentMode, []market.Bar, uint64) error
+}
+
 type buildJob struct {
 	id     string
 	spec   market.DatasetSpec
@@ -143,6 +147,81 @@ func (s *Store) ActiveBuilds(userID string) int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.active[userID]
+}
+
+func (s *Store) ProviderBars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar, error) {
+	return s.provider.Bars(ctx, spec)
+}
+
+func (s *Store) Universe(ctx context.Context) ([]string, error) {
+	lister, ok := s.provider.(provider.UniverseLister)
+	if !ok {
+		return nil, errors.New("configured provider does not expose a security universe")
+	}
+	return lister.Universe(ctx)
+}
+
+func (s *Store) SyncRecentUniverse(ctx context.Context, writer HistoricalBarWriter, catalog *HistoryCatalog, dataVersion string, days int) error {
+	symbols, err := s.Universe(ctx)
+	if err != nil {
+		return err
+	}
+	if days < 1 {
+		days = 2
+	}
+	from, to := time.Now().UTC().AddDate(0, 0, -days), time.Now().UTC()
+	failed := 0
+	var firstFailure error
+	for index, symbol := range symbols {
+		_, venue, err := market.NormalizeSymbol(symbol)
+		if err != nil {
+			failed++
+			if firstFailure == nil {
+				firstFailure = err
+			}
+			continue
+		}
+		adjustment := market.ForwardAdjusted
+		if venue == market.VenueUS {
+			adjustment = market.SplitAdjusted
+		}
+		spec := market.DatasetSpec{Symbols: []string{symbol}, Interval: "1m", From: from, To: to, Session: market.RegularSession, Adjustment: adjustment}
+		bars, err := s.ProviderBars(ctx, spec)
+		if err != nil {
+			failed++
+			if firstFailure == nil {
+				firstFailure = fmt.Errorf("sync %s: %w", symbol, err)
+			}
+			continue
+		}
+		if err := writer.WriteBars(ctx, adjustment, bars, uint64(time.Now().UnixMilli())+uint64(index)); err != nil {
+			failed++
+			if firstFailure == nil {
+				firstFailure = fmt.Errorf("write %s: %w", symbol, err)
+			}
+			continue
+		}
+		if catalog != nil {
+			coverageKey, _ := spec.Hash(market.SchemaVersion, "server-clickhouse:"+dataVersion)
+			if err := catalog.RecordCoverage(ctx, coverageKey); err != nil {
+				failed++
+				if firstFailure == nil {
+					firstFailure = fmt.Errorf("record %s coverage: %w", symbol, err)
+				}
+				continue
+			}
+		}
+	}
+	if catalog != nil {
+		_, err = catalog.Bump(ctx)
+		if err != nil {
+			return err
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d of %d symbols failed; first failure: %w", failed, len(symbols), firstFailure)
+	}
+	return nil
 }
 
 func (s *Store) Status(id string) market.DatasetStatus {

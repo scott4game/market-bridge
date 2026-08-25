@@ -84,6 +84,13 @@ func TestClientFromEnv(t *testing.T) {
 	t.Setenv("GO_CLIENT_REDIS_PASSWORD", "secret")
 	t.Setenv("GO_CLIENT_REDIS_DB", "3")
 	t.Setenv("GO_CLIENT_REDIS_TTL", "12h")
+	t.Setenv("GO_CLIENT_MIRROR_WATCHLIST", " AAPL, NVDA ")
+	t.Setenv("GO_CLIENT_CLICKHOUSE_ENABLED", "true")
+	t.Setenv("GO_CLIENT_CLICKHOUSE_COMPLETED_BARS_ONLY", "false")
+	t.Setenv("CLICKHOUSE_URL", "http://clickhouse.example:8123")
+	t.Setenv("CLICKHOUSE_DATABASE", "prices")
+	t.Setenv("CLICKHOUSE_USER", "bridge")
+	t.Setenv("CLICKHOUSE_PASSWORD", "secret")
 
 	got := ClientFromEnv()
 	if got.ParquetTTL != 168*time.Hour || got.RedisTTL != 12*time.Hour {
@@ -91,6 +98,24 @@ func TestClientFromEnv(t *testing.T) {
 	}
 	if !got.RedisEnabled || got.RedisAddress != "redis.example:6379" || got.RedisUsername != "bridge" || got.RedisPassword != "secret" || got.RedisDB != 3 {
 		t.Fatalf("unexpected Redis settings: %+v", got)
+	}
+	if !got.ClickHouseEnabled || got.ClickHouseCompletedBarsOnly || !reflect.DeepEqual(got.MirrorWatchlist, []string{"AAPL", "NVDA"}) {
+		t.Fatalf("unexpected client ClickHouse settings: %+v", got)
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatalf("unexpected client validation error: %v", err)
+	}
+}
+
+func TestClientClickHouseOptInValidation(t *testing.T) {
+	t.Setenv("GO_CLIENT_CLICKHOUSE_ENABLED", "true")
+	t.Setenv("CLICKHOUSE_URL", "http://clickhouse.example:8123")
+	t.Setenv("CLICKHOUSE_DATABASE", "market")
+	t.Setenv("CLICKHOUSE_USER", "market")
+	t.Setenv("CLICKHOUSE_PASSWORD", "secret")
+	t.Setenv("GO_CLIENT_MIRROR_WATCHLIST", "")
+	if err := ClientFromEnv().Validate(); err == nil || !strings.Contains(err.Error(), "GO_CLIENT_MIRROR_WATCHLIST") {
+		t.Fatalf("expected missing mirror watchlist error, got %v", err)
 	}
 }
 

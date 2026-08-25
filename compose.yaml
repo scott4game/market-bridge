@@ -34,6 +34,10 @@ services:
       CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-market}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-market}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      GO_SERVER_CLICKHOUSE_RETENTION: ${GO_SERVER_CLICKHOUSE_RETENTION:-8760h}
+      GO_SERVER_CLICKHOUSE_CLEANUP_INTERVAL: ${GO_SERVER_CLICKHOUSE_CLEANUP_INTERVAL:-720h}
+      GO_SERVER_MARKET_HISTORY_SYNC_ENABLED: ${GO_SERVER_MARKET_HISTORY_SYNC_ENABLED:-false}
+      GO_SERVER_MARKET_HISTORY_SYNC_INTERVAL: ${GO_SERVER_MARKET_HISTORY_SYNC_INTERVAL:-24h}
     volumes:
       - server-data:/data
     ports: ["127.0.0.1:17601:17601"]
@@ -56,6 +60,18 @@ services:
       GO_CLIENT_REDIS_ADDRESS: redis:6379
       GO_CLIENT_REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
       GO_CLIENT_REDIS_TTL: ${GO_CLIENT_REDIS_TTL:-24h}
+      GO_CLIENT_MIRROR_WATCHLIST: ${GO_CLIENT_MIRROR_WATCHLIST:-}
+      GO_CLIENT_CLICKHOUSE_ENABLED: ${GO_CLIENT_CLICKHOUSE_ENABLED:-false}
+      GO_CLIENT_CLICKHOUSE_COMPLETED_BARS_ONLY: ${GO_CLIENT_CLICKHOUSE_COMPLETED_BARS_ONLY:-true}
+      GO_CLIENT_CLICKHOUSE_RETENTION: ${GO_CLIENT_CLICKHOUSE_RETENTION:-8760h}
+      GO_CLIENT_CLICKHOUSE_CLEANUP_INTERVAL: ${GO_CLIENT_CLICKHOUSE_CLEANUP_INTERVAL:-720h}
+      GO_CLIENT_STORAGE_CAPABILITY_INTERVAL: ${GO_CLIENT_STORAGE_CAPABILITY_INTERVAL:-5m}
+      GO_CLIENT_MARKET_HISTORY_SYNC_ENABLED: ${GO_CLIENT_MARKET_HISTORY_SYNC_ENABLED:-false}
+      GO_CLIENT_MARKET_HISTORY_SYNC_INTERVAL: ${GO_CLIENT_MARKET_HISTORY_SYNC_INTERVAL:-24h}
+      CLICKHOUSE_URL: ${GO_CLIENT_CLICKHOUSE_URL:-http://clickhouse:8123}
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-market}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-market}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
     ports: ["127.0.0.1:17600:17600"]
     volumes:
       - client-data:/data
@@ -63,6 +79,9 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+        required: false
     restart: unless-stopped
 
   redis:
@@ -80,6 +99,27 @@ services:
       retries: 10
     restart: unless-stopped
 
+  clickhouse:
+    profiles: [clickhouse]
+    image: clickhouse/clickhouse-server:${CLICKHOUSE_VERSION:-25.8-alpine}
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-market}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-market}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-change-me}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports: ["127.0.0.1:${CLICKHOUSE_HTTP_PORT:-18123}:8123"]
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    mem_limit: ${CLICKHOUSE_MEMORY_LIMIT:-2g}
+    cpus: ${CLICKHOUSE_CPUS:-2}
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user \"$$CLICKHOUSE_USER\" --password \"$$CLICKHOUSE_PASSWORD\" --query 'SELECT 1' >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
 volumes:
   server-data:
   client-data:
+  clickhouse-data:

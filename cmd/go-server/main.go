@@ -112,15 +112,49 @@ func main() {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	historyCatalog, err := marketserver.OpenHistoryCatalog(filepath.Join(cfg.DataDir, "market-history.db"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer historyCatalog.Close()
 	go store.RunCleanup(ctx, cfg.DatasetTTL)
 	var sink live.Sink = live.NopSink{}
+	var clickhouse *storage.ClickHouseSink
 	if cfg.ClickHouseEnabled {
 		ch, err := storage.NewClickHouseSink(ctx, cfg.ClickHouseURL, cfg.ClickHouseDatabase, cfg.ClickHouseUser, cfg.ClickHousePassword)
 		if err != nil {
 			log.Fatal(err)
 		}
 		sink = ch
+		clickhouse = ch
 		go ch.Run(ctx)
+		go func() {
+			_, _ = ch.CleanupBefore(ctx, time.Now().UTC().Add(-cfg.ClickHouseRetention))
+			ticker := time.NewTicker(cfg.ClickHouseCleanupInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					_, _ = ch.CleanupBefore(ctx, time.Now().UTC().Add(-cfg.ClickHouseRetention))
+				}
+			}
+		}()
+		if cfg.MarketHistorySyncEnabled {
+			go func() {
+				for {
+					if err := store.SyncRecentUniverse(ctx, ch, historyCatalog, cfg.DataVersion, 2); err != nil && ctx.Err() == nil {
+						log.Printf("market-history sync: %v", err)
+					}
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(cfg.MarketHistorySyncInterval):
+					}
+				}
+			}()
+		}
 	}
 	hub, err := live.NewHub(source, sink, cfg.Watchlist)
 	if err != nil {
@@ -158,7 +192,7 @@ func main() {
 		status["massive"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[cfg.Provider == "massive"], "plan": cfg.MassivePlanName}
 		return status
 	}
-	srv := &http.Server{Addr: cfg.Listen, Handler: (&marketserver.HTTP{Store: store, Token: cfg.BearerToken, Access: auth, Limiter: limiter, Watchlist: cfg.Watchlist, Live: hub, Usage: usage, ProviderStatus: providerStatus}).Handler()}
+	srv := &http.Server{Addr: cfg.Listen, Handler: (&marketserver.HTTP{Store: store, Token: cfg.BearerToken, Access: auth, Limiter: limiter, Watchlist: cfg.Watchlist, Live: hub, Usage: usage, ProviderStatus: providerStatus, ClickHouseEnabled: cfg.ClickHouseEnabled, ClickHouse: clickhouse, HistoryCatalog: historyCatalog, DataVersion: cfg.DataVersion}).Handler()}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -9,7 +9,7 @@ KLineChart / Go Strategy
           ↓
       go-client
           ↓
- Redis 热缓存 → Parquet 磁盘缓存
+ Redis 热缓存 → 当前唯一启用的 ClickHouse（近 365 天）
           ↓
       go-server
           ↓
@@ -20,8 +20,9 @@ KLineChart / Go Strategy
 
 - **go-server**：连接行情供应商，统一处理历史数据、实时行情、数据版本和访问认证。
 - **go-client**：运行在本地分析环境中，为图表和策略提供统一 API，并管理 Redis 与 Parquet 缓存。
-- **Redis**：保存高频访问的热数据，可在数据丢失后自动重建。
-- **Parquet**：保存可配置 TTL 的本地磁盘缓存，支持离线分析和回测。
+- **Redis**：保存高频访问和超过 365 天的按月历史缓存，可在数据丢失后自动重建。
+- **ClickHouse**：保存最近 365 天的全市场已完成 1 分钟 K 线；服务端启用时客户端本地实例自动停用，服务端关闭时由客户端实例承担存储。
+- **Parquet**：保留兼容的数据集缓存，支持离线分析和回测。
 
 项目默认提供 Mock Provider，无需配置第三方行情密钥即可运行并验证完整链路。go-client 可以部署在个人工作站，go-server 则可部署在靠近行情供应商的云服务器。
 
@@ -244,7 +245,8 @@ docker compose --profile local up --build
 - 设置 `GO_SERVER_BINANCE_ENABLED=true` 后，`BTCUSDT.BINANCE` 这类代码使用 Binance Spot 公共行情，无需 Binance API Key。币种成交量同时返回精确字符串字段 `volume_decimal`。
 - `GO_SERVER_LIVE_PROVIDERS=longbridge,binance` 可同时采集证券和币圈实时行情；兼容旧的单值 `GO_SERVER_LIVE_PROVIDER`。关注池由 `GO_SERVER_WATCHLIST` 配置，示例：`AAPL,700.HK,600519.SH,000001.SZ,BTCUSDT.BINANCE`。
 - 标准代码格式为 `AAPL`/`AAPL.US`、`700.HK`、`600519.SH`、`000001.SZ` 和 `BTCUSDT.BINANCE`。证券默认 `regular` 时段，币圈默认 `continuous`；港股/A 股默认前复权，币圈固定原始价格。
-- ClickHouse 默认关闭且不随项目部署。设置 `GO_SERVER_CLICKHOUSE_ENABLED=true` 并提供 `CLICKHOUSE_URL`、`CLICKHOUSE_DATABASE`、`CLICKHOUSE_USER`、`CLICKHOUSE_PASSWORD` 后，可将实时 bars、trades 和 depth 写入外部 ClickHouse；它用于实时行情留存，不作为请求缓存。
+- 服务端 ClickHouse 默认关闭且不随服务端部署。资源受限的 `go-server` 可以一直保持 `GO_SERVER_CLICKHOUSE_ENABLED=false`。
+- 客户端可设置 `GO_CLIENT_CLICKHOUSE_ENABLED=true` 和 `GO_CLIENT_MIRROR_WATCHLIST=AAPL,NVDA`。go-client 会自动探测服务端：服务端 CH 开启时只使用远端 CH，并将本地 CH 逻辑关闭；服务端明确未开启 CH 时才写本地 CH。两者不会自动双写。最近365天进入唯一启用的 CH，超过365天的数据绕过 CH、按需从 Provider 拉取并缓存到客户端 Redis。详细配置见 [go-client 本地数据接口与策略验证指南](docs/go-client-data-api.md#2-客户端-clickhouse-实时镜像)。
 
 ## 发布
 
