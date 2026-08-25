@@ -1,1 +1,3 @@
 internal/localclient/ui/klinecharts.min.js linguist-vendored=true
+internal/localclient/ui/formula-worker.js linguist-generated=true
+web/vendor/formula-ts/** linguist-vendored=true

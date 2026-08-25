@@ -65,6 +65,17 @@ func TestServerClickHouseOptInValidation(t *testing.T) {
 	}
 }
 
+func TestEffectiveLiveProviders(t *testing.T) {
+	cfg := Server{LiveProvider: "mock", LiveProviders: []string{" Longbridge ", "BINANCE", "longbridge"}}
+	if got := cfg.EffectiveLiveProviders(); !reflect.DeepEqual(got, []string{"longbridge", "binance"}) {
+		t.Fatalf("unexpected live providers: %#v", got)
+	}
+	cfg.LiveProviders = nil
+	if got := cfg.EffectiveLiveProviders(); !reflect.DeepEqual(got, []string{"mock"}) {
+		t.Fatalf("legacy provider fallback failed: %#v", got)
+	}
+}
+
 func TestClientFromEnv(t *testing.T) {
 	t.Setenv("GO_CLIENT_PARQUET_TTL", "168h")
 	t.Setenv("GO_CLIENT_REDIS_ENABLED", "true")

@@ -39,6 +39,11 @@ func (h *HTTP) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/me/usage", h.proxyServerJSON)
 	mux.HandleFunc("GET /v1/me/watchlist", h.proxyServerJSON)
 	mux.HandleFunc("PUT /v1/me/watchlist", h.proxyServerJSON)
+	mux.HandleFunc("GET /v1/me/indicators", h.proxyServerJSON)
+	mux.HandleFunc("POST /v1/me/indicators", h.proxyServerJSON)
+	mux.HandleFunc("PUT /v1/me/indicators/{id}", h.proxyServerJSON)
+	mux.HandleFunc("DELETE /v1/me/indicators/{id}", h.proxyServerJSON)
+	mux.HandleFunc("POST /v1/me/indicators/{id}/copy", h.proxyServerJSON)
 	if h.Live != nil {
 		mux.Handle("/v1/live/ws", h.Live)
 	}
@@ -52,9 +57,17 @@ func (h *HTTP) proxyServerJSON(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil && r.Body != http.NoBody {
 		body = http.MaxBytesReader(w, r.Body, 64<<10)
 	}
-	raw, status, err := h.Cache.ServerJSON(r.Context(), r.Method, r.URL.Path, body)
+	path := r.URL.Path
+	if r.URL.RawQuery != "" {
+		path += "?" + r.URL.RawQuery
+	}
+	raw, status, err := h.Cache.ServerJSON(r.Context(), r.Method, path, body)
 	if err != nil {
 		jsonResponse(w, 502, map[string]string{"error": err.Error()})
+		return
+	}
+	if status == http.StatusNoContent {
+		w.WriteHeader(status)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -88,8 +101,8 @@ func (h *HTTP) refresh(w http.ResponseWriter, r *http.Request) {
 func security(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' ws://127.0.0.1:* ws://localhost:*")
-		if origin := r.Header.Get("Origin"); origin != "" && !localOrigin(origin) {
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; worker-src 'self'; connect-src 'self' ws: wss:")
+		if origin := r.Header.Get("Origin"); origin != "" && !allowedOrigin(origin, r.Host) {
 			jsonResponse(w, 403, map[string]string{"error": "cross-origin request denied"})
 			return
 		}
@@ -97,12 +110,12 @@ func security(next http.Handler) http.Handler {
 	})
 }
 
-func localOrigin(origin string) bool {
+func allowedOrigin(origin, requestHost string) bool {
 	u, err := url.Parse(origin)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		return false
 	}
-	return u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost"
+	return u.Host == requestHost || u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost"
 }
 func (h *HTTP) ensure(w http.ResponseWriter, r *http.Request) {
 	var spec market.DatasetSpec

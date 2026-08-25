@@ -116,7 +116,7 @@ Redis 是可选的热缓存：
 
 - 保存解码后的热点数据，降低重复读取和反序列化开销。
 - 默认 TTL 为 24 小时，使用 LRU 淘汰策略。
-- Docker 部署默认使用 `maxmemory=256mb`，可通过 `REDIS_MAXMEMORY` 覆盖。
+- Docker 部署默认使用 `maxmemory=1gb`，可通过 `REDIS_MAXMEMORY` 覆盖。
 - 不启用持久化，不作为数据完整性的来源。
 - 不可用时由 `go-client` 自动旁路到 Parquet。
 

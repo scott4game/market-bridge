@@ -11,9 +11,11 @@ import (
 	"syscall"
 	"time"
 
+	lbquote "github.com/longbridge/openapi-go/quote"
 	"github.com/scott4game/market-bridge/internal/access"
 	"github.com/scott4game/market-bridge/internal/config"
 	"github.com/scott4game/market-bridge/internal/live"
+	"github.com/scott4game/market-bridge/internal/market"
 	"github.com/scott4game/market-bridge/internal/provider"
 	marketserver "github.com/scott4game/market-bridge/internal/server"
 	"github.com/scott4game/market-bridge/internal/storage"
@@ -32,7 +34,7 @@ func main() {
 		log.Fatal(err)
 	}
 	var usage *provider.UsageTracker
-	var p provider.Provider
+	var usProvider provider.Provider
 	switch cfg.Provider {
 	case "massive":
 		var err error
@@ -41,9 +43,32 @@ func main() {
 			log.Fatal(err)
 		}
 		defer usage.Close()
-		p = &provider.Massive{APIKey: cfg.MassiveAPIKey, BaseURL: cfg.MassiveBaseURL, Version: cfg.DataVersion, Usage: usage}
+		usProvider = &provider.Massive{APIKey: cfg.MassiveAPIKey, BaseURL: cfg.MassiveBaseURL, Version: cfg.DataVersion, Usage: usage}
 	default:
-		p = &provider.Mock{Version: cfg.DataVersion}
+		usProvider = &provider.Mock{Version: cfg.DataVersion}
+	}
+	liveProviders := cfg.EffectiveLiveProviders()
+	longbridgeNeeded := cfg.LongbridgeHistoryEnabled || contains(liveProviders, "longbridge")
+	var longbridgeQuote *lbquote.QuoteContext
+	if longbridgeNeeded {
+		var err error
+		longbridgeQuote, err = lbquote.NewFormEnv()
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer longbridgeQuote.Close()
+	}
+	var longbridgeHistory provider.Provider
+	if cfg.LongbridgeHistoryEnabled {
+		longbridgeHistory = &provider.Longbridge{Quote: longbridgeQuote, Version: "longbridge-v1-" + cfg.DataVersion}
+	}
+	var binanceHistory provider.Provider
+	if cfg.BinanceEnabled {
+		binanceHistory = &provider.Binance{BaseURL: cfg.BinanceRESTURL, Version: "binance-spot-v1-" + cfg.DataVersion}
+	}
+	var p provider.Provider = usProvider
+	if longbridgeHistory != nil || binanceHistory != nil {
+		p = &provider.Router{US: usProvider, Longbridge: longbridgeHistory, Binance: binanceHistory}
 	}
 	if err := os.MkdirAll(filepath.Dir(cfg.AuthDB), 0o755); err != nil {
 		log.Fatal(err)
@@ -64,11 +89,26 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	var source live.Source = live.MockSource{}
-	var longbridgeSource *live.LongbridgeSource
-	if cfg.LiveProvider == "longbridge" {
-		longbridgeSource = &live.LongbridgeSource{}
-		source = longbridgeSource
+	var source live.Source
+	var multiSource *live.MultiSource
+	if len(liveProviders) == 1 && liveProviders[0] == "mock" {
+		source = live.MockSource{}
+	} else {
+		multiSource = &live.MultiSource{}
+		for _, name := range liveProviders {
+			switch name {
+			case "longbridge":
+				multiSource.Routes = append(multiSource.Routes, live.SourceRoute{Name: "longbridge", Source: &live.LongbridgeSource{Quote: longbridgeQuote, DepthEnabled: cfg.LongbridgeDepthEnabled}, Accept: func(venue market.Venue) bool { return venue != market.VenueBinance }})
+			case "binance":
+				if !cfg.BinanceEnabled {
+					log.Fatal("GO_SERVER_BINANCE_ENABLED=true is required for Binance live data")
+				}
+				multiSource.Routes = append(multiSource.Routes, live.SourceRoute{Name: "binance", Source: &live.BinanceSource{URL: cfg.BinanceWSURL}, Accept: func(venue market.Venue) bool { return venue == market.VenueBinance }})
+			default:
+				log.Fatalf("unsupported live provider %q", name)
+			}
+		}
+		source = multiSource
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -87,16 +127,33 @@ func main() {
 		log.Fatal(err)
 	}
 	hub.ConfigureAccess(auth, limiter)
-	if longbridgeSource != nil {
-		longbridgeSource.OnConnected = hub.MarkConnected
-	} else {
-		hub.MarkConnected()
-	}
+	hub.MarkConnected()
 	go hub.Run(ctx)
 	providerStatus := func() any {
 		status := hub.ProviderStatus()
-		if cfg.LiveProvider != "longbridge" {
-			status["longbridge"] = map[string]any{"state": "disabled", "subscribed_symbols": 0, "reconnects": 0}
+		if multiSource != nil {
+			for name, value := range multiSource.ProviderStatus() {
+				status[name] = value
+			}
+		}
+		if !contains(liveProviders, "longbridge") {
+			state := "disabled"
+			if cfg.LongbridgeHistoryEnabled {
+				state = "history_only"
+			}
+			status["longbridge"] = map[string]any{"state": state, "history_enabled": cfg.LongbridgeHistoryEnabled, "depth_enabled": cfg.LongbridgeDepthEnabled, "subscribed_symbols": 0, "reconnects": 0}
+		} else if value, ok := status["longbridge"].(map[string]any); ok {
+			value["history_enabled"] = cfg.LongbridgeHistoryEnabled
+			value["depth_enabled"] = cfg.LongbridgeDepthEnabled
+		}
+		if !contains(liveProviders, "binance") {
+			state := "disabled"
+			if cfg.BinanceEnabled {
+				state = "history_only"
+			}
+			status["binance"] = map[string]any{"state": state, "history_enabled": cfg.BinanceEnabled, "subscribed_symbols": 0, "reconnects": 0}
+		} else if value, ok := status["binance"].(map[string]any); ok {
+			value["history_enabled"] = cfg.BinanceEnabled
 		}
 		status["massive"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[cfg.Provider == "massive"], "plan": cfg.MassivePlanName}
 		return status
@@ -119,7 +176,25 @@ func logEnabledProviders(cfg config.Server) {
 	if cfg.Provider == "massive" {
 		log.Printf("Massive historical provider enabled: plan=%s, data_version=%s", cfg.MassivePlanName, cfg.DataVersion)
 	}
-	if cfg.LiveProvider == "longbridge" {
-		log.Printf("Longbridge live provider enabled: watchlist=%s", strings.Join(cfg.Watchlist, ","))
+	if cfg.LongbridgeHistoryEnabled {
+		log.Printf("Longbridge historical provider enabled: markets=HK,SH,SZ, data_version=%s", cfg.DataVersion)
 	}
+	if contains(cfg.EffectiveLiveProviders(), "longbridge") {
+		log.Printf("Longbridge live provider enabled: watchlist=%s, depth=%t", strings.Join(cfg.Watchlist, ","), cfg.LongbridgeDepthEnabled)
+	}
+	if cfg.BinanceEnabled {
+		log.Printf("Binance Spot historical provider enabled: rest=%s", cfg.BinanceRESTURL)
+	}
+	if contains(cfg.EffectiveLiveProviders(), "binance") {
+		log.Printf("Binance Spot live provider enabled: websocket=%s", cfg.BinanceWSURL)
+	}
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

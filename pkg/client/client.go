@@ -43,10 +43,13 @@ type AdjustmentMode = market.AdjustmentMode
 type Session = market.Session
 
 const (
-	Raw             = market.Raw
-	SplitAdjusted   = market.SplitAdjusted
-	RegularSession  = market.RegularSession
-	ExtendedSession = market.ExtendedSession
+	AutoAdjusted      = market.AutoAdjusted
+	Raw               = market.Raw
+	SplitAdjusted     = market.SplitAdjusted
+	ForwardAdjusted   = market.ForwardAdjusted
+	RegularSession    = market.RegularSession
+	ExtendedSession   = market.ExtendedSession
+	ContinuousSession = market.ContinuousSession
 )
 
 func NewLocalClient(cfg Config) *Client {

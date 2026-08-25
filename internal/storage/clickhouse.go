@@ -90,7 +90,7 @@ func (s *ClickHouseSink) insert(ctx context.Context, events []market.LiveEvent) 
 		for _, e := range items {
 			var row any
 			if e.Bar != nil {
-				row = map[string]any{"symbol": e.Symbol, "timestamp": e.Bar.Timestamp.UTC().Format("2006-01-02 15:04:05.000"), "sequence": e.Cursor.Sequence, "stream_epoch": e.Cursor.StreamEpoch, "open": e.Bar.Open.String(), "high": e.Bar.High.String(), "low": e.Bar.Low.String(), "close": e.Bar.Close.String(), "volume": e.Bar.Volume, "turnover": e.Bar.Turnover, "completed": e.Bar.Completed, "source": e.Bar.Source}
+				row = map[string]any{"symbol": e.Symbol, "timestamp": e.Bar.Timestamp.UTC().Format("2006-01-02 15:04:05.000"), "sequence": e.Cursor.Sequence, "stream_epoch": e.Cursor.StreamEpoch, "open": e.Bar.Open.String(), "high": e.Bar.High.String(), "low": e.Bar.Low.String(), "close": e.Bar.Close.String(), "volume": e.Bar.Volume, "volume_decimal": e.Bar.VolumeDecimal, "turnover": e.Bar.Turnover, "completed": e.Bar.Completed, "source": e.Bar.Source}
 			} else {
 				raw := e.Trade
 				if typ == market.DepthEvent {
@@ -134,7 +134,8 @@ func (s *ClickHouseSink) exec(ctx context.Context, query string) error {
 func schema(db string) []string {
 	return []string{
 		`CREATE DATABASE IF NOT EXISTS ` + db,
-		`CREATE TABLE IF NOT EXISTS ` + db + `.bars (symbol LowCardinality(String), timestamp DateTime64(3, 'UTC'), sequence Int64, stream_epoch String, open Decimal64(6), high Decimal64(6), low Decimal64(6), close Decimal64(6), volume Int64, turnover Nullable(Decimal64(6)), completed Bool, source LowCardinality(String)) ENGINE = ReplacingMergeTree(sequence) ORDER BY (symbol, timestamp, stream_epoch) TTL timestamp + INTERVAL 1 YEAR DELETE`,
+		`CREATE TABLE IF NOT EXISTS ` + db + `.bars (symbol LowCardinality(String), timestamp DateTime64(3, 'UTC'), sequence Int64, stream_epoch String, open Decimal64(6), high Decimal64(6), low Decimal64(6), close Decimal64(6), volume Int64, volume_decimal String DEFAULT '', turnover Nullable(Decimal64(6)), completed Bool, source LowCardinality(String)) ENGINE = ReplacingMergeTree(sequence) ORDER BY (symbol, timestamp, stream_epoch) TTL timestamp + INTERVAL 1 YEAR DELETE`,
+		`ALTER TABLE ` + db + `.bars ADD COLUMN IF NOT EXISTS volume_decimal String DEFAULT '' AFTER volume`,
 		`CREATE TABLE IF NOT EXISTS ` + db + `.trades (symbol LowCardinality(String), timestamp DateTime64(3, 'UTC'), sequence Int64, stream_epoch String, payload String) ENGINE = MergeTree ORDER BY (symbol, timestamp, stream_epoch, sequence) TTL timestamp + INTERVAL 7 DAY DELETE`,
 		`CREATE TABLE IF NOT EXISTS ` + db + `.depth (symbol LowCardinality(String), timestamp DateTime64(3, 'UTC'), sequence Int64, stream_epoch String, payload String) ENGINE = MergeTree ORDER BY (symbol, timestamp, stream_epoch, sequence) TTL timestamp + INTERVAL 7 DAY DELETE`,
 	}

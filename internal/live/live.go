@@ -20,6 +20,10 @@ import (
 type Source interface {
 	Run(context.Context, []string, func(market.LiveEvent)) error
 }
+
+type connectionAwareSource interface {
+	SetOnConnected(func())
+}
 type Sink interface {
 	Write(context.Context, market.LiveEvent) error
 }
@@ -48,14 +52,28 @@ func (MockSource) Run(ctx context.Context, symbols []string, emit func(market.Li
 	}
 }
 
-type LongbridgeSource struct{ OnConnected func() }
+type LongbridgeSource struct {
+	Quote        *lbquote.QuoteContext
+	DepthEnabled bool
+	OnConnected  func()
+}
+
+func (s *LongbridgeSource) SetOnConnected(fn func()) { s.OnConnected = fn }
 
 func (s *LongbridgeSource) Run(ctx context.Context, symbols []string, emit func(market.LiveEvent)) error {
-	q, err := lbquote.NewFormEnv()
-	if err != nil {
-		return err
+	q := s.Quote
+	owned := false
+	if q == nil {
+		var err error
+		q, err = lbquote.NewFormEnv()
+		if err != nil {
+			return err
+		}
+		owned = true
 	}
-	defer q.Close()
+	if owned {
+		defer q.Close()
+	}
 	epoch := fmt.Sprintf("lb-%d", time.Now().UnixMilli())
 	var barMu sync.Mutex
 	bars := map[string]*market.Bar{}
@@ -106,13 +124,25 @@ func (s *LongbridgeSource) Run(ctx context.Context, symbols []string, emit func(
 		emit(market.LiveEvent{Type: market.DepthEvent, Symbol: symbol, Timestamp: time.Now().UTC(), Cursor: market.LiveCursor{StreamEpoch: epoch, EventType: market.DepthEvent, Symbol: symbol, Sequence: x.Sequence}, Depth: raw})
 	})
 	lbSymbols := make([]string, 0, len(symbols))
-	for _, s := range symbols {
-		if !strings.Contains(s, ".") {
-			s += ".US"
+	for _, symbol := range symbols {
+		normalized, venue, err := market.NormalizeSymbol(symbol)
+		if err != nil || venue == market.VenueBinance {
+			continue
 		}
-		lbSymbols = append(lbSymbols, s)
+		if venue == market.VenueUS {
+			normalized += ".US"
+		}
+		lbSymbols = append(lbSymbols, normalized)
 	}
-	if err := q.Subscribe(ctx, lbSymbols, []lbquote.SubType{lbquote.SubTypeQuote, lbquote.SubTypeTrade, lbquote.SubTypeDepth}, true); err != nil {
+	if len(lbSymbols) == 0 {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	subTypes := []lbquote.SubType{lbquote.SubTypeQuote, lbquote.SubTypeTrade}
+	if s.DepthEnabled {
+		subTypes = append(subTypes, lbquote.SubTypeDepth)
+	}
+	if err := q.Subscribe(ctx, lbSymbols, subTypes, true); err != nil {
 		return err
 	}
 	if s.OnConnected != nil {
@@ -152,7 +182,11 @@ func NewHub(source Source, sink Sink, watchlist []string) (*Hub, error) {
 	set := map[string]struct{}{}
 	var normalized []string
 	for _, s := range watchlist {
-		s = normalizeSymbol(s)
+		var err error
+		s, _, err = market.NormalizeSymbol(s)
+		if err != nil {
+			return nil, fmt.Errorf("invalid watchlist symbol %q: %w", s, err)
+		}
 		if _, ok := set[s]; !ok {
 			set[s] = struct{}{}
 			normalized = append(normalized, s)
@@ -260,7 +294,12 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	normalized := map[string]struct{}{}
 	for _, symbol := range req.Symbols {
-		symbol = normalizeSymbol(symbol)
+		var err error
+		symbol, _, err = market.NormalizeSymbol(symbol)
+		if err != nil {
+			_ = c.Close(websocket.StatusPolicyViolation, "invalid symbol")
+			return
+		}
 		if _, ok := allowed[symbol]; !ok {
 			_ = c.Close(websocket.StatusPolicyViolation, "symbol outside global watchlist")
 			return
@@ -308,5 +347,9 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 func normalizeSymbol(v string) string {
-	return strings.ToUpper(strings.TrimSuffix(strings.TrimSpace(v), ".US"))
+	normalized, _, err := market.NormalizeSymbol(v)
+	if err != nil {
+		return strings.ToUpper(strings.TrimSpace(v))
+	}
+	return normalized
 }

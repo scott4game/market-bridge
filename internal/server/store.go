@@ -78,7 +78,11 @@ func (s *Store) EnsureForAdmission(ctx context.Context, spec market.DatasetSpec,
 	if err != nil {
 		return market.DatasetStatus{}, err
 	}
-	id, err := spec.Hash(market.SchemaVersion, s.provider.DataVersion())
+	description, err := provider.Describe(s.provider, spec)
+	if err != nil {
+		return market.DatasetStatus{}, err
+	}
+	id, err := spec.Hash(market.SchemaVersion, description.DataVersion)
 	if err != nil {
 		return market.DatasetStatus{}, err
 	}
@@ -203,7 +207,12 @@ func (s *Store) generate(ctx context.Context, id string, spec market.DatasetSpec
 		names = append(names, n)
 	}
 	sort.Strings(names)
-	m := market.Manifest{DatasetID: id, Spec: spec, Provider: s.provider.Name(), SchemaVersion: market.SchemaVersion, DataVersion: s.provider.DataVersion(), GeneratedAt: time.Now().UTC()}
+	description, err := provider.Describe(s.provider, spec)
+	if err != nil {
+		fail(err)
+		return
+	}
+	m := market.Manifest{DatasetID: id, Spec: spec, Provider: description.Name, SchemaVersion: market.SchemaVersion, DataVersion: description.DataVersion, GeneratedAt: time.Now().UTC()}
 	for _, name := range names {
 		rows := groups[name]
 		path := filepath.Join(tmp, "files", filepath.FromSlash(name))

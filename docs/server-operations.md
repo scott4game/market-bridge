@@ -1,25 +1,45 @@
 # go-server 部署、验证与故障排查
 
-本文面向只部署 `go-server` 的运维场景，覆盖 Docker Compose、Nginx/OpenResty、历史数据接口、Longbridge 实时行情和常见故障排查。示例域名统一使用 `stock.example.com`，执行前请替换成实际域名。
+本文面向只部署 `go-server` 的运维场景，覆盖 Docker Compose、Nginx/OpenResty、历史数据接口、Longbridge/Binance 实时行情和常见故障排查。示例域名统一使用 `stock.example.com`，执行前请替换成实际域名。
 
 ## 1. Provider 分工
 
 `go-server` 的历史数据与实时行情由两组独立配置控制：
 
 ```dotenv
-# 历史数据：mock 或 massive
+# 美股历史数据：mock 或 massive
 GO_SERVER_PROVIDER=massive
 MASSIVE_API_KEY=...
 
-# 实时行情：mock 或 longbridge
-GO_SERVER_LIVE_PROVIDER=longbridge
-GO_SERVER_WATCHLIST=AAPL,NVDA
+# 港股/A 股历史和实时行情
+GO_SERVER_LONGBRIDGE_HISTORY_ENABLED=true
 LONGBRIDGE_APP_KEY=...
 LONGBRIDGE_APP_SECRET=...
 LONGBRIDGE_ACCESS_TOKEN=...
+
+# Binance Spot 历史和实时公共行情（不需要 Binance API Key）
+GO_SERVER_BINANCE_ENABLED=true
+
+# 同时运行多个实时源
+GO_SERVER_LIVE_PROVIDERS=longbridge,binance
+GO_SERVER_WATCHLIST=AAPL,700.HK,600519.SH,000001.SZ,BTCUSDT.BINANCE
 ```
 
-不要把 `GO_SERVER_PROVIDER` 设置为 `longbridge`。Longbridge 在当前服务中只负责 `/v1/live/ws` 实时推送；`POST /v1/datasets` 使用的是 Massive 或 Mock 历史数据。
+不要把 `GO_SERVER_PROVIDER` 设置为 `longbridge` 或 `binance`。它只选择裸代码美股的基础历史 Provider；服务会根据代码后缀把 `.HK/.SH/.SZ` 路由到 Longbridge，把 `.BINANCE` 路由到 Binance。旧配置 `GO_SERVER_LIVE_PROVIDER=longbridge` 仍可用；需要多个实时源时使用复数配置。
+
+默认不开启 Longbridge 深度订阅，以减少权限和订阅额度要求。如账号已有深度权限，可设置 `GO_SERVER_LONGBRIDGE_DEPTH_ENABLED=true`。Longbridge 单次历史接口最多返回 1000 根，服务会自动分页；供应商的频率、市场权限和每月标的额度仍然适用。
+
+### 1.1 市场代码和默认参数
+
+| 市场 | 示例 | 默认 session | 默认 adjustment |
+| --- | --- | --- | --- |
+| 美股 | `AAPL` 或 `AAPL.US` | `regular` | `split_adjusted` |
+| 港股 | `700.HK` | `regular` | `forward_adjusted` |
+| 沪市 | `600519.SH` | `regular` | `forward_adjusted` |
+| 深市 | `000001.SZ` | `regular` | `forward_adjusted` |
+| Binance Spot | `BTCUSDT.BINANCE` | `continuous` | `raw` |
+
+一个 dataset 不能混合证券与币圈代码；同类证券可以混合，此时未指定复权会安全地回落为 `raw`。创建请求可省略 `session` 和 `adjustment` 让服务按市场推断。
 
 ## 2. Docker Compose 运维
 
@@ -408,7 +428,11 @@ curl -fL \
 docker compose exec go-server sh -c '
 for name in \
   GO_SERVER_LIVE_PROVIDER \
+  GO_SERVER_LIVE_PROVIDERS \
   GO_SERVER_WATCHLIST \
+  GO_SERVER_LONGBRIDGE_HISTORY_ENABLED \
+  GO_SERVER_LONGBRIDGE_DEPTH_ENABLED \
+  GO_SERVER_BINANCE_ENABLED \
   LONGBRIDGE_APP_KEY \
   LONGBRIDGE_APP_SECRET \
   LONGBRIDGE_ACCESS_TOKEN
@@ -495,7 +519,7 @@ websocat \
 {"cursor":{"stream_epoch":"mock"},"bar":{"source":"mock-live"}}
 ```
 
-此时确认 `.env` 中设置了 `GO_SERVER_LIVE_PROVIDER=longbridge`，再执行：
+此时确认 `.env` 中设置了 `GO_SERVER_LIVE_PROVIDERS=longbridge,binance`（只用 Longbridge 时也可保留旧的单值配置），再执行：
 
 ```bash
 docker compose up -d --force-recreate go-server

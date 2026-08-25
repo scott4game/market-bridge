@@ -144,7 +144,21 @@ docker compose logs -f go-client
 ```dotenv
 GO_CLIENT_SERVER_URL=https://stock.example.com
 GO_CLIENT_SERVER_TOKEN=管理员为当前用户签发的完整_API_Key
+REDIS_MAXMEMORY=1gb
 ```
+
+`REDIS_MAXMEMORY` 控制运行 go-client 的这台机器上的 Redis 容器内存上限，默认是 `1gb`；也可以按机器资源改为 `256mb`、`512mb` 或其他值。修改 `.env` 后，必须重新创建 Redis 容器才能应用，单纯执行 `docker compose restart` 不会重新读取配置：
+
+```bash
+docker compose up -d --force-recreate redis
+docker compose up -d --force-recreate go-client
+
+# 1gb 应返回 1073741824
+docker compose exec redis sh -c \
+  'redis-cli -a "$REDIS_PASSWORD" CONFIG GET maxmemory'
+```
+
+Redis 达到上限后使用 `allkeys-lru` 淘汰较少访问的缓存；Parquet 磁盘缓存不受该内存上限影响。
 
 镜像直接从 `docker.io/otsgame/market-bridge-client:latest` 拉取。启动成功后打开 <http://127.0.0.1:17600>。go-client 和 Redis 均只监听本机或 Compose 内部网络。
 
@@ -172,15 +186,17 @@ GO_CLIENT_SERVER_TOKEN=管理员为当前用户签发的完整_API_Key
 
 安装成功后打开 <http://127.0.0.1:17600>。普通卸载保留 Parquet 缓存和 `.env`。
 
-### 交互式 K 线与 NX 指标
+### 交互式 K 线与公式指标
 
 go-client 内置并自行托管 KLineChart `10.0.2`，页面运行时不依赖外部 CDN。图表支持鼠标滚轮缩放、拖动平移、十字光标和 OHLC 提示；`1m` 周期会继续接收 Longbridge 实时 bar，其他周期只展示历史数据，避免混入错误周期的数据。
 
-主图默认启用 NX 牛熊分界线：蓝线上下轨为 `EMA(HIGH,24)` / `EMA(LOW,23)`，黄线上下轨为 `EMA(HIGH,89)` / `EMA(LOW,90)`。页面可以开关指标或修改四个周期，设置保存在当前浏览器的 localStorage。默认加载最近 180 天日线，为 89/90 周期 EMA 提供足够的预热数据；缩短查询范围会改变长周期 EMA 的起始结果。
+页面的“管理指标”支持创建主图或副图公式，直接粘贴通达信技术指标语法，先执行参数识别和当前 K 线预览，再保存。指标在独立 Web Worker 中计算，单次最多 250000 根 K 线并有 10 秒超时，不会阻塞图表交互。系统最多保存 50 个个人指标，同时启用 12 个；公式最大 64 KiB、参数最多 32 个。
 
-页面还默认启用独立的 MX MACD 背离副图，展示 `DIFF`、`DEA` 和 `MACD` 柱，并按背离公式在确认柱标注红色 `B` 买点与绿色 `S` 卖点。默认参数为 `S/P/M=12/26/9`，可在页面修改、关闭并保存到当前浏览器。指标只根据当前加载范围内的 K 线计算，建议保留足够长的查询范围作为 EMA 和背离分段的预热数据。
+NX 牛熊分界线和 MX MACD 背离作为内置模板随每个团队账号自动创建。模板公式只读，但可以修改参数、开关显示，或点击“复制”生成可编辑的个人公式。配置通过 `GET/POST/PUT/DELETE /v1/me/indicators` 保存到 go-server，按账号隔离；go-client 会在浏览器中保留最近一次配置，在服务端暂时不可用时只读回退。API Key 需要 `indicators:read` / `indicators:write` scope，升级时现有角色 Key 会自动补齐。
 
-KLineChart 使用 Apache License 2.0，固定版本、校验和及许可证位置记录在 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
+公式支持常见行情字段、算术与逻辑表达式、EMA/MA/REF/LLV/HHV/BARSLAST 等技术函数，以及 `STICKLINE`、`DRAWTEXT` 等绘图语句。含 `REFX` 等未来函数时界面会醒目标注“历史信号可能重绘”。跨标的、选股、交易下单和公式中的外部数据源不在本功能范围；缺少参数或预览 K 线时不会保存。指标只根据当前加载范围计算，长周期 EMA 与背离指标应保留足够的预热数据。
+
+KLineChart 使用 Apache License 2.0；公式解析器基于固定提交的 formula-ts（MIT）并包含项目兼容补丁。版本、许可证和修改说明记录在 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
 
 ## 开发运行
 
@@ -224,7 +240,10 @@ docker compose --profile local up --build
 
 - `GO_SERVER_PROVIDER=massive` 与 `MASSIVE_API_KEY` 启用 Massive 历史 aggregates。调整模式只代表拆股调整，不表示股息复权。
 - Massive 调用量会持久化到服务端数据目录的 `usage.db`。免费档使用 `MASSIVE_PLAN_NAME=stocks_basic`、`MASSIVE_REQUESTS_PER_MINUTE=5`；`MASSIVE_REQUESTS_PER_MONTH=0` 表示月度不限额。通过受保护的 `GET /v1/providers/massive/usage` 或本地页面查看最近 60 秒、本月和累计调用量。计数只覆盖本 go-server 发出的请求，不包含同一 API Key 被其他程序使用的次数。
-- `GO_SERVER_LIVE_PROVIDER=longbridge` 与 Longbridge 三项凭据启用单连接采集。关注池由 `GO_SERVER_WATCHLIST` 配置，最多 200 只。
+- 设置 `GO_SERVER_LONGBRIDGE_HISTORY_ENABLED=true` 后，`700.HK`、`600519.SH`、`000001.SZ` 的历史 K 线由 Longbridge 提供；Longbridge 三项凭据仍由服务端统一保存。裸代码和 `.US` 继续走原有美股 Provider。
+- 设置 `GO_SERVER_BINANCE_ENABLED=true` 后，`BTCUSDT.BINANCE` 这类代码使用 Binance Spot 公共行情，无需 Binance API Key。币种成交量同时返回精确字符串字段 `volume_decimal`。
+- `GO_SERVER_LIVE_PROVIDERS=longbridge,binance` 可同时采集证券和币圈实时行情；兼容旧的单值 `GO_SERVER_LIVE_PROVIDER`。关注池由 `GO_SERVER_WATCHLIST` 配置，示例：`AAPL,700.HK,600519.SH,000001.SZ,BTCUSDT.BINANCE`。
+- 标准代码格式为 `AAPL`/`AAPL.US`、`700.HK`、`600519.SH`、`000001.SZ` 和 `BTCUSDT.BINANCE`。证券默认 `regular` 时段，币圈默认 `continuous`；港股/A 股默认前复权，币圈固定原始价格。
 - ClickHouse 默认关闭且不随项目部署。设置 `GO_SERVER_CLICKHOUSE_ENABLED=true` 并提供 `CLICKHOUSE_URL`、`CLICKHOUSE_DATABASE`、`CLICKHOUSE_USER`、`CLICKHOUSE_PASSWORD` 后，可将实时 bars、trades 和 depth 写入外部 ClickHouse；它用于实时行情留存，不作为请求缓存。
 
 ## 发布

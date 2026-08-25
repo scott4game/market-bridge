@@ -66,8 +66,8 @@ curl --get 'http://127.0.0.1:17600/v1/bars/AAPL' \
 | `from` | 是 | RFC3339 时间 | 起点，按闭区间处理 |
 | `to` | 是 | RFC3339 时间 | 终点，按开区间处理 |
 | `interval` | 否 | 见下表 | 默认 `1m` |
-| `session` | 否 | `regular` / `extended` | 默认 `regular` |
-| `adjustment` | 否 | `raw` / `split_adjusted` | 默认 `split_adjusted` |
+| `session` | 否 | `regular` / `extended` / `continuous` | 按代码市场推断 |
+| `adjustment` | 否 | `auto` / `raw` / `split_adjusted` / `forward_adjusted` | 默认 `auto`，按代码市场推断 |
 
 支持的周期：
 
@@ -77,12 +77,18 @@ curl --get 'http://127.0.0.1:17600/v1/bars/AAPL' \
 1d  1w  1mo  1y
 ```
 
-标的代码不区分大小写，末尾 `.US` 会被去掉。例如 `aapl`、`AAPL` 和
-`AAPL.US` 都会规范化为 `AAPL`。
+标的代码不区分大小写。`aapl`、`AAPL` 和 `AAPL.US` 都会规范化为 `AAPL`；
+港股、A 股和币圈分别使用 `700.HK`、`600519.SH`、`000001.SZ`、
+`BTCUSDT.BINANCE`。`.HK/.SH/.SZ` 由 Longbridge 提供，`.BINANCE` 由 Binance
+Spot 提供。证券和币圈代码不能放进同一个 dataset。
 
-`session` 当前会参与数据集标识并写入 bar，但 Massive Provider 没有把它转换成
+`session` 会参与数据集标识并写入 bar。Massive Provider 没有把它转换成
 交易时段过滤条件。若策略严格区分盘前、盘中和盘后，机器人仍需按交易所日历和 UTC
 时间自行过滤，不能只依赖返回的 `session` 字段。
+
+市场默认值为：美股 `regular + split_adjusted`，港股/A 股
+`regular + forward_adjusted`，Binance Spot `continuous + raw`。币圈成交量可能含
+小数，读取时优先使用 `volume_decimal`；旧的 `volume` int64 字段为兼容字段。
 
 响应示例：
 
@@ -149,10 +155,11 @@ curl -fsS -X POST 'http://127.0.0.1:17600/v1/datasets/ensure' \
 | `symbol` | string | 规范化后的标的代码 |
 | `timestamp` | RFC3339 string | UTC K 线起始时间 |
 | `open/high/low/close` | decimal string | 使用 Decimal 解析，不要先转二进制浮点再做资金结算 |
-| `volume` | int64 | 成交量 |
+| `volume` | int64 | 兼容用整数成交量；币圈可能被截断 |
+| `volume_decimal` | string | 精确成交量；存在时优先读取 |
 | `turnover` | decimal string，可缺省 | 成交额；缺省代表未知，不代表零 |
-| `session` | string | `regular` 或 `extended` |
-| `source` | string | 行情提供者，如 `massive`、`mock`、`longbridge` |
+| `session` | string | `regular`、`extended` 或 `continuous` |
+| `source` | string | 行情提供者，如 `massive`、`mock`、`longbridge`、`binance` |
 | `completed` | bool | 是否已经收盘定型 |
 
 价格在 JSON 中是字符串，当前内部精度为小数点后 6 位。Python 推荐
@@ -207,7 +214,7 @@ for raw in payload["bars"]:
         "high": Decimal(raw["high"]),
         "low": Decimal(raw["low"]),
         "close": Decimal(raw["close"]),
-        "volume": int(raw["volume"]),
+        "volume": Decimal(raw.get("volume_decimal", raw["volume"])),
         "completed": bool(raw["completed"]),
     })
 
@@ -372,20 +379,19 @@ bar[t] 收盘 -> 计算 signal[t] -> 最早在 bar[t+1] 的可成交价格执行
 成交价时使用 `raw`。同一组训练、验证和实盘对照不得混用两种模式。当前 Massive 的
 `split_adjusted` 表示拆股调整，不等同于股息复权。
 
-## 6. 与内置图表策略对照
+## 6. 与浏览器公式指标对照
 
 本地页面 `http://127.0.0.1:17600` 的指标是在浏览器中根据当前加载的 K 线计算，
 接口不会直接返回指标值或买卖信号。
 
-- NX 默认参数为 `24/23/89/90`：蓝线上下轨为 `EMA(high,24)` / `EMA(low,23)`，
-  黄线上下轨为 `EMA(high,89)` / `EMA(low,90)`。
-- MX 使用 MACD 默认参数 `12/26/9`，页面还在其上计算背离 B/S 信号。
+- NX 和 MX 是每个账号的内置公式模板；用户可以调整参数，或复制为个人公式后编辑。
+- 个人配置由 go-server 的 `/v1/me/indicators` 保存并按账号隔离；浏览器只缓存最近一次配置。
 - 浏览器 EMA 以加载范围的第一根数据作为初始值，所以机器人要与页面逐点比对时，
   必须使用完全相同的标的、周期、起止时间、时段、复权模式和参数。
 
-NX 和 MX 的精确实现位于
-[`internal/localclient/ui/app.js`](../internal/localclient/ui/app.js)。需要验证内置 B/S
-信号时，应把该实现及其版本一并记录为策略依据。
+公式执行器位于 [`web/formula-worker.js`](../web/formula-worker.js)，内置 NX/MX 模板位于
+[`internal/access/indicators.go`](../internal/access/indicators.go)。需要验证 B/S 信号时，应把
+公式内容、参数、K 线查询范围和代码版本一并记录为策略依据。
 
 若机器人实现的公式与页面不同，应该把它视为另一个策略版本，不要只比较最终收益。
 建议先逐根比较指标值和信号时间，再比较成交与绩效。

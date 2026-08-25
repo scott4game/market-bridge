@@ -19,6 +19,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build:web && npm run check:web
+      - run: git diff --exit-code -- internal/localclient/ui/formula-worker.js
       - run: go test -race ./...
       - run: go vet ./...
 

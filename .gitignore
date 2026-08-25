@@ -6,3 +6,4 @@
 /go-server
 *.tmp
 *.downloading
+node_modules/

@@ -1,10 +1,18 @@
 # syntax=docker/dockerfile:1
 
+FROM node:24-alpine AS build-web
+WORKDIR /src
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY web ./web
+RUN mkdir -p internal/localclient/ui && npm run build:web
+
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build-base
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+COPY --from=build-web /src/internal/localclient/ui/formula-worker.js ./internal/localclient/ui/formula-worker.js
 
 FROM build-base AS build-server
 ARG TARGETOS

@@ -17,8 +17,9 @@ func TestEmbeddedKLineChartAssets(t *testing.T) {
 		want string
 	}{
 		{path: "/", want: "/klinecharts.min.js"},
-		{path: "/", want: "MX MACD 背离副图"},
-		{path: "/app.js", want: "MX_INDICATOR_NAME = 'MX_MACD'"},
+		{path: "/", want: "管理指标"},
+		{path: "/app.js", want: "applyFormulaIndicators"},
+		{path: "/formula-worker.js", want: "Market Bridge TDX formula worker"},
 		{path: "/klinecharts.min.js", want: "KLineChart v10.0.2"},
 		{path: "/klinecharts.LICENSE.txt", want: "Apache License"},
 	} {
@@ -54,5 +55,35 @@ func TestProviderUsageProxyForwardsServerToken(t *testing.T) {
 	(&HTTP{Cache: cache}).Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/providers/massive/usage", nil))
 	if rec.Code != http.StatusOK || rec.Body.String() != "{\"provider\":\"massive\",\"totals\":{\"requests\":7}}\n" {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestIndicatorProxyPreservesRevisionAndNoContent(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/v1/me/indicators/test" || r.URL.Query().Get("revision") != "7" {
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	cache, err := NewCache(config.Client{CacheDir: t.TempDir(), ServerURL: upstream.URL, ServerToken: "secret", RedisEnabled: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cache.Close()
+	recorder := httptest.NewRecorder()
+	(&HTTP{Cache: cache}).Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodDelete, "/v1/me/indicators/test?revision=7", nil))
+	if recorder.Code != http.StatusNoContent || recorder.Body.Len() != 0 {
+		t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestAllowedOriginAcceptsPublicSameOrigin(t *testing.T) {
+	if !allowedOrigin("https://stock.hiova.com", "stock.hiova.com") {
+		t.Fatal("public same-origin request was rejected")
+	}
+	if allowedOrigin("https://attacker.example", "stock.hiova.com") {
+		t.Fatal("cross-origin request was accepted")
 	}
 }

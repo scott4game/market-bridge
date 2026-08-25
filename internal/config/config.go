@@ -9,27 +9,33 @@ import (
 )
 
 type Server struct {
-	Listen             string
-	DataDir            string
-	AuthDB             string
-	Provider           string
-	DataVersion        string
-	BearerToken        string
-	MassiveAPIKey      string
-	MassiveBaseURL     string
-	MassivePlanName    string
-	MassivePerMinute   int
-	MassivePerMonth    int
-	LiveProvider       string
-	Watchlist          []string
-	ClickHouseEnabled  bool
-	ClickHouseURL      string
-	ClickHouseDatabase string
-	ClickHouseUser     string
-	ClickHousePassword string
-	DatasetTTL         time.Duration
-	DatasetWorkers     int
-	DatasetQueueSize   int
+	Listen                   string
+	DataDir                  string
+	AuthDB                   string
+	Provider                 string
+	DataVersion              string
+	BearerToken              string
+	MassiveAPIKey            string
+	MassiveBaseURL           string
+	MassivePlanName          string
+	MassivePerMinute         int
+	MassivePerMonth          int
+	LiveProvider             string
+	LiveProviders            []string
+	Watchlist                []string
+	LongbridgeHistoryEnabled bool
+	LongbridgeDepthEnabled   bool
+	BinanceEnabled           bool
+	BinanceRESTURL           string
+	BinanceWSURL             string
+	ClickHouseEnabled        bool
+	ClickHouseURL            string
+	ClickHouseDatabase       string
+	ClickHouseUser           string
+	ClickHousePassword       string
+	DatasetTTL               time.Duration
+	DatasetWorkers           int
+	DatasetQueueSize         int
 }
 
 func ServerFromEnv() Server {
@@ -38,14 +44,43 @@ func ServerFromEnv() Server {
 		Provider: env("GO_SERVER_PROVIDER", "mock"), DataVersion: env("GO_SERVER_DATA_VERSION", time.Now().UTC().Format("2006-01-02")),
 		BearerToken: os.Getenv("GO_SERVER_TOKEN"), MassiveAPIKey: os.Getenv("MASSIVE_API_KEY"), MassiveBaseURL: env("MASSIVE_BASE_URL", "https://api.massive.com"),
 		MassivePlanName: env("MASSIVE_PLAN_NAME", "stocks_basic"), MassivePerMinute: integer("MASSIVE_REQUESTS_PER_MINUTE", 5), MassivePerMonth: integer("MASSIVE_REQUESTS_PER_MONTH", 0),
-		LiveProvider: env("GO_SERVER_LIVE_PROVIDER", "mock"), Watchlist: split(env("GO_SERVER_WATCHLIST", "AAPL,NVDA")),
+		LiveProvider: env("GO_SERVER_LIVE_PROVIDER", "mock"), LiveProviders: split(os.Getenv("GO_SERVER_LIVE_PROVIDERS")), Watchlist: split(env("GO_SERVER_WATCHLIST", "AAPL,NVDA")),
+		LongbridgeHistoryEnabled: boolean("GO_SERVER_LONGBRIDGE_HISTORY_ENABLED", false), LongbridgeDepthEnabled: boolean("GO_SERVER_LONGBRIDGE_DEPTH_ENABLED", false),
+		BinanceEnabled: boolean("GO_SERVER_BINANCE_ENABLED", false), BinanceRESTURL: env("BINANCE_REST_BASE_URL", "https://data-api.binance.vision"), BinanceWSURL: env("BINANCE_WS_URL", "wss://data-stream.binance.vision"),
 		ClickHouseEnabled: env("GO_SERVER_CLICKHOUSE_ENABLED", "false") == "true",
 		ClickHouseURL:     os.Getenv("CLICKHOUSE_URL"), ClickHouseDatabase: env("CLICKHOUSE_DATABASE", "market"), ClickHouseUser: env("CLICKHOUSE_USER", "market"), ClickHousePassword: os.Getenv("CLICKHOUSE_PASSWORD"),
 		DatasetTTL: duration("GO_SERVER_DATASET_TTL", 24*time.Hour), DatasetWorkers: integer("GO_SERVER_DATASET_WORKERS", 2), DatasetQueueSize: integer("GO_SERVER_DATASET_QUEUE_SIZE", 100),
 	}
 }
 
+func (s Server) EffectiveLiveProviders() []string {
+	values := s.LiveProviders
+	if len(values) == 0 {
+		values = []string{s.LiveProvider}
+	}
+	seen := map[string]struct{}{}
+	providers := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if _, ok := seen[value]; value == "" || ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		providers = append(providers, value)
+	}
+	return providers
+}
+
 func (s Server) Validate() error {
+	liveProviders := s.EffectiveLiveProviders()
+	for _, name := range liveProviders {
+		if name != "mock" && name != "longbridge" && name != "binance" {
+			return fmt.Errorf("unsupported live provider %q", name)
+		}
+		if name == "mock" && len(liveProviders) > 1 {
+			return fmt.Errorf("mock live provider cannot be combined with real providers")
+		}
+	}
 	if !s.ClickHouseEnabled {
 		return nil
 	}

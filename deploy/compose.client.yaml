@@ -30,7 +30,7 @@ services:
     image: redis:7.4-alpine
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
-      REDIS_MAXMEMORY: ${REDIS_MAXMEMORY:-256mb}
+      REDIS_MAXMEMORY: ${REDIS_MAXMEMORY:-1gb}
     command: ["sh", "-c", "exec redis-server --save '' --appendonly no --maxmemory \"$$REDIS_MAXMEMORY\" --maxmemory-policy allkeys-lru --requirepass \"$$REDIS_PASSWORD\""]
     expose: [6379]
     healthcheck:

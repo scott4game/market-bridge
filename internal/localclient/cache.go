@@ -353,6 +353,9 @@ func (c *Cache) ServerJSON(ctx context.Context, method, path string, body io.Rea
 	if err != nil {
 		return nil, resp.StatusCode, err
 	}
+	if resp.StatusCode == http.StatusNoContent && len(raw) == 0 {
+		return nil, resp.StatusCode, nil
+	}
 	if !json.Valid(raw) {
 		return nil, resp.StatusCode, fmt.Errorf("go-server returned invalid JSON")
 	}

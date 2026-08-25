@@ -20,6 +20,22 @@ type Provider interface {
 	Bars(context.Context, market.DatasetSpec) ([]market.Bar, error)
 }
 
+type Description struct {
+	Name        string
+	DataVersion string
+}
+
+type SpecDescriber interface {
+	Describe(market.DatasetSpec) (Description, error)
+}
+
+func Describe(p Provider, spec market.DatasetSpec) (Description, error) {
+	if describer, ok := p.(SpecDescriber); ok {
+		return describer.Describe(spec)
+	}
+	return Description{Name: p.Name(), DataVersion: p.DataVersion()}, nil
+}
+
 type Mock struct{ Version string }
 
 func (m *Mock) Name() string { return "mock" }

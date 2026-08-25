@@ -6,12 +6,12 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
 	"github.com/scott4game/market-bridge/internal/config"
+	"github.com/scott4game/market-bridge/internal/market"
 )
 
 type liveSubscriber struct {
@@ -49,7 +49,10 @@ func (p *LiveProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	s := &liveSubscriber{symbols: map[string]struct{}{}, queue: make(chan []byte, 128)}
 	for _, symbol := range request.Symbols {
-		s.symbols[strings.ToUpper(strings.TrimSuffix(strings.TrimSpace(symbol), ".US"))] = struct{}{}
+		normalized, _, err := market.NormalizeSymbol(symbol)
+		if err == nil {
+			s.symbols[normalized] = struct{}{}
+		}
 	}
 	p.mu.Lock()
 	p.subs[s] = struct{}{}
@@ -166,7 +169,10 @@ func (p *LiveProxy) broadcast(msg []byte) {
 		Symbol string `json:"symbol"`
 	}
 	_ = json.Unmarshal(msg, &envelope)
-	symbol := strings.ToUpper(strings.TrimSuffix(envelope.Symbol, ".US"))
+	symbol, _, err := market.NormalizeSymbol(envelope.Symbol)
+	if err != nil {
+		return
+	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	for s := range p.subs {

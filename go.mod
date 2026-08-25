@@ -7,6 +7,7 @@ require (
 	github.com/longbridge/openapi-go v0.27.0
 	github.com/parquet-go/parquet-go v0.25.1
 	github.com/redis/go-redis/v9 v9.7.3
+	github.com/shopspring/decimal v1.3.1
 	modernc.org/sqlite v1.35.0
 )
 
@@ -32,7 +33,6 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/shopspring/decimal v1.3.1 // indirect
 	golang.org/x/exp v0.0.0-20230315142452-642cacee5cc0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sys v0.28.0 // indirect

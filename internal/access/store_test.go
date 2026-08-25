@@ -2,10 +2,57 @@ package access
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestPersonalIndicatorsAreIsolatedAndRevisioned(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), "auth.db"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	alice, _ := store.CreateUser(ctx, "indicator-alice", "member")
+	bob, _ := store.CreateUser(ctx, "indicator-bob", "member")
+
+	defaults, err := store.Indicators(ctx, alice.ID)
+	if err != nil || len(defaults) != 2 || defaults[0].Kind != "template" {
+		t.Fatalf("defaults=%+v err=%v", defaults, err)
+	}
+	mutation := IndicatorMutation{
+		Name: "MA Test", Pane: "main", Formula: "M:MA(CLOSE,N);", Enabled: true, SortOrder: 100,
+		Parameters: []IndicatorParameter{{Name: "N", Default: 5, Min: 1, Max: 500, Step: 1, Value: 5}},
+	}
+	created, err := store.CreateIndicator(ctx, alice.ID, mutation)
+	if err != nil || created.Revision != 1 || created.Kind != "personal" {
+		t.Fatalf("created=%+v err=%v", created, err)
+	}
+	mutation.Revision = created.Revision
+	mutation.Name = "MA Updated"
+	updated, err := store.UpdateIndicator(ctx, alice.ID, created.ID, mutation)
+	if err != nil || updated.Revision != 2 || updated.Name != mutation.Name {
+		t.Fatalf("updated=%+v err=%v", updated, err)
+	}
+	if _, err := store.UpdateIndicator(ctx, alice.ID, created.ID, mutation); !errors.Is(err, ErrIndicatorConflict) {
+		t.Fatalf("stale update err=%v", err)
+	}
+	if _, err := store.CopyIndicator(ctx, bob.ID, created.ID, ""); !errors.Is(err, ErrIndicatorNotFound) {
+		t.Fatalf("cross-account copy err=%v", err)
+	}
+	copy, err := store.CopyIndicator(ctx, alice.ID, created.ID, "")
+	if err != nil || copy.ID == created.ID || copy.Kind != "personal" {
+		t.Fatalf("copy=%+v err=%v", copy, err)
+	}
+	if err := store.DeleteIndicator(ctx, alice.ID, created.ID, updated.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteIndicator(ctx, alice.ID, defaults[0].ID, defaults[0].Revision); !errors.Is(err, ErrIndicatorTemplate) {
+		t.Fatalf("template delete err=%v", err)
+	}
+}
 
 func TestAPIKeyLifecycleAndQuotas(t *testing.T) {
 	ctx := context.Background()

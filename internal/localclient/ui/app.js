@@ -12,6 +12,16 @@ const RED = '#ff4d5a'
 const GREEN = '#2ac99a'
 let socket = null
 let activeQuery = null
+let lastBars = []
+let cloudIndicators = []
+let selectedIndicator = null
+let activeFormulaCharts = []
+const registeredFormulaNames = new Set()
+let workerSequence = 0
+let formulaWorker = null
+let indicatorUserID = localStorage.getItem('market-bridge:formula-indicators:user') || 'unknown'
+const workerRequests = new Map()
+const INDICATOR_MIGRATION_KEY = 'market-bridge:formula-indicators:migrated-v1'
 
 function setStatus(text, state = '') {
   $('status').textContent = text
@@ -20,7 +30,7 @@ function setStatus(text, state = '') {
 
 async function getJSON(path, options) {
   const response = await fetch(path, options)
-  const data = await response.json()
+  const data = response.status === 204 ? null : await response.json()
   if (!response.ok) throw new Error(data.error || response.statusText)
   return data
 }
@@ -47,6 +57,9 @@ async function refreshAccount() {
     const longbridge = providers.longbridge || {}
     $('longbridge-status').textContent = longbridge.state || 'unknown'
     $('longbridge-detail').textContent = `订阅池 ${longbridge.subscribed_symbols ?? 0} · 重连 ${longbridge.reconnects ?? 0}`
+    const binance = providers.binance || {}
+    $('binance-status').textContent = binance.state || 'unknown'
+    $('binance-detail').textContent = `订阅池 ${binance.subscribed_symbols ?? 0} · 重连 ${binance.reconnects ?? 0}`
     $('watchlist-symbols').value = (watchlist.symbols || []).join(',')
     $('watchlist-state').textContent = `允许 ${(watchlist.allowed_symbols || []).join(',')}`
     if (!socket || socket.readyState !== WebSocket.OPEN) setStatus('账号在线', 'ok')
@@ -330,21 +343,21 @@ function normalizeBar(bar) {
     high: Number(bar.high),
     low: Number(bar.low),
     close: Number(bar.close),
-    volume: Number(bar.volume || 0)
+    volume: Number(bar.volume_decimal ?? bar.volume ?? 0)
   }
   if (bar.turnover !== undefined && bar.turnover !== null) normalized.turnover = Number(bar.turnover)
   return normalized
 }
 
 function intervalToPeriod(interval) {
-  const match = /^(\d+)(m|h|d)$/.exec(interval)
+	const match = /^(\d+)(m|h|d|w|mo|y)$/.exec(interval)
   if (!match) return { type: 'day', span: 1 }
-  const types = { m: 'minute', h: 'hour', d: 'day' }
+	const types = { m: 'minute', h: 'hour', d: 'day', w: 'week', mo: 'month', y: 'year' }
   return { type: types[match[2]], span: Number(match[1]) }
 }
 
 function periodToInterval(period) {
-  const suffixes = { minute: 'm', hour: 'h', day: 'd' }
+	const suffixes = { minute: 'm', hour: 'h', day: 'd', week: 'w', month: 'mo', year: 'y' }
   return `${period.span}${suffixes[period.type] || 'd'}`
 }
 
@@ -352,13 +365,19 @@ function localDateTimeValue(date) {
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
 }
 
+function marketDefaults(symbol) {
+  const upper = symbol.toUpperCase()
+  if (upper.endsWith('.BINANCE')) return { session: 'continuous', adjustment: 'raw', market: 'Binance Spot' }
+  if (upper.endsWith('.HK')) return { session: 'regular', adjustment: 'forward_adjusted', market: '港股' }
+  if (upper.endsWith('.SH') || upper.endsWith('.SZ')) return { session: 'regular', adjustment: 'forward_adjusted', market: 'A 股' }
+  return { session: 'regular', adjustment: 'split_adjusted', market: '美股' }
+}
+
 if (!window.klinecharts) {
   $('error').textContent = 'KLineChart 静态资源加载失败，请重新拉取 go-client 镜像。'
   throw new Error('klinecharts is unavailable')
 }
 
-registerNX()
-registerMX()
 const chart = window.klinecharts.init('chart', {
   locale: 'zh-CN',
   timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -430,11 +449,12 @@ chart.setDataLoader({
         interval: periodToInterval(period),
         from: activeQuery.from,
         to: activeQuery.to,
-        session: 'regular',
-        adjustment: 'split_adjusted'
+        session: activeQuery.session,
+        adjustment: activeQuery.adjustment
       })
       const data = await getJSON(`/v1/bars/${encodeURIComponent(symbol.ticker)}?${query}`)
       const bars = (Array.isArray(data.bars) ? data.bars : []).map(normalizeBar).sort((a, b) => a.timestamp - b.timestamp)
+      lastBars = bars
       callback(bars, false)
       $('source').textContent = `缓存：${data.source}`
       $('count').textContent = `Bars：${bars.length}`
@@ -487,22 +507,274 @@ function applyMX() {
     : 'MX MACD 已隐藏'
 }
 
-const nxConfig = readNXConfig()
-writeNXInputs(nxConfig)
-applyNX()
-const mxConfig = readMXConfig()
-writeMXInputs(mxConfig)
-applyMX()
+function resetFormulaWorker(reason) {
+  if (formulaWorker) formulaWorker.terminate()
+  formulaWorker = new Worker('/formula-worker.js')
+  formulaWorker.onmessage = event => {
+    const pending = workerRequests.get(event.data.id)
+    if (!pending) return
+    clearTimeout(pending.timer)
+    workerRequests.delete(event.data.id)
+    event.data.ok ? pending.resolve(event.data.result) : pending.reject(new Error(event.data.error))
+  }
+  formulaWorker.onerror = () => resetFormulaWorker('公式计算 Worker 异常，已自动重启')
+  if (reason) $('indicator-error').textContent = reason
+}
+
+function runFormula(type, indicator, bars = []) {
+  if (!formulaWorker) resetFormulaWorker()
+  const id = ++workerSequence
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      workerRequests.delete(id)
+      resetFormulaWorker('公式计算超过 10 秒，已终止')
+      reject(new Error('公式计算超过 10 秒，已终止'))
+    }, 10000)
+    workerRequests.set(id, { resolve, reject, timer })
+    formulaWorker.postMessage({ id, type, formula: indicator.formula, parameters: indicator.parameters || [], bars })
+  })
+}
+
+const FORMULA_COLORS = { COLORBLUE: BLUE, COLORYELLOW: YELLOW, COLORRED: RED, COLORGREEN: GREEN, COLORWHITE: '#edf7f2', COLORCYAN: CYAN, COLORMAGENTA: PURPLE }
+function formulaColor(value, fallback = '#65d6aa') {
+  if (!value) return fallback
+  return FORMULA_COLORS[String(value).toUpperCase()] || value
+}
+function escapeHTML(value) { return String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]) }
+
+function formulaManifest(formula) {
+  const outputs = []
+  const drawings = []
+  for (const raw of formula.split(';')) {
+    const statement = raw.replace(/\{[\s\S]*?\}/g, '').trim()
+    const output = /^([\p{L}_][\p{L}\p{N}_]*)\s*:(?!=)([\s\S]*)$/u.exec(statement)
+    if (output) {
+      const suffix = output[2].split(',').slice(1).map(value => value.trim().toUpperCase())
+      outputs.push({ name: output[1], color: formulaColor(suffix.find(value => value.startsWith('COLOR') && value !== 'COLORSTICK')), bar: suffix.includes('COLORSTICK') || suffix.includes('VOLSTICK'), hidden: suffix.includes('NODRAW') })
+    }
+    const drawing = /^(DRAWTEXT|DRAWICON|DRAWNUMBER|STICKLINE|DRAWLINE|POLYLINE|DRAWBAND|DRAWKLINE)\s*\(/i.exec(statement)
+    if (drawing) drawings.push({ function: drawing[1].toUpperCase(), color: formulaColor((statement.match(/,\s*(COLOR(?:[0-9A-F]{6}|[A-Z]+))/i) || [])[1]) })
+  }
+  return { outputs, drawings }
+}
+
+function formulaFigures(manifest) {
+  const figures = manifest.outputs.filter(output => !output.hidden).map(output => output.bar ? {
+    key: `o_${output.name}`, title: `${output.name}: `, type: 'bar', baseValue: 0,
+    styles: () => ({ style: 'fill', color: output.color, borderColor: output.color })
+  } : lineFigure(`o_${output.name}`, `${output.name}: `, output.color))
+  manifest.drawings.forEach((drawing, index) => {
+    if (drawing.function === 'STICKLINE') {
+      figures.push(lineFigure(`d${index}_top`, '', 'rgba(0,0,0,0)'), lineFigure(`d${index}_bottom`, '', 'rgba(0,0,0,0)'), stickFigure(`d${index}_mid`, `d${index}_top`, `d${index}_bottom`, drawing.color))
+    } else {
+      figures.push({
+        key: `d${index}_point`, type: 'text',
+        attrs: ({ data }) => ({ text: data.current?.[`d${index}_text`] || (drawing.function === 'DRAWICON' ? '●' : '•') }),
+        styles: () => ({ color: drawing.color, size: 15, weight: 'bold' })
+      })
+    }
+  })
+  return figures
+}
+
+async function formulaRows(indicator, data) {
+  if (!data.length) return []
+  let result
+  try {
+    result = await runFormula('evaluate', indicator, data)
+  } catch (error) {
+    $('indicator-state').textContent = `${indicator.name} 计算失败`
+    $('indicator-error').textContent = `${indicator.name}: ${error.message}`
+    return data.map(() => ({}))
+  }
+  const rows = data.map(() => ({}))
+  for (const output of result.outputs || []) output.data.forEach((value, index) => { rows[index][`o_${output.name}`] = value })
+  for (const event of result.drawings || []) {
+    const index = event.barIndex
+    if (!rows[index]) continue
+    const key = `d${event.statementIndex}`
+    if (event.function === 'STICKLINE') {
+      rows[index][`${key}_top`] = event.values.price1
+      rows[index][`${key}_bottom`] = event.values.price2
+      rows[index][`${key}_mid`] = (event.values.price1 + event.values.price2) / 2
+    } else {
+      rows[index][`${key}_point`] = event.values.price ?? event.values.price1
+      rows[index][`${key}_text`] = event.text || (event.values.value === undefined ? '' : String(event.values.value))
+    }
+  }
+  return rows
+}
+
+async function applyFormulaIndicators() {
+  for (const active of activeFormulaCharts) {
+    if (chart.getIndicators({ name: active.name, paneId: active.paneId }).length) chart.removeIndicator({ name: active.name, paneId: active.paneId })
+  }
+  activeFormulaCharts = []
+  const enabled = cloudIndicators.filter(indicator => indicator.enabled).slice(0, 12)
+  for (const indicator of enabled) {
+    const name = `TDX_${indicator.id}_${indicator.revision}`.replace(/[^A-Za-z0-9_]/g, '_')
+    const manifest = formulaManifest(indicator.formula)
+    if (!registeredFormulaNames.has(name)) {
+      window.klinecharts.registerIndicator({ name, shortName: indicator.name, series: indicator.pane === 'main' ? 'price' : 'normal', precision: 4, figures: formulaFigures(manifest), calc: data => formulaRows(indicator, data) })
+      registeredFormulaNames.add(name)
+    }
+    const paneId = indicator.pane === 'main' ? 'candle_pane' : `tdx_${indicator.id}`
+    chart.createIndicator({ name }, indicator.pane === 'main', { id: paneId, height: 190, minHeight: 100 })
+    activeFormulaCharts.push({ name, paneId })
+  }
+  $('indicator-state').textContent = `${enabled.length} 个已启用 · 云端个人配置`
+}
+
+function renderParameterRows(parameters) {
+  $('indicator-parameters').innerHTML = ''
+  for (const parameter of parameters || []) {
+    const row = document.createElement('div')
+    row.className = 'parameter-row'
+    row.innerHTML = `<label>参数<input data-field="name" value="${escapeHTML(parameter.name)}"></label><label>当前值<input data-field="value" type="number" value="${Number(parameter.value)}"></label><label>最小值<input data-field="min" type="number" value="${Number(parameter.min)}"></label><label>最大值<input data-field="max" type="number" value="${Number(parameter.max)}"></label><label>步长<input data-field="step" type="number" value="${Number(parameter.step)}"></label>`
+    $('indicator-parameters').appendChild(row)
+  }
+}
+
+function editorParameters() {
+  return [...document.querySelectorAll('.parameter-row')].map(row => {
+    const get = field => row.querySelector(`[data-field="${field}"]`).value
+    const value = Number(get('value'))
+    return { name: get('name').trim().toUpperCase(), value, default: value, min: Number(get('min')), max: Number(get('max')), step: Number(get('step')) }
+  })
+}
+
+function editorIndicator() {
+  return { name: $('indicator-name').value.trim(), pane: $('indicator-pane').value, formula: $('indicator-formula').value, parameters: editorParameters(), warnings: [...$('indicator-warnings').querySelectorAll('span')].map(item => item.textContent), enabled: $('indicator-enabled').checked, sort_order: selectedIndicator?.sort_order || 100, revision: Number($('indicator-revision').value || 0) }
+}
+
+function selectIndicator(indicator) {
+  selectedIndicator = indicator
+  $('indicator-id').value = indicator?.id || ''
+  $('indicator-revision').value = indicator?.revision || 0
+  $('indicator-name').value = indicator?.name || '新指标'
+  $('indicator-pane').value = indicator?.pane || 'main'
+  $('indicator-formula').value = indicator?.formula || 'MA5:MA(CLOSE,5),COLORWHITE;'
+  $('indicator-enabled').checked = indicator?.enabled ?? false
+  $('indicator-name').disabled = indicator?.kind === 'template'
+  $('indicator-pane').disabled = indicator?.kind === 'template'
+  $('indicator-formula').disabled = indicator?.kind === 'template'
+  $('delete-indicator').disabled = !indicator || indicator.kind === 'template'
+  $('copy-indicator').disabled = !indicator
+  renderParameterRows(indicator?.parameters || [])
+  $('indicator-warnings').innerHTML = (indicator?.warnings || []).map(value => `<span>${escapeHTML(value)}</span>`).join('<br>')
+  renderIndicatorList()
+}
+
+function renderIndicatorList() {
+  $('indicator-list').innerHTML = ''
+  for (const indicator of cloudIndicators) {
+    const row = document.createElement('button')
+    row.type = 'button'
+    row.className = `indicator-item${selectedIndicator?.id === indicator.id ? ' active' : ''}`
+    row.innerHTML = `<input type="checkbox" ${indicator.enabled ? 'checked' : ''} aria-label="启用"><span>${escapeHTML(indicator.name)}</span><em>${indicator.kind === 'template' ? '内置' : '个人'} · ${indicator.pane === 'main' ? '主图' : '副图'}</em>`
+    row.querySelector('input').addEventListener('click', async event => {
+      event.stopPropagation()
+      try {
+        const updated = await getJSON(`/v1/me/indicators/${indicator.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...indicator, enabled: event.target.checked }) })
+        cloudIndicators = cloudIndicators.map(item => item.id === updated.id ? updated : item)
+        if (selectedIndicator?.id === updated.id) selectIndicator(updated)
+        await applyFormulaIndicators(); renderIndicatorList(); cacheIndicators()
+      } catch (error) { $('indicator-error').textContent = error.message; event.target.checked = indicator.enabled }
+    })
+    row.addEventListener('click', () => selectIndicator(indicator))
+    $('indicator-list').appendChild(row)
+  }
+}
+
+function indicatorCacheKey() { return `market-bridge:formula-indicators:${indicatorUserID}` }
+function cacheIndicators() { localStorage.setItem(indicatorCacheKey(), JSON.stringify(cloudIndicators)) }
+
+async function migrateLegacyIndicatorSettings() {
+  const migrationKey = `${INDICATOR_MIGRATION_KEY}:${indicatorUserID}`
+  if (localStorage.getItem(migrationKey)) return
+  const migrations = [[NX_STORAGE_KEY, 'nx-v1'], [MX_STORAGE_KEY, 'mx-macd-v1']]
+  for (const [storageKey, templateKey] of migrations) {
+    let legacy
+    try { legacy = JSON.parse(localStorage.getItem(storageKey)) } catch (_) { legacy = null }
+    const template = cloudIndicators.find(item => item.template_key === templateKey)
+    if (!template || !legacy || !Array.isArray(legacy.params) || legacy.params.length !== template.parameters.length) continue
+    const mutation = { ...template, enabled: legacy.enabled !== false, parameters: template.parameters.map((parameter, index) => ({ ...parameter, value: Number(legacy.params[index]) })) }
+    const updated = await getJSON(`/v1/me/indicators/${template.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(mutation) })
+    cloudIndicators = cloudIndicators.map(item => item.id === updated.id ? updated : item)
+  }
+  localStorage.setItem(migrationKey, '1')
+}
+
+async function loadIndicators() {
+  try {
+    const me = await getJSON('/v1/me')
+    indicatorUserID = me.id || me.name || 'unknown'
+    localStorage.setItem('market-bridge:formula-indicators:user', indicatorUserID)
+    const response = await getJSON('/v1/me/indicators')
+    cloudIndicators = response.indicators || []
+    await migrateLegacyIndicatorSettings()
+    cacheIndicators()
+  } catch (error) {
+    try { cloudIndicators = JSON.parse(localStorage.getItem(indicatorCacheKey())) || [] } catch (_) { cloudIndicators = [] }
+    $('indicator-state').textContent = cloudIndicators.length ? '云端不可用，使用上次缓存' : '指标配置不可用'
+  }
+  renderIndicatorList()
+  if (cloudIndicators.length) selectIndicator(cloudIndicators[0])
+  await applyFormulaIndicators()
+}
+
+async function analyzeEditor() {
+  $('indicator-error').textContent = ''
+  const draft = editorIndicator()
+  let result = await runFormula('compile', draft)
+  if (result.missing?.length) {
+    const existing = new Map(draft.parameters.map(parameter => [parameter.name, parameter]))
+    for (const name of result.missing) existing.set(name, { name, value: 1, default: 1, min: 0, max: 500, step: 1 })
+    renderParameterRows([...existing.values()])
+    result = await runFormula('compile', editorIndicator())
+  }
+  $('indicator-warnings').innerHTML = (result.warnings || []).map(value => `<span>${escapeHTML(value)}</span>`).join('<br>')
+  if (!lastBars.length) throw new Error('请先加载一只股票的 K 线，才能预览并保存公式')
+  await runFormula('evaluate', editorIndicator(), lastBars)
+  $('indicator-error').textContent = `预览通过：${lastBars.length} 根 K 线`
+  return result
+}
 
 const now = new Date()
 const past = new Date(now.getTime() - 180 * 24 * 3600 * 1000)
 $('from').value = localDateTimeValue(past)
 $('to').value = localDateTimeValue(now)
 
-$('apply-nx').addEventListener('click', applyNX)
-$('nx-enabled').addEventListener('change', applyNX)
-$('apply-mx').addEventListener('click', applyMX)
-$('mx-enabled').addEventListener('change', applyMX)
+$('manage-indicators').addEventListener('click', () => { $('indicator-manager').hidden = !$('indicator-manager').hidden })
+$('close-indicators').addEventListener('click', () => { $('indicator-manager').hidden = true })
+$('new-indicator').addEventListener('click', () => selectIndicator(null))
+$('analyze-indicator').addEventListener('click', async () => { try { await analyzeEditor() } catch (error) { $('indicator-error').textContent = error.message } })
+$('indicator-editor').addEventListener('submit', async event => {
+  event.preventDefault()
+  try {
+    const analysis = await analyzeEditor()
+    const mutation = { ...editorIndicator(), warnings: analysis.warnings || [] }
+    const id = $('indicator-id').value
+    const saved = await getJSON(id ? `/v1/me/indicators/${id}` : '/v1/me/indicators', { method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(mutation) })
+    cloudIndicators = id ? cloudIndicators.map(item => item.id === saved.id ? saved : item) : [...cloudIndicators, saved]
+    cacheIndicators(); selectIndicator(saved); await applyFormulaIndicators()
+    $('indicator-error').textContent = '已保存到当前账号'
+  } catch (error) { $('indicator-error').textContent = error.message }
+})
+$('copy-indicator').addEventListener('click', async () => {
+  if (!selectedIndicator) return
+  try {
+    const copy = await getJSON(`/v1/me/indicators/${selectedIndicator.id}/copy`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) })
+    cloudIndicators.push(copy); cacheIndicators(); selectIndicator(copy); await applyFormulaIndicators()
+  } catch (error) { $('indicator-error').textContent = error.message }
+})
+$('delete-indicator').addEventListener('click', async () => {
+  if (!selectedIndicator || selectedIndicator.kind === 'template' || !confirm(`删除指标“${selectedIndicator.name}”？`)) return
+  try {
+    await getJSON(`/v1/me/indicators/${selectedIndicator.id}?revision=${selectedIndicator.revision}`, { method: 'DELETE' })
+    cloudIndicators = cloudIndicators.filter(item => item.id !== selectedIndicator.id); cacheIndicators(); selectIndicator(cloudIndicators[0] || null); await applyFormulaIndicators()
+  } catch (error) { $('indicator-error').textContent = error.message }
+})
 $('save-watchlist').addEventListener('click', async () => {
   try {
     const symbols = $('watchlist-symbols').value.split(',').map(value => value.trim()).filter(Boolean)
@@ -528,15 +800,20 @@ $('query').addEventListener('submit', event => {
     const to = new Date($('to').value)
     if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) || from >= to) throw new Error('请选择有效的开始和结束时间')
     const interval = $('interval').value
-    activeQuery = { from: from.toISOString(), to: to.toISOString(), interval }
+    const defaults = marketDefaults(symbol)
+    activeQuery = { from: from.toISOString(), to: to.toISOString(), interval, session: defaults.session, adjustment: defaults.adjustment }
+    $('source').textContent = `市场：${defaults.market} · 加载中`
     chart.setPeriod(intervalToPeriod(interval))
-    chart.setSymbol({ ticker: symbol, pricePrecision: 4, volumePrecision: 0 })
+	const crypto = symbol.endsWith('.BINANCE')
+	chart.setSymbol({ ticker: symbol, pricePrecision: crypto ? 8 : 4, volumePrecision: crypto ? 8 : 0 })
     chart.resetData()
   } catch (error) {
     $('error').textContent = error.message
   }
 })
 
+resetFormulaWorker()
+loadIndicators().catch(error => { $('indicator-state').textContent = error.message })
 refreshAccount()
 setInterval(refreshAccount, 10000)
 $('query').requestSubmit()

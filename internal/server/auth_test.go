@@ -79,6 +79,27 @@ func TestMultiUserHTTPAuthenticationAndProfile(t *testing.T) {
 	if rejected.Code != http.StatusForbidden {
 		t.Fatalf("outside watchlist status=%d", rejected.Code)
 	}
+
+	indicators := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/v1/me/indicators", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	h.ServeHTTP(indicators, req)
+	if indicators.Code != http.StatusOK || !strings.Contains(indicators.Body.String(), `"template_key":"nx-v1"`) {
+		t.Fatalf("indicators status=%d body=%s", indicators.Code, indicators.Body.String())
+	}
+
+	created := httptest.NewRecorder()
+	body := `{"name":"MA Test","pane":"main","formula":"M:MA(CLOSE,N);","parameters":[{"name":"N","default":5,"min":1,"max":500,"step":1,"value":5}],"enabled":true,"sort_order":100}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/me/indicators", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	h.ServeHTTP(created, req)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create indicator status=%d body=%s", created.Code, created.Body.String())
+	}
+	var definition access.IndicatorDefinition
+	if err := json.Unmarshal(created.Body.Bytes(), &definition); err != nil || definition.Revision != 1 {
+		t.Fatalf("indicator=%+v err=%v", definition, err)
+	}
 }
 
 func TestAuthenticatedLiveWebSocket(t *testing.T) {

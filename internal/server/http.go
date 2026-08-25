@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,6 +49,11 @@ func (h *HTTP) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/me/usage", h.auth("profile:read", h.myUsage))
 	mux.HandleFunc("GET /v1/me/watchlist", h.auth("profile:read", h.getWatchlist))
 	mux.HandleFunc("PUT /v1/me/watchlist", h.auth("profile:read", h.putWatchlist))
+	mux.HandleFunc("GET /v1/me/indicators", h.auth("indicators:read", h.getIndicators))
+	mux.HandleFunc("POST /v1/me/indicators", h.auth("indicators:write", h.createIndicator))
+	mux.HandleFunc("PUT /v1/me/indicators/{id}", h.auth("indicators:write", h.updateIndicator))
+	mux.HandleFunc("DELETE /v1/me/indicators/{id}", h.auth("indicators:write", h.deleteIndicator))
+	mux.HandleFunc("POST /v1/me/indicators/{id}/copy", h.auth("indicators:write", h.copyIndicator))
 	return mux
 }
 func (h *HTTP) usage(w http.ResponseWriter, r *http.Request) {
@@ -220,8 +227,106 @@ func (h *HTTP) putWatchlist(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"symbols": symbols})
 }
 
+func (h *HTTP) getIndicators(w http.ResponseWriter, r *http.Request) {
+	p, _ := access.PrincipalFromContext(r.Context())
+	indicators, err := h.Access.Indicators(r.Context(), p.UserID)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"indicators": indicators})
+}
+
+func decodeIndicatorMutation(w http.ResponseWriter, r *http.Request) (access.IndicatorMutation, error) {
+	var body access.IndicatorMutation
+	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 96<<10)).Decode(&body)
+	return body, err
+}
+
+func indicatorError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, access.ErrIndicatorNotFound):
+		writeJSON(w, 404, map[string]string{"error": err.Error()})
+	case errors.Is(err, access.ErrIndicatorConflict):
+		writeJSON(w, 409, map[string]string{"error": err.Error()})
+	case errors.Is(err, access.ErrIndicatorName):
+		writeJSON(w, 409, map[string]string{"error": err.Error()})
+	case errors.Is(err, access.ErrIndicatorLimit), errors.Is(err, access.ErrIndicatorEnabled):
+		writeJSON(w, 429, map[string]string{"error": err.Error()})
+	case errors.Is(err, access.ErrIndicatorTemplate):
+		writeJSON(w, 403, map[string]string{"error": err.Error()})
+	default:
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
+	}
+}
+
+func (h *HTTP) createIndicator(w http.ResponseWriter, r *http.Request) {
+	p, _ := access.PrincipalFromContext(r.Context())
+	body, err := decodeIndicatorMutation(w, r)
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
+	indicator, err := h.Access.CreateIndicator(r.Context(), p.UserID, body)
+	if err != nil {
+		indicatorError(w, err)
+		return
+	}
+	writeJSON(w, 201, indicator)
+}
+
+func (h *HTTP) updateIndicator(w http.ResponseWriter, r *http.Request) {
+	p, _ := access.PrincipalFromContext(r.Context())
+	body, err := decodeIndicatorMutation(w, r)
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
+	indicator, err := h.Access.UpdateIndicator(r.Context(), p.UserID, r.PathValue("id"), body)
+	if err != nil {
+		indicatorError(w, err)
+		return
+	}
+	writeJSON(w, 200, indicator)
+}
+
+func (h *HTTP) deleteIndicator(w http.ResponseWriter, r *http.Request) {
+	p, _ := access.PrincipalFromContext(r.Context())
+	revision, err := strconv.Atoi(r.URL.Query().Get("revision"))
+	if err != nil || revision < 1 {
+		writeJSON(w, 400, map[string]string{"error": "revision is required"})
+		return
+	}
+	if err := h.Access.DeleteIndicator(r.Context(), p.UserID, r.PathValue("id"), revision); err != nil {
+		indicatorError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *HTTP) copyIndicator(w http.ResponseWriter, r *http.Request) {
+	p, _ := access.PrincipalFromContext(r.Context())
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
+	indicator, err := h.Access.CopyIndicator(r.Context(), p.UserID, r.PathValue("id"), body.Name)
+	if err != nil {
+		indicatorError(w, err)
+		return
+	}
+	writeJSON(w, 201, indicator)
+}
+
 func normalizeSymbol(symbol string) string {
-	return strings.ToUpper(strings.TrimSuffix(strings.TrimSpace(symbol), ".US"))
+	normalized, _, err := market.NormalizeSymbol(symbol)
+	if err != nil {
+		return strings.ToUpper(strings.TrimSpace(symbol))
+	}
+	return normalized
 }
 func (h *HTTP) status(w http.ResponseWriter, r *http.Request) {
 	st := h.Store.Status(r.PathValue("id"))

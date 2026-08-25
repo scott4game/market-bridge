@@ -15,16 +15,57 @@ import (
 type AdjustmentMode string
 
 const (
-	Raw           AdjustmentMode = "raw"
-	SplitAdjusted AdjustmentMode = "split_adjusted"
+	AutoAdjusted    AdjustmentMode = "auto"
+	Raw             AdjustmentMode = "raw"
+	SplitAdjusted   AdjustmentMode = "split_adjusted"
+	ForwardAdjusted AdjustmentMode = "forward_adjusted"
 )
 
 type Session string
 
 const (
-	RegularSession  Session = "regular"
-	ExtendedSession Session = "extended"
+	RegularSession    Session = "regular"
+	ExtendedSession   Session = "extended"
+	ContinuousSession Session = "continuous"
 )
+
+type Venue string
+
+const (
+	VenueUS      Venue = "US"
+	VenueHK      Venue = "HK"
+	VenueSH      Venue = "SH"
+	VenueSZ      Venue = "SZ"
+	VenueBinance Venue = "BINANCE"
+)
+
+func NormalizeSymbol(symbol string) (string, Venue, error) {
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	if symbol == "" {
+		return "", "", errors.New("symbol is empty")
+	}
+	if !strings.Contains(symbol, ".") {
+		return symbol, VenueUS, nil
+	}
+	parts := strings.Split(symbol, ".")
+	if len(parts) != 2 || parts[0] == "" {
+		return "", "", fmt.Errorf("invalid symbol %q", symbol)
+	}
+	venue := Venue(parts[1])
+	switch venue {
+	case VenueUS:
+		return parts[0], VenueUS, nil
+	case VenueHK, VenueSH, VenueSZ, VenueBinance:
+		return parts[0] + "." + string(venue), venue, nil
+	default:
+		return "", "", fmt.Errorf("unsupported market suffix %q", parts[1])
+	}
+}
+
+func VenueOf(symbol string) (Venue, error) {
+	_, venue, err := NormalizeSymbol(symbol)
+	return venue, err
+}
 
 type DatasetSpec struct {
 	Symbols    []string       `json:"symbols"`
@@ -48,29 +89,24 @@ func (s DatasetSpec) Normalize() (DatasetSpec, error) {
 	if !validInterval(s.Interval) {
 		return s, fmt.Errorf("unsupported interval %q", s.Interval)
 	}
-	if s.Session == "" {
-		s.Session = RegularSession
-	}
-	if s.Session != RegularSession && s.Session != ExtendedSession {
-		return s, fmt.Errorf("unsupported session %q", s.Session)
-	}
-	if s.Adjustment == "" {
-		s.Adjustment = SplitAdjusted
-	}
-	if s.Adjustment != Raw && s.Adjustment != SplitAdjusted {
-		return s, fmt.Errorf("unsupported adjustment %q", s.Adjustment)
-	}
 	seen := make(map[string]struct{}, len(s.Symbols))
 	symbols := make([]string, 0, len(s.Symbols))
+	venues := map[Venue]struct{}{}
 	for _, symbol := range s.Symbols {
-		symbol = strings.ToUpper(strings.TrimSpace(symbol))
-		symbol = strings.TrimSuffix(symbol, ".US")
-		if symbol == "" {
+		normalized, venue, err := NormalizeSymbol(symbol)
+		if err != nil {
+			if strings.TrimSpace(symbol) == "" {
+				continue
+			}
+			return s, err
+		}
+		if normalized == "" {
 			continue
 		}
-		if _, ok := seen[symbol]; !ok {
-			seen[symbol] = struct{}{}
-			symbols = append(symbols, symbol)
+		venues[venue] = struct{}{}
+		if _, ok := seen[normalized]; !ok {
+			seen[normalized] = struct{}{}
+			symbols = append(symbols, normalized)
 		}
 	}
 	if len(symbols) == 0 {
@@ -78,6 +114,66 @@ func (s DatasetSpec) Normalize() (DatasetSpec, error) {
 	}
 	sort.Strings(symbols)
 	s.Symbols = symbols
+	_, hasCrypto := venues[VenueBinance]
+	if hasCrypto && len(venues) > 1 {
+		return s, errors.New("crypto and securities cannot be mixed in one dataset")
+	}
+	if s.Session == "" {
+		if hasCrypto {
+			s.Session = ContinuousSession
+		} else {
+			s.Session = RegularSession
+		}
+	}
+	if s.Session != RegularSession && s.Session != ExtendedSession && s.Session != ContinuousSession {
+		return s, fmt.Errorf("unsupported session %q", s.Session)
+	}
+	if hasCrypto && s.Session != ContinuousSession {
+		return s, errors.New("Binance symbols require session continuous")
+	}
+	if !hasCrypto && s.Session == ContinuousSession {
+		return s, errors.New("continuous session is only valid for crypto symbols")
+	}
+	if s.Session == ExtendedSession {
+		for venue := range venues {
+			if venue != VenueUS {
+				return s, errors.New("extended session is only valid for US symbols")
+			}
+		}
+	}
+	if s.Adjustment == "" || s.Adjustment == AutoAdjusted {
+		s.Adjustment = Raw
+		if hasCrypto {
+			s.Adjustment = Raw
+		} else if len(venues) == 1 {
+			for venue := range venues {
+				if venue == VenueUS {
+					s.Adjustment = SplitAdjusted
+				} else {
+					s.Adjustment = ForwardAdjusted
+				}
+			}
+		}
+	}
+	if s.Adjustment != Raw && s.Adjustment != SplitAdjusted && s.Adjustment != ForwardAdjusted {
+		return s, fmt.Errorf("unsupported adjustment %q", s.Adjustment)
+	}
+	for venue := range venues {
+		switch venue {
+		case VenueUS:
+			if s.Adjustment == ForwardAdjusted {
+				return s, errors.New("US symbols do not support forward_adjusted")
+			}
+		case VenueHK, VenueSH, VenueSZ:
+			if s.Adjustment == SplitAdjusted {
+				return s, errors.New("HK/CN symbols use forward_adjusted instead of split_adjusted")
+			}
+		case VenueBinance:
+			if s.Adjustment != Raw {
+				return s, errors.New("Binance symbols only support raw adjustment")
+			}
+		}
+	}
 	s.From = s.From.UTC()
 	s.To = s.To.UTC()
 	return s, nil
@@ -137,17 +233,18 @@ func (d *Decimal) UnmarshalJSON(b []byte) error {
 }
 
 type Bar struct {
-	Symbol    string    `json:"symbol"`
-	Timestamp time.Time `json:"timestamp"`
-	Open      Decimal   `json:"open"`
-	High      Decimal   `json:"high"`
-	Low       Decimal   `json:"low"`
-	Close     Decimal   `json:"close"`
-	Volume    int64     `json:"volume"`
-	Turnover  *Decimal  `json:"turnover,omitempty"`
-	Session   Session   `json:"session"`
-	Source    string    `json:"source"`
-	Completed bool      `json:"completed"`
+	Symbol        string    `json:"symbol"`
+	Timestamp     time.Time `json:"timestamp"`
+	Open          Decimal   `json:"open"`
+	High          Decimal   `json:"high"`
+	Low           Decimal   `json:"low"`
+	Close         Decimal   `json:"close"`
+	Volume        int64     `json:"volume"`
+	VolumeDecimal string    `json:"volume_decimal,omitempty"`
+	Turnover      *Decimal  `json:"turnover,omitempty"`
+	Session       Session   `json:"session"`
+	Source        string    `json:"source"`
+	Completed     bool      `json:"completed"`
 }
 
 type EventType string
@@ -177,22 +274,23 @@ type LiveEvent struct {
 }
 
 type ParquetBar struct {
-	Symbol      string `parquet:"symbol"`
-	TimestampMS int64  `parquet:"timestamp_ms,timestamp(millisecond:utc)"`
-	Open        int64  `parquet:"open_micros"`
-	High        int64  `parquet:"high_micros"`
-	Low         int64  `parquet:"low_micros"`
-	Close       int64  `parquet:"close_micros"`
-	Volume      int64  `parquet:"volume"`
-	Turnover    int64  `parquet:"turnover_micros"`
-	HasTurnover bool   `parquet:"has_turnover"`
-	Session     string `parquet:"session"`
-	Source      string `parquet:"source"`
-	Completed   bool   `parquet:"completed"`
+	Symbol        string `parquet:"symbol"`
+	TimestampMS   int64  `parquet:"timestamp_ms,timestamp(millisecond:utc)"`
+	Open          int64  `parquet:"open_micros"`
+	High          int64  `parquet:"high_micros"`
+	Low           int64  `parquet:"low_micros"`
+	Close         int64  `parquet:"close_micros"`
+	Volume        int64  `parquet:"volume"`
+	VolumeDecimal string `parquet:"volume_decimal,optional"`
+	Turnover      int64  `parquet:"turnover_micros"`
+	HasTurnover   bool   `parquet:"has_turnover"`
+	Session       string `parquet:"session"`
+	Source        string `parquet:"source"`
+	Completed     bool   `parquet:"completed"`
 }
 
 func ToParquetBar(b Bar) ParquetBar {
-	p := ParquetBar{b.Symbol, b.Timestamp.UnixMilli(), int64(b.Open), int64(b.High), int64(b.Low), int64(b.Close), b.Volume, 0, false, string(b.Session), b.Source, b.Completed}
+	p := ParquetBar{Symbol: b.Symbol, TimestampMS: b.Timestamp.UnixMilli(), Open: int64(b.Open), High: int64(b.High), Low: int64(b.Low), Close: int64(b.Close), Volume: b.Volume, VolumeDecimal: b.VolumeDecimal, Session: string(b.Session), Source: b.Source, Completed: b.Completed}
 	if b.Turnover != nil {
 		p.Turnover, p.HasTurnover = int64(*b.Turnover), true
 	}
@@ -200,7 +298,7 @@ func ToParquetBar(b Bar) ParquetBar {
 }
 
 func FromParquetBar(p ParquetBar) Bar {
-	b := Bar{p.Symbol, time.UnixMilli(p.TimestampMS).UTC(), Decimal(p.Open), Decimal(p.High), Decimal(p.Low), Decimal(p.Close), p.Volume, nil, Session(p.Session), p.Source, p.Completed}
+	b := Bar{Symbol: p.Symbol, Timestamp: time.UnixMilli(p.TimestampMS).UTC(), Open: Decimal(p.Open), High: Decimal(p.High), Low: Decimal(p.Low), Close: Decimal(p.Close), Volume: p.Volume, VolumeDecimal: p.VolumeDecimal, Session: Session(p.Session), Source: p.Source, Completed: p.Completed}
 	if p.HasTurnover {
 		v := Decimal(p.Turnover)
 		b.Turnover = &v
