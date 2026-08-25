@@ -632,7 +632,8 @@ async function applyFormulaIndicators() {
       registeredFormulaNames.add(name)
     }
     const paneId = indicator.pane === 'main' ? 'candle_pane' : `tdx_${indicator.id}`
-    chart.createIndicator({ name }, indicator.pane === 'main', { id: paneId, height: 190, minHeight: 100 })
+    chart.createIndicator({ name, paneId }, indicator.pane === 'main')
+    if (indicator.pane !== 'main') chart.setPaneOptions({ id: paneId, height: 190, minHeight: 100 })
     activeFormulaCharts.push({ name, paneId })
   }
   $('indicator-state').textContent = `${enabled.length} 个已启用 · 云端个人配置`
