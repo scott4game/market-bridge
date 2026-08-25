@@ -127,7 +127,7 @@ sudo ./scripts/uninstall-server.sh --purge-data  # 同时删除配置和 Docker 
 
 ### go-client
 
-推荐在需要运行客户端的机器上创建空目录，通过部署准备脚本生成 `compose.yaml`、`.env.example` 和 `.env`：
+推荐在笔记本或其他客户端机器上安装 Docker Desktop（或 Docker Engine + Compose v2），创建空目录后通过部署准备脚本生成 `compose.yaml`、`.env.example` 和 `.env`。默认会同时启动 go-client、Redis 和本地 ClickHouse，并自动选择与机器匹配的 `linux/amd64` 或 `linux/arm64` 镜像：
 
 ```bash
 mkdir -p market-bridge-client-deploy && cd market-bridge-client-deploy
@@ -136,23 +136,40 @@ curl -fsSL https://raw.githubusercontent.com/scott4game/market-bridge/dev/deploy
 # 填写 go-server 地址和个人 API Key（单用户兼容模式也可使用 GO_SERVER_TOKEN）
 vi .env
 
+docker compose pull
 docker compose up -d
-docker compose logs -f go-client
+docker compose ps
 ```
 
-准备脚本会下载客户端 Compose 和配置模板，并自动生成 Redis 随机密码。至少需要修改：
+准备脚本会下载客户端 Compose 和配置模板，并自动生成 Redis、ClickHouse 随机密码。至少需要修改：
 
 ```dotenv
 GO_CLIENT_SERVER_URL=https://stock.example.com
 GO_CLIENT_SERVER_TOKEN=管理员为当前用户签发的完整_API_Key
+GO_CLIENT_MIRROR_WATCHLIST=AAPL,NVDA
+
+COMPOSE_PROFILES=clickhouse
+GO_CLIENT_CLICKHOUSE_ENABLED=true
 REDIS_MAXMEMORY=1gb
+CLICKHOUSE_MEMORY_LIMIT=2g
+CLICKHOUSE_CPUS=2
 ```
 
-`REDIS_MAXMEMORY` 控制运行 go-client 的这台机器上的 Redis 容器内存上限，默认是 `1gb`；也可以按机器资源改为 `256mb`、`512mb` 或其他值。修改 `.env` 后，必须重新创建 Redis 容器才能应用，单纯执行 `docker compose restart` 不会重新读取配置：
+`GO_CLIENT_MIRROR_WATCHLIST` 应是服务端 `GO_SERVER_WATCHLIST` 的子集。使用客户端本地 ClickHouse 时，服务端应设置 `GO_SERVER_CLICKHOUSE_ENABLED=false`；如果服务端已经启用 ClickHouse，go-client 会自动停止本地 ClickHouse 的业务读写，避免两侧双写。
+
+启动成功后打开 <http://127.0.0.1:17600>，也可以检查容器日志和实际存储模式：
 
 ```bash
-docker compose up -d --force-recreate redis
-docker compose up -d --force-recreate go-client
+docker compose logs -f go-client clickhouse
+curl -fsS http://127.0.0.1:17600/v1/storage/status
+```
+
+Docker Hub 镜像为 `docker.io/otsgame/market-bridge-client:latest`。go-client、Redis 和 ClickHouse 端口均只绑定本机或 Compose 内部网络；ClickHouse HTTP 接口默认是 `127.0.0.1:18123`。
+
+`REDIS_MAXMEMORY` 控制 Redis 容器内存上限，默认是 `1gb`；`CLICKHOUSE_MEMORY_LIMIT` 默认是 `2g`。内存较小的笔记本可以分别改为 `256mb` 和 `1g`，同时把 `CLICKHOUSE_CPUS` 改为 `1`。修改 `.env` 后必须重新创建容器才能应用，单纯执行 `docker compose restart` 不会重新读取配置：
+
+```bash
+docker compose up -d --force-recreate redis clickhouse go-client
 
 # 1gb 应返回 1073741824
 docker compose exec redis sh -c \
@@ -161,7 +178,15 @@ docker compose exec redis sh -c \
 
 Redis 达到上限后使用 `allkeys-lru` 淘汰较少访问的缓存；Parquet 磁盘缓存不受该内存上限影响。
 
-镜像直接从 `docker.io/otsgame/market-bridge-client:latest` 拉取。启动成功后打开 <http://127.0.0.1:17600>。go-client 和 Redis 均只监听本机或 Compose 内部网络。
+已有客户端部署需要更新 Compose 和镜像时，保留现有 `.env`，在部署目录执行：
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/scott4game/market-bridge/dev/deploy/compose.client.yaml \
+  -o compose.yaml
+docker compose pull
+docker compose up -d
+```
 
 需要从当前源码构建 Docker 模式时，仍可使用仓库内安装器：
 
