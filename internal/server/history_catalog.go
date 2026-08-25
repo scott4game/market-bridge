@@ -5,13 +5,18 @@ import (
 	"database/sql"
 	"time"
 
+	"github.com/scott4game/market-bridge/internal/coverage"
+	"github.com/scott4game/market-bridge/internal/market"
 	_ "modernc.org/sqlite"
 )
 
 // HistoryCatalog owns the monotonic revision advertised by go-server. It is
 // deliberately independent from ClickHouse so clients can invalidate caches
 // even when the server is operating as a provider gateway.
-type HistoryCatalog struct{ db *sql.DB }
+type HistoryCatalog struct {
+	db       *sql.DB
+	coverage *coverage.Store
+}
 
 func OpenHistoryCatalog(path string) (*HistoryCatalog, error) {
 	db, err := sql.Open("sqlite", path)
@@ -23,28 +28,42 @@ func OpenHistoryCatalog(path string) (*HistoryCatalog, error) {
 		`PRAGMA journal_mode=WAL`,
 		`CREATE TABLE IF NOT EXISTS history_state (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
 		`INSERT OR IGNORE INTO history_state(id,revision,updated_at) VALUES(1,0,0)`,
-		`CREATE TABLE IF NOT EXISTS history_coverage (spec_hash TEXT PRIMARY KEY, completed_at INTEGER NOT NULL)`,
 	} {
 		if _, err := db.Exec(query); err != nil {
 			db.Close()
 			return nil, err
 		}
 	}
-	return &HistoryCatalog{db: db}, nil
+	coverageStore, err := coverage.New(db, "history_coverage_v2", "history_coverage")
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	return &HistoryCatalog{db: db, coverage: coverageStore}, nil
 }
 
-func (c *HistoryCatalog) HasCoverage(ctx context.Context, specHash string) (bool, error) {
-	var exists int
-	err := c.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM history_coverage WHERE spec_hash=?)`, specHash).Scan(&exists)
-	return exists == 1, err
+func (c *HistoryCatalog) Missing(ctx context.Context, spec market.DatasetSpec, dataVersion string) ([]market.DatasetSpec, error) {
+	return c.coverage.Missing(ctx, spec, dataVersion)
 }
 
-func (c *HistoryCatalog) RecordCoverage(ctx context.Context, specHash string) error {
-	_, err := c.db.ExecContext(ctx, `INSERT OR REPLACE INTO history_coverage(spec_hash,completed_at) VALUES(?,?)`, specHash, time.Now().Unix())
-	return err
+func (c *HistoryCatalog) RecordCoverage(ctx context.Context, spec market.DatasetSpec, dataVersion string, bars []market.Bar, emptyTTL time.Duration) error {
+	return c.coverage.Record(ctx, spec, dataVersion, bars, emptyTTL)
 }
 
 func (c *HistoryCatalog) Close() error { return c.db.Close() }
+
+func (c *HistoryCatalog) RunCleanup(ctx context.Context) {
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_ = c.coverage.Cleanup(ctx)
+		}
+	}
+}
 
 func (c *HistoryCatalog) Current(ctx context.Context) (uint64, time.Time, error) {
 	var revision, updated int64

@@ -22,6 +22,19 @@ func TestPersonalIndicatorsAreIsolatedAndRevisioned(t *testing.T) {
 	if err != nil || len(defaults) != 2 || defaults[0].Kind != "template" {
 		t.Fatalf("defaults=%+v err=%v", defaults, err)
 	}
+	var changesBefore, changesAfter int64
+	if err := store.db.QueryRow(`SELECT total_changes()`).Scan(&changesBefore); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Indicators(ctx, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow(`SELECT total_changes()`).Scan(&changesAfter); err != nil {
+		t.Fatal(err)
+	}
+	if changesAfter != changesBefore {
+		t.Fatalf("second indicator read performed writes: before=%d after=%d", changesBefore, changesAfter)
+	}
 	mutation := IndicatorMutation{
 		Name: "MA Test", Pane: "main", Formula: "M:MA(CLOSE,N);", Enabled: true, SortOrder: 100,
 		Parameters: []IndicatorParameter{{Name: "N", Default: 5, Min: 1, Max: 500, Step: 1, Value: 5}},
@@ -153,5 +166,25 @@ func TestLimiterTracksRequestDatasetAndLiveQuotas(t *testing.T) {
 	l.ReleaseLive(p.UserID, 2)
 	if !l.AcquireLive(p, 1) {
 		t.Fatal("live quota was not released")
+	}
+}
+
+func TestLimiterDoesNotCreateOrRetainIdleUsers(t *testing.T) {
+	now := time.Date(2026, 8, 25, 10, 0, 0, 0, time.UTC)
+	l := NewLimiter()
+	l.now = func() time.Time { return now }
+	l.Snapshot("unknown")
+	l.ReleaseLive("unknown", 1)
+	if len(l.users) != 0 {
+		t.Fatalf("read paths created counters: %d", len(l.users))
+	}
+	p := Principal{UserID: "u", Quotas: Quotas{RequestsPerMinute: 2}}
+	if !l.AllowRequest(p) || len(l.users) != 1 {
+		t.Fatal("request counter was not created")
+	}
+	now = now.Add(time.Minute)
+	l.Snapshot("unknown")
+	if len(l.users) != 0 {
+		t.Fatalf("expired counter was retained: %d", len(l.users))
 	}
 }

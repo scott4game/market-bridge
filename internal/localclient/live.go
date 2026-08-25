@@ -63,6 +63,7 @@ func (p *LiveProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = c.Close(websocket.StatusPolicyViolation, "symbols required")
 		return
 	}
+	connectionCtx := c.CloseRead(r.Context())
 	s := &liveSubscriber{symbols: map[string]struct{}{}, queue: make(chan []byte, 128)}
 	for _, symbol := range request.Symbols {
 		normalized, _, err := market.NormalizeSymbol(symbol)
@@ -77,10 +78,13 @@ func (p *LiveProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() { p.mu.Lock(); delete(p.subs, s); p.mu.Unlock(); p.signal() }()
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-connectionCtx.Done():
 			return
 		case msg := <-s.queue:
-			if err := c.Write(r.Context(), websocket.MessageText, msg); err != nil {
+			writeCtx, cancel := context.WithTimeout(connectionCtx, 10*time.Second)
+			err := c.Write(writeCtx, websocket.MessageText, msg)
+			cancel()
+			if err != nil {
 				return
 			}
 		}
@@ -88,6 +92,7 @@ func (p *LiveProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *LiveProxy) Run(ctx context.Context) {
+	backoff := 500 * time.Millisecond
 	for {
 		symbols := p.symbols()
 		if len(symbols) == 0 {
@@ -114,20 +119,24 @@ func (p *LiveProxy) Run(ctx context.Context) {
 		}
 		conn, _, err := websocket.Dial(ctx, u.String(), &websocket.DialOptions{HTTPHeader: headers})
 		if err != nil {
-			select {
-			case <-ctx.Done():
+			if !waitLiveReconnect(ctx, backoff) {
 				return
-			case <-time.After(time.Second):
-				continue
 			}
+			backoff = nextLiveBackoff(backoff)
+			continue
 		}
 		payload, _ := json.Marshal(map[string]any{"action": "subscribe", "symbols": symbols, "events": []string{"bar", "trade", "depth"}})
 		if err = conn.Write(ctx, websocket.MessageText, payload); err != nil {
 			conn.CloseNow()
+			if !waitLiveReconnect(ctx, backoff) {
+				return
+			}
+			backoff = nextLiveBackoff(backoff)
 			continue
 		}
 		readCtx, cancel := context.WithCancel(ctx)
 		errc := make(chan error, 1)
+		received := make(chan struct{}, 1)
 		go func() {
 			for {
 				_, msg, e := conn.Read(readCtx)
@@ -135,27 +144,59 @@ func (p *LiveProxy) Run(ctx context.Context) {
 					errc <- e
 					return
 				}
+				select {
+				case received <- struct{}{}:
+				default:
+				}
 				p.handleEvent(readCtx, msg)
 			}
 		}()
-		select {
-		case <-ctx.Done():
-			cancel()
-			conn.CloseNow()
-			return
-		case <-p.changed:
-			cancel()
-			conn.CloseNow()
-		case <-errc:
-			cancel()
-			conn.CloseNow()
+		reconnect := false
+		active := true
+		for active {
 			select {
 			case <-ctx.Done():
+				cancel()
+				conn.CloseNow()
 				return
-			case <-time.After(500 * time.Millisecond):
+			case <-p.changed:
+				active = false
+			case <-received:
+				backoff = 500 * time.Millisecond
+			case <-errc:
+				reconnect = true
+				active = false
 			}
 		}
+		cancel()
+		conn.CloseNow()
+		if reconnect {
+			if !waitLiveReconnect(ctx, backoff) {
+				return
+			}
+			backoff = nextLiveBackoff(backoff)
+		}
 	}
+}
+
+func waitLiveReconnect(ctx context.Context, backoff time.Duration) bool {
+	jitter := time.Duration(time.Now().UnixNano()%250) * time.Millisecond
+	timer := time.NewTimer(backoff + jitter)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func nextLiveBackoff(current time.Duration) time.Duration {
+	current *= 2
+	if current > 30*time.Second {
+		return 30 * time.Second
+	}
+	return current
 }
 
 func (p *LiveProxy) symbols() []string {
@@ -207,17 +248,6 @@ func (p *LiveProxy) signal() {
 	case p.changed <- struct{}{}:
 	default:
 	}
-}
-func (p *LiveProxy) broadcast(msg []byte) {
-	var envelope struct {
-		Symbol string `json:"symbol"`
-	}
-	_ = json.Unmarshal(msg, &envelope)
-	symbol, _, err := market.NormalizeSymbol(envelope.Symbol)
-	if err != nil {
-		return
-	}
-	p.broadcastSymbol(symbol, msg)
 }
 func (p *LiveProxy) broadcastSymbol(symbol string, msg []byte) {
 	p.mu.RLock()

@@ -16,6 +16,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/scott4game/market-bridge/internal/access"
+	"github.com/scott4game/market-bridge/internal/coverage"
 	"github.com/scott4game/market-bridge/internal/market"
 	"github.com/scott4game/market-bridge/internal/provider"
 )
@@ -43,6 +44,7 @@ type HTTP struct {
 	ClickHouse        HistoricalClickHouse
 	HistoryCatalog    *HistoryCatalog
 	DataVersion       string
+	EmptyCoverageTTL  time.Duration
 }
 
 func (h *HTTP) Handler() http.Handler {
@@ -117,46 +119,85 @@ func (h *HTTP) historyBars(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	recent := !spec.From.Before(time.Now().UTC().Add(-365 * 24 * time.Hour))
-	coverageKey, _ := spec.Hash(market.SchemaVersion, "server-clickhouse:"+h.DataVersion)
-	covered := false
-	if h.HistoryCatalog != nil {
-		covered, _ = h.HistoryCatalog.HasCoverage(r.Context(), coverageKey)
-	}
-	if !body.ProviderOnly && recent && spec.Interval == "1m" && h.ClickHouseEnabled && h.ClickHouse != nil && covered {
-		bars, queryErr := h.ClickHouse.QueryBars(r.Context(), spec)
-		if queryErr == nil {
-			writeJSON(w, 200, map[string]any{"source": "server-clickhouse", "bars": bars})
+	canonical := recent && spec.Interval == "1m" && h.ClickHouseEnabled && h.ClickHouse != nil
+	if !canonical || body.ProviderOnly || h.HistoryCatalog == nil {
+		bars, err := h.Store.ProviderBars(r.Context(), spec)
+		if err != nil {
+			writeJSON(w, 502, map[string]string{"error": err.Error()})
 			return
 		}
-		if queryErr != nil {
-			writeJSON(w, 503, map[string]string{"error": queryErr.Error()})
-			return
+		if canonical {
+			if err := h.persistHistory(r.Context(), spec, bars); err != nil {
+				writeJSON(w, 503, map[string]string{"error": err.Error()})
+				return
+			}
 		}
-	}
-	bars, err := h.Store.ProviderBars(r.Context(), spec)
-	if err != nil {
-		writeJSON(w, 502, map[string]string{"error": err.Error()})
+		source := "provider"
+		if canonical {
+			source = "provider+server-clickhouse"
+		}
+		writeJSON(w, 200, map[string]any{"source": source, "bars": nonNilBars(bars)})
 		return
 	}
-	source := "provider"
-	if recent && spec.Interval == "1m" && h.ClickHouseEnabled && h.ClickHouse != nil {
-		revision := uint64(time.Now().UnixMilli())
-		if len(bars) > 0 {
-			if err := h.ClickHouse.WriteBars(r.Context(), spec.Adjustment, bars, revision); err != nil {
-				writeJSON(w, 503, map[string]string{"error": err.Error()})
-				return
-			}
+
+	missing, err := h.HistoryCatalog.Missing(r.Context(), spec, h.DataVersion)
+	if err != nil {
+		writeJSON(w, 503, map[string]string{"error": err.Error()})
+		return
+	}
+	fetched := false
+	for _, gap := range coverage.GroupMissing(missing) {
+		bars, err := h.Store.ProviderBars(r.Context(), gap)
+		if err != nil {
+			writeJSON(w, 502, map[string]string{"error": err.Error()})
+			return
 		}
-		if h.HistoryCatalog != nil {
-			if err := h.HistoryCatalog.RecordCoverage(r.Context(), coverageKey); err != nil {
-				writeJSON(w, 503, map[string]string{"error": err.Error()})
-				return
-			}
-			_, _ = h.HistoryCatalog.Bump(r.Context())
+		if err := h.persistHistory(r.Context(), gap, bars); err != nil {
+			writeJSON(w, 503, map[string]string{"error": err.Error()})
+			return
 		}
+		fetched = true
+	}
+	bars, err := h.ClickHouse.QueryBars(r.Context(), spec)
+	if err != nil {
+		writeJSON(w, 503, map[string]string{"error": err.Error()})
+		return
+	}
+	source := "server-clickhouse"
+	if fetched {
 		source = "provider+server-clickhouse"
 	}
-	writeJSON(w, 200, map[string]any{"source": source, "bars": bars})
+	writeJSON(w, 200, map[string]any{"source": source, "bars": nonNilBars(bars)})
+}
+
+func (h *HTTP) persistHistory(ctx context.Context, spec market.DatasetSpec, bars []market.Bar) error {
+	if len(bars) > 0 {
+		if err := h.ClickHouse.WriteBars(ctx, spec.Adjustment, bars, uint64(time.Now().UnixMilli())); err != nil {
+			return err
+		}
+	}
+	if h.HistoryCatalog != nil {
+		ttl := h.EmptyCoverageTTL
+		if ttl <= 0 {
+			ttl = 15 * time.Minute
+		}
+		if err := h.HistoryCatalog.RecordCoverage(ctx, spec, h.DataVersion, bars, ttl); err != nil {
+			return err
+		}
+		if len(bars) > 0 {
+			if _, err := h.HistoryCatalog.Bump(ctx); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func nonNilBars(bars []market.Bar) []market.Bar {
+	if bars == nil {
+		return []market.Bar{}
+	}
+	return bars
 }
 func (h *HTTP) usage(w http.ResponseWriter, r *http.Request) {
 	if h.Usage == nil {
@@ -467,7 +508,7 @@ func (h *HTTP) live(w http.ResponseWriter, r *http.Request) {
 		h.Live.ServeHTTP(w, r)
 		return
 	}
-	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
+	c, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		return
 	}
@@ -478,6 +519,7 @@ func (h *HTTP) live(w http.ResponseWriter, r *http.Request) {
 	if err := wsRead(r, c, &sub); err != nil {
 		return
 	}
+	connectionCtx := c.CloseRead(r.Context())
 	if len(sub.Symbols) == 0 {
 		sub.Symbols = []string{"AAPL"}
 	}
@@ -486,14 +528,17 @@ func (h *HTTP) live(w http.ResponseWriter, r *http.Request) {
 	seq := int64(0)
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-connectionCtx.Done():
 			return
 		case ts := <-ticker.C:
 			for _, symbol := range sub.Symbols {
 				seq++
 				v := market.DecimalFromFloat(100 + float64(seq%20)/10)
 				event := map[string]any{"type": "bar", "symbol": strings.ToUpper(symbol), "timestamp": ts.UTC(), "cursor": map[string]any{"stream_epoch": "mock", "event_type": "bar", "symbol": strings.ToUpper(symbol), "sequence": seq}, "bar": market.Bar{Symbol: strings.ToUpper(symbol), Timestamp: ts.UTC().Truncate(time.Minute), Open: v, High: v, Low: v, Close: v, Volume: seq, Session: market.RegularSession, Source: "mock-live", Completed: false}}
-				if err := wsWrite(r, c, event); err != nil {
+				writeCtx, cancel := context.WithTimeout(connectionCtx, 10*time.Second)
+				err := wsWriteContext(writeCtx, c, event)
+				cancel()
+				if err != nil {
 					return
 				}
 			}
@@ -508,12 +553,13 @@ func wsRead(r *http.Request, c *websocket.Conn, v any) error {
 	}
 	return err
 }
-func wsWrite(r *http.Request, c *websocket.Conn, v any) error {
+
+func wsWriteContext(ctx context.Context, c *websocket.Conn, v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	return c.Write(r.Context(), websocket.MessageText, b)
+	return c.Write(ctx, websocket.MessageText, b)
 }
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")

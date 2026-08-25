@@ -16,10 +16,11 @@ import (
 var indicatorParameterName = regexp.MustCompile(`^[\pL_][\pL\pN_]*$`)
 
 const (
-	maxPersonalIndicators = 50
-	maxEnabledIndicators  = 12
-	maxIndicatorFormula   = 64 << 10
-	maxIndicatorParams    = 32
+	maxPersonalIndicators    = 50
+	maxEnabledIndicators     = 12
+	indicatorTemplateVersion = 1
+	maxIndicatorFormula      = 64 << 10
+	maxIndicatorParams       = 32
 )
 
 var (
@@ -161,6 +162,17 @@ func validateIndicatorMutation(m IndicatorMutation) error {
 func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
 
 func (s *Store) ensureDefaultIndicators(ctx context.Context, userID string) error {
+	var version int
+	if err := s.db.QueryRowContext(ctx, `SELECT template_version FROM user_indicator_seed WHERE user_id=?`, userID).Scan(&version); err == nil && version == indicatorTemplateVersion {
+		return nil
+	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	now := time.Now().Unix()
 	for _, template := range defaultIndicators {
 		id, err := randomHex(16)
@@ -168,15 +180,18 @@ func (s *Store) ensureDefaultIndicators(ctx context.Context, userID string) erro
 			return err
 		}
 		params, _ := json.Marshal(template.params)
-		_, err = s.db.ExecContext(ctx, `INSERT OR IGNORE INTO user_indicators(id,user_id,kind,template_key,name,pane,formula,parameters_json,enabled,sort_order,revision,created_at,updated_at) VALUES(?,?,'template',?,?,?,?,?,1,?,1,?,?)`, id, userID, template.key, template.name, template.pane, template.formula, string(params), template.sortOrder, now, now)
+		_, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO user_indicators(id,user_id,kind,template_key,name,pane,formula,parameters_json,enabled,sort_order,revision,created_at,updated_at) VALUES(?,?,'template',?,?,?,?,?,1,?,1,?,?)`, id, userID, template.key, template.name, template.pane, template.formula, string(params), template.sortOrder, now, now)
 		if err != nil {
 			return err
 		}
-		if _, err = s.db.ExecContext(ctx, `UPDATE user_indicators SET name=?,pane=?,formula=? WHERE user_id=? AND template_key=?`, template.name, template.pane, template.formula, userID, template.key); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE user_indicators SET name=?,pane=?,formula=? WHERE user_id=? AND template_key=?`, template.name, template.pane, template.formula, userID, template.key); err != nil {
 			return err
 		}
 	}
-	return nil
+	if _, err := tx.ExecContext(ctx, `INSERT INTO user_indicator_seed(user_id,template_version) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET template_version=excluded.template_version`, userID, indicatorTemplateVersion); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 const indicatorColumns = `id,kind,template_key,name,pane,formula,parameters_json,warnings_json,enabled,sort_order,revision,created_at,updated_at`
@@ -242,23 +257,6 @@ func (s *Store) CreateIndicator(ctx context.Context, userID string, m IndicatorM
 	if err := validateIndicatorMutation(m); err != nil {
 		return IndicatorDefinition{}, err
 	}
-	if exists, err := s.indicatorNameExists(ctx, userID, m.Name, ""); err != nil {
-		return IndicatorDefinition{}, err
-	} else if exists {
-		return IndicatorDefinition{}, ErrIndicatorName
-	}
-	var count int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_indicators WHERE user_id=? AND kind='personal'`, userID).Scan(&count); err != nil {
-		return IndicatorDefinition{}, err
-	}
-	if count >= maxPersonalIndicators {
-		return IndicatorDefinition{}, ErrIndicatorLimit
-	}
-	if m.Enabled {
-		if err := s.checkEnabledIndicatorLimit(ctx, userID, ""); err != nil {
-			return IndicatorDefinition{}, err
-		}
-	}
 	id, err := randomHex(16)
 	if err != nil {
 		return IndicatorDefinition{}, err
@@ -266,8 +264,36 @@ func (s *Store) CreateIndicator(ctx context.Context, userID string, m IndicatorM
 	params, _ := json.Marshal(m.Parameters)
 	warnings, _ := json.Marshal(m.Warnings)
 	now := time.Now().Unix()
-	_, err = s.db.ExecContext(ctx, `INSERT INTO user_indicators(id,user_id,kind,name,pane,formula,parameters_json,warnings_json,enabled,sort_order,revision,created_at,updated_at) VALUES(?,?,'personal',?,?,?,?,?,?,?,1,?,?)`, id, userID, strings.TrimSpace(m.Name), m.Pane, m.Formula, string(params), string(warnings), boolInt(m.Enabled), m.SortOrder, now, now)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		return IndicatorDefinition{}, err
+	}
+	defer tx.Rollback()
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_indicators WHERE user_id=? AND name=? COLLATE NOCASE`, userID, strings.TrimSpace(m.Name)).Scan(&count); err != nil {
+		return IndicatorDefinition{}, err
+	}
+	if count > 0 {
+		return IndicatorDefinition{}, ErrIndicatorName
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_indicators WHERE user_id=? AND kind='personal'`, userID).Scan(&count); err != nil {
+		return IndicatorDefinition{}, err
+	}
+	if count >= maxPersonalIndicators {
+		return IndicatorDefinition{}, ErrIndicatorLimit
+	}
+	if m.Enabled {
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_indicators WHERE user_id=? AND enabled=1`, userID).Scan(&count); err != nil {
+			return IndicatorDefinition{}, err
+		}
+		if count >= maxEnabledIndicators {
+			return IndicatorDefinition{}, ErrIndicatorEnabled
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO user_indicators(id,user_id,kind,name,pane,formula,parameters_json,warnings_json,enabled,sort_order,revision,created_at,updated_at) VALUES(?,?,'personal',?,?,?,?,?,?,?,1,?,?)`, id, userID, strings.TrimSpace(m.Name), m.Pane, m.Formula, string(params), string(warnings), boolInt(m.Enabled), m.SortOrder, now, now); err != nil {
+		return IndicatorDefinition{}, err
+	}
+	if err := tx.Commit(); err != nil {
 		return IndicatorDefinition{}, err
 	}
 	return s.indicator(ctx, userID, id)
@@ -284,40 +310,42 @@ func (s *Store) UpdateIndicator(ctx context.Context, userID, id string, m Indica
 	if current.Kind == "template" {
 		m.Name, m.Pane, m.Formula = current.Name, current.Pane, current.Formula
 	}
-	if m.Enabled && !current.Enabled {
-		if err := s.checkEnabledIndicatorLimit(ctx, userID, id); err != nil {
-			return IndicatorDefinition{}, err
-		}
-	}
 	if err := validateIndicatorMutation(m); err != nil {
 		return IndicatorDefinition{}, err
 	}
-	if exists, err := s.indicatorNameExists(ctx, userID, m.Name, id); err != nil {
-		return IndicatorDefinition{}, err
-	} else if exists {
-		return IndicatorDefinition{}, ErrIndicatorName
-	}
 	params, _ := json.Marshal(m.Parameters)
 	warnings, _ := json.Marshal(m.Warnings)
-	result, err := s.db.ExecContext(ctx, `UPDATE user_indicators SET name=?,pane=?,formula=?,parameters_json=?,warnings_json=?,enabled=?,sort_order=?,revision=revision+1,updated_at=? WHERE user_id=? AND id=? AND revision=?`, strings.TrimSpace(m.Name), m.Pane, m.Formula, string(params), string(warnings), boolInt(m.Enabled), m.SortOrder, time.Now().Unix(), userID, id, m.Revision)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return IndicatorDefinition{}, err
+	}
+	defer tx.Rollback()
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_indicators WHERE user_id=? AND name=? COLLATE NOCASE AND id<>?`, userID, strings.TrimSpace(m.Name), id).Scan(&count); err != nil {
+		return IndicatorDefinition{}, err
+	}
+	if count > 0 {
+		return IndicatorDefinition{}, ErrIndicatorName
+	}
+	if m.Enabled && !current.Enabled {
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_indicators WHERE user_id=? AND enabled=1 AND id<>?`, userID, id).Scan(&count); err != nil {
+			return IndicatorDefinition{}, err
+		}
+		if count >= maxEnabledIndicators {
+			return IndicatorDefinition{}, ErrIndicatorEnabled
+		}
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE user_indicators SET name=?,pane=?,formula=?,parameters_json=?,warnings_json=?,enabled=?,sort_order=?,revision=revision+1,updated_at=? WHERE user_id=? AND id=? AND revision=?`, strings.TrimSpace(m.Name), m.Pane, m.Formula, string(params), string(warnings), boolInt(m.Enabled), m.SortOrder, time.Now().Unix(), userID, id, m.Revision)
 	if err != nil {
 		return IndicatorDefinition{}, err
 	}
 	if changed, _ := result.RowsAffected(); changed == 0 {
 		return IndicatorDefinition{}, ErrIndicatorConflict
 	}
+	if err := tx.Commit(); err != nil {
+		return IndicatorDefinition{}, err
+	}
 	return s.indicator(ctx, userID, id)
-}
-
-func (s *Store) checkEnabledIndicatorLimit(ctx context.Context, userID, excludeID string) error {
-	var count int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_indicators WHERE user_id=? AND enabled=1 AND id<>?`, userID, excludeID).Scan(&count); err != nil {
-		return err
-	}
-	if count >= maxEnabledIndicators {
-		return ErrIndicatorEnabled
-	}
-	return nil
 }
 
 func (s *Store) indicatorNameExists(ctx context.Context, userID, name, excludeID string) (bool, error) {

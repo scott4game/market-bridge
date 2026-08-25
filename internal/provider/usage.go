@@ -270,9 +270,24 @@ func (u *UsageTracker) Snapshot(ctx context.Context, providerName string) (Usage
 		Totals:       totals, ByEndpoint: endpoints, Tracking: u.tracking(started), UpdatedAt: now.UTC(),
 	}
 	s.CurrentMonth.Remaining, s.CurrentMonth.Percent = remaining(month, s.CurrentMonth.Limit)
-	// Raw events are only needed for the rolling window and interrupted requests.
-	_, _ = u.db.ExecContext(ctx, `DELETE FROM request_events WHERE started_at_ms<? AND outcome!='in_flight'`, now.Add(-24*time.Hour).UnixMilli())
 	return s, nil
+}
+
+func (u *UsageTracker) RunCleanup(ctx context.Context) {
+	cleanup := func() {
+		_, _ = u.db.ExecContext(ctx, `DELETE FROM request_events WHERE started_at_ms<? AND outcome!='in_flight'`, u.now().Add(-24*time.Hour).UnixMilli())
+	}
+	cleanup()
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cleanup()
+		}
+	}
 }
 
 func usageWindow(used int64, limit *int) UsageWindow {

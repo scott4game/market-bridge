@@ -21,15 +21,20 @@ type Limiter struct {
 
 func NewLimiter() *Limiter { return &Limiter{users: map[string]*counters{}, now: time.Now} }
 
-func (l *Limiter) counter(userID string) *counters {
+func (l *Limiter) counter(userID string, create bool) *counters {
+	now := l.now().Truncate(time.Minute)
+	for id, item := range l.users {
+		if item.window.Before(now) && item.connections == 0 && item.symbols == 0 {
+			delete(l.users, id)
+		}
+	}
 	c := l.users[userID]
-	if c == nil {
-		c = &counters{window: l.now().Truncate(time.Minute)}
+	if c == nil && create {
+		c = &counters{window: now}
 		l.users[userID] = c
 	}
-	window := l.now().Truncate(time.Minute)
-	if !c.window.Equal(window) {
-		c.window, c.requests, c.datasets = window, 0, 0
+	if c != nil && !c.window.Equal(now) {
+		c.window, c.requests, c.datasets = now, 0, 0
 	}
 	return c
 }
@@ -37,7 +42,7 @@ func (l *Limiter) counter(userID string) *counters {
 func (l *Limiter) AllowRequest(p Principal) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	c := l.counter(p.UserID)
+	c := l.counter(p.UserID, true)
 	if c.requests >= p.Quotas.RequestsPerMinute {
 		return false
 	}
@@ -48,7 +53,7 @@ func (l *Limiter) AllowRequest(p Principal) bool {
 func (l *Limiter) AllowDataset(p Principal) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	c := l.counter(p.UserID)
+	c := l.counter(p.UserID, true)
 	if c.datasets >= p.Quotas.DatasetsPerMinute {
 		return false
 	}
@@ -59,7 +64,7 @@ func (l *Limiter) AllowDataset(p Principal) bool {
 func (l *Limiter) AcquireLive(p Principal, symbols int) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	c := l.counter(p.UserID)
+	c := l.counter(p.UserID, true)
 	if c.connections >= p.Quotas.LiveConnections || c.symbols+symbols > p.Quotas.LiveSymbols {
 		return false
 	}
@@ -71,7 +76,10 @@ func (l *Limiter) AcquireLive(p Principal, symbols int) bool {
 func (l *Limiter) ReleaseLive(userID string, symbols int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	c := l.counter(userID)
+	c := l.counter(userID, false)
+	if c == nil {
+		return
+	}
 	if c.connections > 0 {
 		c.connections--
 	}
@@ -84,6 +92,9 @@ func (l *Limiter) ReleaseLive(userID string, symbols int) {
 func (l *Limiter) Snapshot(userID string) (requests, datasets, connections, symbols int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	c := l.counter(userID)
+	c := l.counter(userID, false)
+	if c == nil {
+		return 0, 0, 0, 0
+	}
 	return c.requests, c.datasets, c.connections, c.symbols
 }

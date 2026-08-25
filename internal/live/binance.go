@@ -29,7 +29,7 @@ func (s *BinanceSource) Run(ctx context.Context, symbols []string, emit func(mar
 	conn, response, err := websocket.Dial(connectionCtx, endpoint+"/ws", &websocket.DialOptions{HTTPHeader: http.Header{"User-Agent": []string{"market-bridge"}}})
 	if err != nil {
 		if response != nil {
-			return fmt.Errorf("Binance websocket status %d: %w", response.StatusCode, err)
+			return fmt.Errorf("binance websocket status %d: %w", response.StatusCode, err)
 		}
 		return err
 	}
@@ -47,7 +47,7 @@ func (s *BinanceSource) Run(ctx context.Context, symbols []string, emit func(mar
 		streams = append(streams, lower+"@kline_1m", lower+"@aggTrade", lower+"@bookTicker")
 	}
 	if len(streams) == 0 {
-		return fmt.Errorf("Binance watchlist is empty")
+		return fmt.Errorf("binance watchlist is empty")
 	}
 	request, _ := json.Marshal(map[string]any{"method": "SUBSCRIBE", "params": streams, "id": 1})
 	if err := conn.Write(connectionCtx, websocket.MessageText, request); err != nil {

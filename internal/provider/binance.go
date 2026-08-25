@@ -75,6 +75,7 @@ func (p *Binance) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.B
 		}
 		symbol := strings.TrimSuffix(canonical, ".BINANCE")
 		cursor := normalized.From.UnixMilli()
+		consecutiveRetries := 0
 		for cursor < normalized.To.UnixMilli() {
 			u, _ := url.Parse(baseURL + "/api/v3/klines")
 			query := u.Query()
@@ -86,6 +87,11 @@ func (p *Binance) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.B
 			u.RawQuery = query.Encode()
 			rows, retryAfter, err := requestBinanceKlines(ctx, client, u.String())
 			if retryAfter > 0 {
+				consecutiveRetries++
+				if consecutiveRetries > 8 {
+					return nil, fmt.Errorf("klines %s: rate limit retry budget exhausted", canonical)
+				}
+				retryAfter += time.Duration(time.Now().UnixNano()%250) * time.Millisecond
 				select {
 				case <-ctx.Done():
 					return nil, ctx.Err()
@@ -96,6 +102,7 @@ func (p *Binance) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.B
 			if err != nil {
 				return nil, fmt.Errorf("klines %s: %w", canonical, err)
 			}
+			consecutiveRetries = 0
 			if len(rows) == 0 {
 				break
 			}

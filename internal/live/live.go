@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	lbconfig "github.com/longbridge/openapi-go/config"
 	lbquote "github.com/longbridge/openapi-go/quote"
 	"github.com/scott4game/market-bridge/internal/access"
 	"github.com/scott4game/market-bridge/internal/market"
@@ -64,8 +65,11 @@ func (s *LongbridgeSource) Run(ctx context.Context, symbols []string, emit func(
 	q := s.Quote
 	owned := false
 	if q == nil {
-		var err error
-		q, err = lbquote.NewFormEnv()
+		cfg, err := lbconfig.New()
+		if err != nil {
+			return err
+		}
+		q, err = lbquote.NewFromCfg(cfg)
 		if err != nil {
 			return err
 		}
@@ -201,11 +205,6 @@ func NewHub(source Source, sink Sink, watchlist []string) (*Hub, error) {
 func (h *Hub) ConfigureAccess(store *access.Store, limiter *access.Limiter) {
 	h.access, h.limiter = store, limiter
 }
-func (h *Hub) MarkConnected() {
-	h.statusMu.Lock()
-	h.state, h.lastError, h.connectedAt = "connected", "", time.Now().UTC()
-	h.statusMu.Unlock()
-}
 func (h *Hub) ProviderStatus() map[string]any {
 	h.statusMu.RLock()
 	defer h.statusMu.RUnlock()
@@ -266,7 +265,7 @@ func (h *Hub) publish(event market.LiveEvent) {
 	}
 }
 func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
+	c, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		return
 	}
@@ -284,6 +283,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = c.Close(websocket.StatusPolicyViolation, "symbols required")
 		return
 	}
+	connectionCtx := c.CloseRead(r.Context())
 	if len(req.Events) == 0 {
 		req.Events = []market.EventType{market.BarEvent}
 	}
@@ -329,16 +329,19 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-connectionCtx.Done():
 			return
 		case event := <-s.queue:
 			b, _ := json.Marshal(event)
-			if err := c.Write(r.Context(), websocket.MessageText, b); err != nil {
+			writeCtx, cancel := context.WithTimeout(connectionCtx, 10*time.Second)
+			err := c.Write(writeCtx, websocket.MessageText, b)
+			cancel()
+			if err != nil {
 				return
 			}
 		case <-revalidate.C:
 			if secured && h.access != nil {
-				if _, err := h.access.Authenticate(r.Context(), token); err != nil {
+				if _, err := h.access.Authenticate(connectionCtx, token); err != nil {
 					_ = c.Close(websocket.StatusPolicyViolation, "credential expired or revoked")
 					return
 				}

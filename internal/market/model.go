@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	shopdecimal "github.com/shopspring/decimal"
 )
 
 type AdjustmentMode string
@@ -44,22 +47,30 @@ func NormalizeSymbol(symbol string) (string, Venue, error) {
 	if symbol == "" {
 		return "", "", errors.New("symbol is empty")
 	}
-	if !strings.Contains(symbol, ".") {
-		return symbol, VenueUS, nil
-	}
-	parts := strings.Split(symbol, ".")
-	if len(parts) != 2 || parts[0] == "" {
+	if strings.HasPrefix(symbol, ".") || strings.HasSuffix(symbol, ".") || strings.Contains(symbol, "..") {
 		return "", "", fmt.Errorf("invalid symbol %q", symbol)
 	}
-	venue := Venue(parts[1])
-	switch venue {
-	case VenueUS:
-		return parts[0], VenueUS, nil
-	case VenueHK, VenueSH, VenueSZ, VenueBinance:
-		return parts[0] + "." + string(venue), venue, nil
-	default:
-		return "", "", fmt.Errorf("unsupported market suffix %q", parts[1])
+	for _, venue := range []Venue{VenueUS, VenueHK, VenueSH, VenueSZ, VenueBinance} {
+		suffix := "." + string(venue)
+		if !strings.HasSuffix(symbol, suffix) {
+			continue
+		}
+		base := strings.TrimSuffix(symbol, suffix)
+		if base == "" {
+			return "", "", fmt.Errorf("invalid symbol %q", symbol)
+		}
+		if venue == VenueUS {
+			return base, VenueUS, nil
+		}
+		return base + suffix, venue, nil
 	}
+	if dot := strings.LastIndexByte(symbol, '.'); dot >= 0 {
+		class := symbol[dot+1:]
+		if len(class) != 1 || class[0] < 'A' || class[0] > 'Z' {
+			return "", "", fmt.Errorf("unsupported market suffix %q", class)
+		}
+	}
+	return symbol, VenueUS, nil
 }
 
 func VenueOf(symbol string) (Venue, error) {
@@ -129,7 +140,7 @@ func (s DatasetSpec) Normalize() (DatasetSpec, error) {
 		return s, fmt.Errorf("unsupported session %q", s.Session)
 	}
 	if hasCrypto && s.Session != ContinuousSession {
-		return s, errors.New("Binance symbols require session continuous")
+		return s, errors.New("binance symbols require session continuous")
 	}
 	if !hasCrypto && s.Session == ContinuousSession {
 		return s, errors.New("continuous session is only valid for crypto symbols")
@@ -162,15 +173,15 @@ func (s DatasetSpec) Normalize() (DatasetSpec, error) {
 		switch venue {
 		case VenueUS:
 			if s.Adjustment == ForwardAdjusted {
-				return s, errors.New("US symbols do not support forward_adjusted")
+				return s, errors.New("us symbols do not support forward_adjusted")
 			}
 		case VenueHK, VenueSH, VenueSZ:
 			if s.Adjustment == SplitAdjusted {
-				return s, errors.New("HK/CN symbols use forward_adjusted instead of split_adjusted")
+				return s, errors.New("hk/cn symbols use forward_adjusted instead of split_adjusted")
 			}
 		case VenueBinance:
 			if s.Adjustment != Raw {
-				return s, errors.New("Binance symbols only support raw adjustment")
+				return s, errors.New("binance symbols only support raw adjustment")
 			}
 		}
 	}
@@ -200,13 +211,19 @@ type Decimal int64
 
 const decimalScale = 1_000_000
 
-func DecimalFromFloat(v float64) Decimal { return Decimal(v*decimalScale + 0.5) }
+func DecimalFromFloat(v float64) Decimal { return Decimal(math.Round(v * decimalScale)) }
 func DecimalFromString(v string) (Decimal, error) {
-	f, err := strconv.ParseFloat(v, 64)
+	parsed, err := shopdecimal.NewFromString(v)
 	if err != nil {
 		return 0, err
 	}
-	return DecimalFromFloat(f), nil
+	scaled := parsed.Shift(6).Round(0)
+	max := shopdecimal.NewFromInt(math.MaxInt64)
+	min := shopdecimal.NewFromInt(math.MinInt64)
+	if scaled.GreaterThan(max) || scaled.LessThan(min) {
+		return 0, fmt.Errorf("decimal %q exceeds Decimal64(6) range", v)
+	}
+	return Decimal(scaled.IntPart()), nil
 }
 func (d Decimal) Float64() float64             { return float64(d) / decimalScale }
 func (d Decimal) String() string               { return strconv.FormatFloat(d.Float64(), 'f', 6, 64) }

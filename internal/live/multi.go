@@ -6,6 +6,7 @@ import (
 	"log"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/scott4game/market-bridge/internal/market"
@@ -64,12 +65,14 @@ func (m *MultiSource) Run(ctx context.Context, symbols []string, emit func(marke
 func (m *MultiSource) runRoute(ctx context.Context, route SourceRoute, symbols []string, emit func(market.LiveEvent)) {
 	backoff := time.Second
 	for ctx.Err() == nil {
+		var connected atomic.Bool
 		m.setState(route.Name, func(state *sourceState) {
 			state.State = "connecting"
 			state.Symbols = len(symbols)
 		})
 		if aware, ok := route.Source.(connectionAwareSource); ok {
 			aware.SetOnConnected(func() {
+				connected.Store(true)
 				m.setState(route.Name, func(state *sourceState) {
 					state.State = "connected"
 					state.Connected = time.Now().UTC()
@@ -91,6 +94,9 @@ func (m *MultiSource) runRoute(ctx context.Context, route SourceRoute, symbols [
 		if err != nil {
 			log.Printf("%s live provider disconnected: %v", route.Name, err)
 		}
+		if connected.Load() {
+			backoff = time.Second
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -98,6 +104,9 @@ func (m *MultiSource) runRoute(ctx context.Context, route SourceRoute, symbols [
 		}
 		if backoff < 30*time.Second {
 			backoff *= 2
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
 		}
 	}
 }

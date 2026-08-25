@@ -20,6 +20,7 @@ import (
 	"github.com/parquet-go/parquet-go"
 	"github.com/redis/go-redis/v9"
 	"github.com/scott4game/market-bridge/internal/config"
+	"github.com/scott4game/market-bridge/internal/coverage"
 	"github.com/scott4game/market-bridge/internal/market"
 	_ "modernc.org/sqlite"
 )
@@ -32,11 +33,13 @@ type Cache struct {
 	mu              sync.Mutex
 	inflight        map[string]*flight
 	active          map[string]int
+	datasetLocks    map[string]*datasetGuard
 	clickhouse      HistoricalClickHouse
 	capability      StorageCapability
 	capabilityAt    time.Time
 	capabilityStale bool
 	capabilityError string
+	coverage        *coverage.Store
 }
 
 type HistoricalClickHouse interface {
@@ -60,6 +63,11 @@ type flight struct {
 	done     chan struct{}
 	manifest market.Manifest
 	err      error
+}
+
+type datasetGuard struct {
+	lock sync.RWMutex
+	refs int
 }
 
 func NewCache(cfg config.Client) (*Cache, error) {
@@ -87,7 +95,6 @@ func NewCacheWithClickHouse(cfg config.Client, clickhouse HistoricalClickHouse) 
 		`PRAGMA journal_mode=WAL`,
 		`CREATE TABLE IF NOT EXISTS datasets (id TEXT PRIMARY KEY, spec_hash TEXT NOT NULL, manifest_json BLOB NOT NULL, last_accessed_at INTEGER NOT NULL, state TEXT NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS datasets_spec ON datasets(spec_hash, last_accessed_at)`,
-		`CREATE TABLE IF NOT EXISTS clickhouse_coverage (spec_hash TEXT PRIMARY KEY, completed_at INTEGER NOT NULL)`,
 	}
 	for _, q := range stmts {
 		if _, err = db.Exec(q); err != nil {
@@ -95,7 +102,12 @@ func NewCacheWithClickHouse(cfg config.Client, clickhouse HistoricalClickHouse) 
 			return nil, err
 		}
 	}
-	c := &Cache{cfg: cfg, db: db, http: &http.Client{Timeout: 2 * time.Minute}, inflight: map[string]*flight{}, active: map[string]int{}, clickhouse: clickhouse}
+	coverageStore, err := coverage.New(db, "clickhouse_coverage_v2", "clickhouse_coverage")
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	c := &Cache{cfg: cfg, db: db, http: &http.Client{Timeout: 2 * time.Minute}, inflight: map[string]*flight{}, active: map[string]int{}, datasetLocks: map[string]*datasetGuard{}, clickhouse: clickhouse, coverage: coverageStore}
 	if cfg.RedisEnabled {
 		c.redis = redis.NewClient(&redis.Options{Addr: cfg.RedisAddress, Username: cfg.RedisUsername, Password: cfg.RedisPassword, DB: cfg.RedisDB, DialTimeout: 300 * time.Millisecond, ReadTimeout: 500 * time.Millisecond, WriteTimeout: 500 * time.Millisecond})
 	}
@@ -193,6 +205,20 @@ func (c *Cache) legacyBars(ctx context.Context, spec market.DatasetSpec) ([]mark
 		}
 		source = "go-server"
 	}
+	datasetLock, releaseGuard := c.datasetLock(m.DatasetID)
+	datasetLock.RLock()
+	if _, err := os.Stat(filepath.Join(c.cfg.CacheDir, "datasets", m.DatasetID, "manifest.json")); err != nil {
+		datasetLock.RUnlock()
+		releaseGuard()
+		m, err = c.ensureRemote(ctx, key, spec)
+		if err != nil {
+			return nil, "", err
+		}
+		datasetLock, releaseGuard = c.datasetLock(m.DatasetID)
+		datasetLock.RLock()
+	}
+	defer releaseGuard()
+	defer datasetLock.RUnlock()
 	c.retain(m.DatasetID)
 	defer c.release(m.DatasetID)
 	bars, err := c.readManifest(m)
@@ -256,7 +282,7 @@ func (c *Cache) recentBars(ctx context.Context, spec market.DatasetSpec, capabil
 		if err != nil {
 			return nil, "", err
 		}
-		c.setRedisBars(ctx, "recent:"+key, bars, c.cfg.RedisTTL)
+		c.setRedisBars(ctx, "recent:"+key, bars, c.recentRedisTTL(bars))
 		return bars, source, nil
 	}
 	mode := "local-clickhouse"
@@ -277,51 +303,65 @@ func (c *Cache) recentBars(ctx context.Context, spec market.DatasetSpec, capabil
 		if err != nil {
 			return nil, "", err
 		}
-		c.setRedisBars(ctx, "recent:"+key, bars, c.cfg.RedisTTL)
+		c.setRedisBars(ctx, "recent:"+key, bars, c.recentRedisTTL(bars))
 		return bars, source, nil
 	}
-	if c.clickhouse != nil {
-		covered, err := c.hasClickHouseCoverage(ctx, key)
+	if c.clickhouse == nil {
+		bars, source, err := c.remoteHistoryBars(ctx, spec, false)
 		if err != nil {
 			return nil, "", err
 		}
-		if covered {
-			bars, err := c.clickhouse.QueryBars(ctx, spec)
-			if err != nil {
-				return nil, "", err
-			}
-			c.setRedisBars(ctx, "recent:"+key, bars, c.cfg.RedisTTL)
-			return bars, "local-clickhouse", nil
-		}
+		c.setRedisBars(ctx, "recent:"+key, bars, c.recentRedisTTL(bars))
+		return bars, source, nil
 	}
-	bars, source, err := c.remoteHistoryBars(ctx, spec, false)
+	missing, err := c.coverage.Missing(ctx, spec, version)
 	if err != nil {
 		return nil, "", err
 	}
-	if c.clickhouse != nil {
-		if len(bars) > 0 {
-			if err := c.clickhouse.WriteBars(ctx, spec.Adjustment, bars, uint64(time.Now().UnixMilli())); err != nil {
+	fetched := false
+	for _, gap := range coverage.GroupMissing(missing) {
+		part, _, err := c.remoteHistoryBars(ctx, gap, false)
+		if err != nil {
+			return nil, "", err
+		}
+		if len(part) > 0 {
+			if err := c.clickhouse.WriteBars(ctx, gap.Adjustment, part, uint64(time.Now().UnixMilli())); err != nil {
 				return nil, "", err
 			}
 		}
-		if err := c.recordClickHouseCoverage(ctx, key); err != nil {
+		ttl := c.cfg.EmptyCoverageTTL
+		if ttl <= 0 {
+			ttl = 15 * time.Minute
+		}
+		if err := c.coverage.Record(ctx, gap, version, part, ttl); err != nil {
 			return nil, "", err
 		}
-		source += "+local-clickhouse"
+		fetched = true
 	}
-	c.setRedisBars(ctx, "recent:"+key, bars, c.cfg.RedisTTL)
+	bars, err := c.clickhouse.QueryBars(ctx, spec)
+	if err != nil {
+		return nil, "", err
+	}
+	source := "local-clickhouse"
+	if fetched {
+		source = "provider+local-clickhouse"
+	}
+	c.setRedisBars(ctx, "recent:"+key, bars, c.recentRedisTTL(bars))
 	return bars, source, nil
 }
 
-func (c *Cache) hasClickHouseCoverage(ctx context.Context, specHash string) (bool, error) {
-	var exists int
-	err := c.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM clickhouse_coverage WHERE spec_hash=?)`, specHash).Scan(&exists)
-	return exists == 1, err
-}
-
-func (c *Cache) recordClickHouseCoverage(ctx context.Context, specHash string) error {
-	_, err := c.db.ExecContext(ctx, `INSERT OR REPLACE INTO clickhouse_coverage(spec_hash,completed_at) VALUES(?,?)`, specHash, time.Now().Unix())
-	return err
+func (c *Cache) recentRedisTTL(bars []market.Bar) time.Duration {
+	ttl := c.cfg.RedisTTL
+	if len(bars) == 0 {
+		emptyTTL := c.cfg.EmptyCoverageTTL
+		if emptyTTL <= 0 {
+			emptyTTL = 15 * time.Minute
+		}
+		if ttl <= 0 || ttl > emptyTTL {
+			ttl = emptyTTL
+		}
+	}
+	return ttl
 }
 
 func (c *Cache) archiveBars(ctx context.Context, spec market.DatasetSpec, dataVersion string) ([]market.Bar, string, error) {
@@ -604,6 +644,10 @@ func (c *Cache) download(ctx context.Context, key string, spec market.DatasetSpe
 		return m, err
 	}
 	final := filepath.Join(c.cfg.CacheDir, "datasets", st.DatasetID)
+	datasetLock, releaseGuard := c.datasetLock(st.DatasetID)
+	datasetLock.Lock()
+	defer releaseGuard()
+	defer datasetLock.Unlock()
 	_ = os.RemoveAll(final)
 	if err := os.Rename(tmpRoot, final); err != nil {
 		return m, err
@@ -793,6 +837,25 @@ func (c *Cache) release(id string) {
 	c.mu.Unlock()
 }
 
+func (c *Cache) datasetLock(id string) (*sync.RWMutex, func()) {
+	c.mu.Lock()
+	guard := c.datasetLocks[id]
+	if guard == nil {
+		guard = &datasetGuard{}
+		c.datasetLocks[id] = guard
+	}
+	guard.refs++
+	c.mu.Unlock()
+	return &guard.lock, func() {
+		c.mu.Lock()
+		guard.refs--
+		if guard.refs == 0 && c.datasetLocks[id] == guard {
+			delete(c.datasetLocks, id)
+		}
+		c.mu.Unlock()
+	}
+}
+
 type CacheEntry struct {
 	DatasetID    string    `json:"dataset_id"`
 	SpecHash     string    `json:"spec_hash,omitempty"`
@@ -828,26 +891,33 @@ func (c *Cache) Prune(ctx context.Context, expiredOnly bool) (int, error) {
 		if expiredOnly && (c.cfg.ParquetTTL <= 0 || e.LastAccessed.Add(c.cfg.ParquetTTL).After(time.Now())) {
 			continue
 		}
-		c.mu.Lock()
-		busy := c.active[e.DatasetID] > 0
-		c.mu.Unlock()
-		if busy {
+		datasetLock, releaseGuard := c.datasetLock(e.DatasetID)
+		if !datasetLock.TryLock() {
+			releaseGuard()
 			continue
 		}
 		if _, err := c.db.ExecContext(ctx, `UPDATE datasets SET state='deleting' WHERE id=?`, e.DatasetID); err != nil {
+			datasetLock.Unlock()
+			releaseGuard()
 			return n, err
 		}
 		path := filepath.Join(c.cfg.CacheDir, "datasets", e.DatasetID)
 		if err := os.RemoveAll(path); err != nil {
+			datasetLock.Unlock()
+			releaseGuard()
 			return n, err
 		}
 		if c.redis != nil {
 			_ = c.redis.Del(ctx, "bars:"+e.SpecHash).Err()
 		}
 		if _, err := c.db.ExecContext(ctx, `DELETE FROM datasets WHERE id=?`, e.DatasetID); err != nil {
+			datasetLock.Unlock()
+			releaseGuard()
 			return n, err
 		}
 		n++
+		datasetLock.Unlock()
+		releaseGuard()
 	}
 	return n, nil
 }
@@ -865,12 +935,13 @@ func (c *Cache) Manifest(ctx context.Context, id string) (market.Manifest, error
 }
 
 func (c *Cache) Delete(ctx context.Context, id string) error {
-	c.mu.Lock()
-	busy := c.active[id] > 0
-	c.mu.Unlock()
-	if busy {
+	datasetLock, releaseGuard := c.datasetLock(id)
+	if !datasetLock.TryLock() {
+		releaseGuard()
 		return errors.New("dataset is in use")
 	}
+	defer releaseGuard()
+	defer datasetLock.Unlock()
 	var key string
 	if err := c.db.QueryRowContext(ctx, `SELECT spec_hash FROM datasets WHERE id=?`, id).Scan(&key); err != nil {
 		return err
@@ -890,6 +961,8 @@ func (c *Cache) Delete(ctx context.Context, id string) error {
 func (c *Cache) RunCleanup(ctx context.Context) {
 	var parquetC, clickhouseC <-chan time.Time
 	var parquetTicker, clickhouseTicker *time.Ticker
+	coverageTicker := time.NewTicker(24 * time.Hour)
+	defer coverageTicker.Stop()
 	if c.cfg.ParquetTTL > 0 && c.cfg.CleanupInterval > 0 {
 		parquetTicker = time.NewTicker(c.cfg.CleanupInterval)
 		parquetC = parquetTicker.C
@@ -915,6 +988,8 @@ func (c *Cache) RunCleanup(ctx context.Context) {
 			_, _ = c.Prune(ctx, true)
 		case <-clickhouseC:
 			_, _ = c.clickhouse.CleanupBefore(ctx, time.Now().UTC().Add(-retention))
+		case <-coverageTicker.C:
+			_ = c.coverage.Cleanup(ctx)
 		}
 	}
 }

@@ -2,6 +2,7 @@ package market
 
 import (
 	"encoding/json"
+	"math"
 	"path/filepath"
 	"testing"
 	"time"
@@ -67,6 +68,21 @@ func TestDecimalJSON(t *testing.T) {
 	}
 }
 
+func TestDecimalNegativeRoundingAndRange(t *testing.T) {
+	if got := DecimalFromFloat(-1.5000005); got != -1_500_001 {
+		t.Fatalf("negative rounding=%d", got)
+	}
+	if got, err := DecimalFromString("-1.5000005"); err != nil || got != -1_500_001 {
+		t.Fatalf("string negative rounding=%d err=%v", got, err)
+	}
+	if _, err := DecimalFromString("9223372036854.775808"); err == nil {
+		t.Fatal("expected Decimal64 overflow")
+	}
+	if got := DecimalFromFloat(float64(math.MaxInt32)); got <= 0 {
+		t.Fatalf("unexpected in-range conversion %d", got)
+	}
+}
+
 func TestMultiMarketNormalizationDefaults(t *testing.T) {
 	base := DatasetSpec{Interval: "1m", From: time.Now().Add(-time.Hour), To: time.Now()}
 	tests := []struct {
@@ -80,6 +96,8 @@ func TestMultiMarketNormalizationDefaults(t *testing.T) {
 		{"600519.sh", "600519.SH", RegularSession, ForwardAdjusted},
 		{"000001.sz", "000001.SZ", RegularSession, ForwardAdjusted},
 		{"btcusdt.binance", "BTCUSDT.BINANCE", ContinuousSession, Raw},
+		{"BRK.B", "BRK.B", RegularSession, SplitAdjusted},
+		{"BF.B.US", "BF.B", RegularSession, SplitAdjusted},
 	}
 	for _, test := range tests {
 		spec := base

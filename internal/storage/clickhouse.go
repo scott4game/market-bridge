@@ -232,7 +232,6 @@ WHERE active AND database=%s AND table='kline_1m' GROUP BY partition_id FORMAT J
 		return 0, err
 	}
 	defer resp.Close()
-	type partition struct{ ID, MaxTime string }
 	var expired []string
 	decoder := json.NewDecoder(resp)
 	for decoder.More() {

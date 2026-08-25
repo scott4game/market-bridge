@@ -2,6 +2,7 @@ package provider
 
 import (
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/scott4game/market-bridge/internal/market"
@@ -19,9 +20,9 @@ func aggregateBars(input []market.Bar, target string, factor int, location *time
 	var output []market.Bar
 	var bucket []market.Bar
 	lastSymbol, lastKey := "", ""
-	flush := func() {
+	flush := func() error {
 		if len(bucket) == 0 {
-			return
+			return nil
 		}
 		bar := bucket[0]
 		bar.Close = bucket[len(bucket)-1].Close
@@ -46,6 +47,9 @@ func aggregateBars(input []market.Bar, target string, factor int, location *time
 				}
 			}
 			if item.Turnover != nil {
+				if (*item.Turnover > 0 && turnover > market.Decimal(math.MaxInt64)-*item.Turnover) || (*item.Turnover < 0 && turnover < market.Decimal(math.MinInt64)-*item.Turnover) {
+					return fmt.Errorf("turnover overflow while aggregating %s", item.Symbol)
+				}
 				turnover += *item.Turnover
 				hasTurnover = true
 			}
@@ -62,6 +66,7 @@ func aggregateBars(input []market.Bar, target string, factor int, location *time
 		}
 		output = append(output, bar)
 		bucket = nil
+		return nil
 	}
 	for _, bar := range input {
 		local := bar.Timestamp.In(location)
@@ -70,11 +75,15 @@ func aggregateBars(input []market.Bar, target string, factor int, location *time
 			key = fmt.Sprintf("%04d", local.Year())
 		}
 		if bar.Symbol != lastSymbol || key != lastKey || len(bucket) == factor {
-			flush()
+			if err := flush(); err != nil {
+				return nil, err
+			}
 		}
 		lastSymbol, lastKey = bar.Symbol, key
 		bucket = append(bucket, bar)
 	}
-	flush()
+	if err := flush(); err != nil {
+		return nil, err
+	}
 	return output, nil
 }

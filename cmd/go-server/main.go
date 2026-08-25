@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	lbconfig "github.com/longbridge/openapi-go/config"
 	lbquote "github.com/longbridge/openapi-go/quote"
 	"github.com/scott4game/market-bridge/internal/access"
 	"github.com/scott4game/market-bridge/internal/config"
@@ -33,6 +34,8 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		log.Fatal(err)
 	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 	var usage *provider.UsageTracker
 	var usProvider provider.Provider
 	switch cfg.Provider {
@@ -51,8 +54,11 @@ func main() {
 	longbridgeNeeded := cfg.LongbridgeHistoryEnabled || contains(liveProviders, "longbridge")
 	var longbridgeQuote *lbquote.QuoteContext
 	if longbridgeNeeded {
-		var err error
-		longbridgeQuote, err = lbquote.NewFormEnv()
+		longbridgeConfig, err := lbconfig.New()
+		if err != nil {
+			log.Fatal(err)
+		}
+		longbridgeQuote, err = lbquote.NewFromCfg(longbridgeConfig)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -78,6 +84,10 @@ func main() {
 		log.Fatal(err)
 	}
 	defer auth.Close()
+	go auth.RunCleanup(ctx)
+	if usage != nil {
+		go usage.RunCleanup(ctx)
+	}
 	if !auth.HasCredential(context.Background()) {
 		log.Fatal("no active API key: set GO_SERVER_TOKEN or create a user key with go-server admin")
 	}
@@ -85,7 +95,7 @@ func main() {
 	if cfg.BearerToken != "" {
 		log.Printf("legacy admin credential enabled via GO_SERVER_TOKEN; migrate clients to personal API keys")
 	}
-	store, err := marketserver.NewStoreWithOptions(cfg.DataDir, p, cfg.DatasetWorkers, cfg.DatasetQueueSize)
+	store, err := marketserver.NewStoreWithBuildOptions(ctx, cfg.DataDir, p, cfg.DatasetWorkers, cfg.DatasetQueueSize, cfg.DatasetBuildTimeout)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -110,13 +120,12 @@ func main() {
 		}
 		source = multiSource
 	}
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
 	historyCatalog, err := marketserver.OpenHistoryCatalog(filepath.Join(cfg.DataDir, "market-history.db"))
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer historyCatalog.Close()
+	go historyCatalog.RunCleanup(ctx)
 	go store.RunCleanup(ctx, cfg.DatasetTTL)
 	var sink live.Sink = live.NopSink{}
 	var clickhouse *storage.ClickHouseSink
@@ -161,7 +170,6 @@ func main() {
 		log.Fatal(err)
 	}
 	hub.ConfigureAccess(auth, limiter)
-	hub.MarkConnected()
 	go hub.Run(ctx)
 	providerStatus := func() any {
 		status := hub.ProviderStatus()
@@ -192,7 +200,17 @@ func main() {
 		status["massive"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[cfg.Provider == "massive"], "plan": cfg.MassivePlanName}
 		return status
 	}
-	srv := &http.Server{Addr: cfg.Listen, Handler: (&marketserver.HTTP{Store: store, Token: cfg.BearerToken, Access: auth, Limiter: limiter, Watchlist: cfg.Watchlist, Live: hub, Usage: usage, ProviderStatus: providerStatus, ClickHouseEnabled: cfg.ClickHouseEnabled, ClickHouse: clickhouse, HistoryCatalog: historyCatalog, DataVersion: cfg.DataVersion}).Handler()}
+	var historicalClickHouse marketserver.HistoricalClickHouse
+	if clickhouse != nil {
+		historicalClickHouse = clickhouse
+	}
+	srv := &http.Server{
+		Addr:              cfg.Listen,
+		Handler:           (&marketserver.HTTP{Store: store, Token: cfg.BearerToken, Access: auth, Limiter: limiter, Watchlist: cfg.Watchlist, Live: hub, Usage: usage, ProviderStatus: providerStatus, ClickHouseEnabled: cfg.ClickHouseEnabled, ClickHouse: historicalClickHouse, HistoryCatalog: historyCatalog, DataVersion: cfg.DataVersion, EmptyCoverageTTL: cfg.EmptyCoverageTTL}).Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    1 << 20,
+	}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)

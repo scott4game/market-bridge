@@ -46,7 +46,7 @@ func TestServerFromEnv(t *testing.T) {
 }
 
 func TestServerClickHouseOptInValidation(t *testing.T) {
-	t.Setenv("GO_SERVER_CLICKHOUSE_ENABLED", "true")
+	t.Setenv("GO_SERVER_CLICKHOUSE_ENABLED", "TRUE")
 	t.Setenv("CLICKHOUSE_URL", "")
 	if err := ServerFromEnv().Validate(); err == nil || !strings.Contains(err.Error(), "CLICKHOUSE_URL") {
 		t.Fatalf("expected missing URL error, got %v", err)

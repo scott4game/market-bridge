@@ -98,6 +98,7 @@ func Open(path, legacyToken string) (*Store, error) {
 		`CREATE TABLE IF NOT EXISTS user_indicators (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), kind TEXT NOT NULL CHECK(kind IN ('template','personal')), template_key TEXT, name TEXT NOT NULL, pane TEXT NOT NULL CHECK(pane IN ('main','sub')), formula TEXT NOT NULL, parameters_json TEXT NOT NULL DEFAULT '[]', warnings_json TEXT NOT NULL DEFAULT '[]', enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, UNIQUE(user_id,template_key))`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS user_indicators_name ON user_indicators(user_id,name COLLATE NOCASE)`,
 		`CREATE INDEX IF NOT EXISTS user_indicators_user_order ON user_indicators(user_id,sort_order,name)`,
+		`CREATE TABLE IF NOT EXISTS user_indicator_seed (user_id TEXT PRIMARY KEY REFERENCES users(id), template_version INTEGER NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS usage_daily (user_id TEXT NOT NULL, local_date TEXT NOT NULL, requests INTEGER NOT NULL DEFAULT 0, datasets INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(user_id,local_date))`,
 		`CREATE TABLE IF NOT EXISTS audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at INTEGER NOT NULL, request_id TEXT NOT NULL, user_id TEXT NOT NULL, key_id TEXT NOT NULL, method TEXT NOT NULL, route TEXT NOT NULL, status INTEGER NOT NULL, duration_ms INTEGER NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS audit_events_time ON audit_events(occurred_at)`,
@@ -398,9 +399,35 @@ func (s *Store) RecordRequest(ctx context.Context, p Principal, requestID, metho
 		datasets = 1
 	}
 	date := time.Now().Format("2006-01-02")
-	_, _ = s.db.ExecContext(ctx, `INSERT INTO usage_daily(user_id,local_date,requests,datasets,failures) VALUES(?,?,?,?,?) ON CONFLICT(user_id,local_date) DO UPDATE SET requests=requests+1,datasets=datasets+excluded.datasets,failures=failures+excluded.failures`, p.UserID, date, 1, datasets, failure)
-	_, _ = s.db.ExecContext(ctx, `INSERT INTO audit_events(occurred_at,request_id,user_id,key_id,method,route,status,duration_ms) VALUES(?,?,?,?,?,?,?,?)`, time.Now().Unix(), requestID, p.UserID, p.KeyID, method, route, status, duration.Milliseconds())
-	_, _ = s.db.ExecContext(ctx, `DELETE FROM audit_events WHERE occurred_at<?`, time.Now().Add(-30*24*time.Hour).Unix())
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO usage_daily(user_id,local_date,requests,datasets,failures) VALUES(?,?,?,?,?) ON CONFLICT(user_id,local_date) DO UPDATE SET requests=requests+1,datasets=datasets+excluded.datasets,failures=failures+excluded.failures`, p.UserID, date, 1, datasets, failure); err == nil {
+		_, err = tx.ExecContext(ctx, `INSERT INTO audit_events(occurred_at,request_id,user_id,key_id,method,route,status,duration_ms) VALUES(?,?,?,?,?,?,?,?)`, time.Now().Unix(), requestID, p.UserID, p.KeyID, method, route, status, duration.Milliseconds())
+	}
+	if err != nil {
+		_ = tx.Rollback()
+		return
+	}
+	_ = tx.Commit()
+}
+
+func (s *Store) RunCleanup(ctx context.Context) {
+	cleanup := func() {
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM audit_events WHERE occurred_at<?`, time.Now().Add(-30*24*time.Hour).Unix())
+	}
+	cleanup()
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cleanup()
+		}
+	}
 }
 
 func (s *Store) HasCredential(ctx context.Context) bool {

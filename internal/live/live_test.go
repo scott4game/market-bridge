@@ -3,6 +3,7 @@ package live
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -44,5 +45,20 @@ func TestMockHubWebSocket(t *testing.T) {
 	}
 	if event.Type != market.BarEvent || event.Symbol != "AAPL" || event.Bar == nil {
 		t.Fatalf("unexpected event: %#v", event)
+	}
+}
+
+func TestHubRejectsCrossOriginWebSocket(t *testing.T) {
+	hub, err := NewHub(MockSource{}, NopSink{}, []string{"AAPL"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(hub)
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, response, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), &websocket.DialOptions{HTTPHeader: http.Header{"Origin": []string{"https://evil.example"}}})
+	if err == nil || response == nil || response.StatusCode != http.StatusForbidden {
+		t.Fatalf("err=%v response=%v", err, response)
 	}
 }

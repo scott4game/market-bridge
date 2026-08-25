@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -102,7 +103,7 @@ type Massive struct {
 func (m *Massive) Name() string { return "massive" }
 func (m *Massive) DataVersion() string {
 	if m.Version == "" {
-		return time.Now().UTC().Format("2006-01-02")
+		return "massive-v1"
 	}
 	return m.Version
 }
@@ -126,13 +127,31 @@ func (m *Massive) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.B
 	if baseURL == "" {
 		baseURL = "https://api.massive.com"
 	}
+	base, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid Massive base URL: %w", err)
+	}
 	var bars []market.Bar
 	for _, symbol := range spec.Symbols {
 		next := fmt.Sprintf("%s/v2/aggs/ticker/%s/range/%d/%s/%d/%d", baseURL, url.PathEscape(symbol), multiplier, span, spec.From.UnixMilli(), spec.To.Add(-time.Millisecond).UnixMilli())
+		visited := map[string]struct{}{}
+		pages := 0
 		for next != "" {
 			u, err := url.Parse(next)
 			if err != nil {
 				return nil, err
+			}
+			if u.Scheme != base.Scheme || !strings.EqualFold(u.Host, base.Host) {
+				return nil, fmt.Errorf("massive: rejected cross-origin next_url %q", next)
+			}
+			canonical := u.String()
+			if _, ok := visited[canonical]; ok {
+				return nil, fmt.Errorf("massive: pagination cycle at %q", canonical)
+			}
+			visited[canonical] = struct{}{}
+			pages++
+			if pages > 10_000 {
+				return nil, fmt.Errorf("massive: pagination exceeded 10000 pages")
 			}
 			q := u.Query()
 			q.Set("apiKey", m.APIKey)
@@ -149,6 +168,24 @@ func (m *Massive) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.B
 			if err != nil {
 				finish(0, err)
 				return nil, err
+			}
+			if resp.StatusCode/100 != 2 {
+				body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+				resp.Body.Close()
+				if readErr != nil {
+					finish(resp.StatusCode, readErr)
+					return nil, readErr
+				}
+				finish(resp.StatusCode, nil)
+				var failure struct {
+					Error string `json:"error"`
+				}
+				_ = json.Unmarshal(body, &failure)
+				message := strings.TrimSpace(string(body))
+				if failure.Error != "" {
+					message = failure.Error
+				}
+				return nil, fmt.Errorf("massive: status %d: %s", resp.StatusCode, message)
 			}
 			var payload struct {
 				Status  string `json:"status"`
@@ -170,9 +207,6 @@ func (m *Massive) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.B
 				return nil, err
 			}
 			finish(resp.StatusCode, nil)
-			if resp.StatusCode/100 != 2 {
-				return nil, fmt.Errorf("massive: status %d: %s", resp.StatusCode, payload.Error)
-			}
 			for _, x := range payload.Results {
 				ts := time.UnixMilli(x.T).UTC()
 				bars = append(bars, market.Bar{Symbol: symbol, Timestamp: ts, Open: market.DecimalFromFloat(x.O), High: market.DecimalFromFloat(x.H), Low: market.DecimalFromFloat(x.L), Close: market.DecimalFromFloat(x.C), Volume: int64(x.V), Session: spec.Session, Source: "massive", Completed: true})

@@ -22,8 +22,11 @@ import (
 type Store struct {
 	root     string
 	provider provider.Provider
+	ctx      context.Context
+	timeout  time.Duration
 	mu       sync.RWMutex
 	tasks    map[string]market.DatasetStatus
+	failedAt map[string]time.Time
 	queue    chan buildJob
 	active   map[string]int
 }
@@ -47,6 +50,10 @@ func NewStore(root string, p provider.Provider) (*Store, error) {
 }
 
 func NewStoreWithOptions(root string, p provider.Provider, workers, queueSize int) (*Store, error) {
+	return NewStoreWithBuildOptions(context.Background(), root, p, workers, queueSize, 10*time.Minute)
+}
+
+func NewStoreWithBuildOptions(ctx context.Context, root string, p provider.Provider, workers, queueSize int, timeout time.Duration) (*Store, error) {
 	if err := os.MkdirAll(filepath.Join(root, "datasets"), 0o755); err != nil {
 		return nil, err
 	}
@@ -56,7 +63,13 @@ func NewStoreWithOptions(root string, p provider.Provider, workers, queueSize in
 	if queueSize < 1 {
 		queueSize = 1
 	}
-	s := &Store{root: root, provider: p, tasks: map[string]market.DatasetStatus{}, queue: make(chan buildJob, queueSize), active: map[string]int{}}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if timeout <= 0 {
+		timeout = 10 * time.Minute
+	}
+	s := &Store{root: root, provider: p, ctx: ctx, timeout: timeout, tasks: map[string]market.DatasetStatus{}, failedAt: map[string]time.Time{}, queue: make(chan buildJob, queueSize), active: map[string]int{}}
 	entries, _ := os.ReadDir(filepath.Join(root, "datasets"))
 	for _, entry := range entries {
 		if entry.IsDir() && strings.HasSuffix(entry.Name(), ".building") {
@@ -95,8 +108,12 @@ func (s *Store) EnsureForAdmission(ctx context.Context, spec market.DatasetSpec,
 	}
 	s.mu.Lock()
 	if status, ok := s.tasks[id]; ok {
-		s.mu.Unlock()
-		return status, nil
+		if status.State != "failed" {
+			s.mu.Unlock()
+			return status, nil
+		}
+		delete(s.tasks, id)
+		delete(s.failedAt, id)
 	}
 	if admit != nil && !admit() {
 		s.mu.Unlock()
@@ -116,6 +133,9 @@ func (s *Store) EnsureForAdmission(ctx context.Context, spec market.DatasetSpec,
 		s.mu.Lock()
 		delete(s.tasks, id)
 		s.active[userID]--
+		if s.active[userID] <= 0 {
+			delete(s.active, userID)
+		}
 		s.mu.Unlock()
 		return market.DatasetStatus{}, ErrBuildQueueFull
 	}
@@ -129,6 +149,7 @@ func (s *Store) worker() {
 				if recovered := recover(); recovered != nil {
 					s.mu.Lock()
 					s.tasks[job.id] = market.DatasetStatus{DatasetID: job.id, State: "failed", Error: fmt.Sprintf("dataset worker panic: %v", recovered)}
+					s.failedAt[job.id] = time.Now()
 					s.mu.Unlock()
 				}
 				s.mu.Lock()
@@ -138,7 +159,9 @@ func (s *Store) worker() {
 				}
 				s.mu.Unlock()
 			}()
-			s.generate(context.Background(), job.id, job.spec)
+			buildCtx, cancel := context.WithTimeout(s.ctx, s.timeout)
+			defer cancel()
+			s.generate(buildCtx, job.id, job.spec)
 		}()
 	}
 }
@@ -171,6 +194,7 @@ func (s *Store) SyncRecentUniverse(ctx context.Context, writer HistoricalBarWrit
 	}
 	from, to := time.Now().UTC().AddDate(0, 0, -days), time.Now().UTC()
 	failed := 0
+	wrote := false
 	var firstFailure error
 	for index, symbol := range symbols {
 		_, venue, err := market.NormalizeSymbol(symbol)
@@ -194,16 +218,18 @@ func (s *Store) SyncRecentUniverse(ctx context.Context, writer HistoricalBarWrit
 			}
 			continue
 		}
-		if err := writer.WriteBars(ctx, adjustment, bars, uint64(time.Now().UnixMilli())+uint64(index)); err != nil {
-			failed++
-			if firstFailure == nil {
-				firstFailure = fmt.Errorf("write %s: %w", symbol, err)
+		if len(bars) > 0 {
+			if err := writer.WriteBars(ctx, adjustment, bars, uint64(time.Now().UnixMilli())+uint64(index)); err != nil {
+				failed++
+				if firstFailure == nil {
+					firstFailure = fmt.Errorf("write %s: %w", symbol, err)
+				}
+				continue
 			}
-			continue
+			wrote = true
 		}
 		if catalog != nil {
-			coverageKey, _ := spec.Hash(market.SchemaVersion, "server-clickhouse:"+dataVersion)
-			if err := catalog.RecordCoverage(ctx, coverageKey); err != nil {
+			if err := catalog.RecordCoverage(ctx, spec, dataVersion, bars, 15*time.Minute); err != nil {
 				failed++
 				if firstFailure == nil {
 					firstFailure = fmt.Errorf("record %s coverage: %w", symbol, err)
@@ -212,7 +238,7 @@ func (s *Store) SyncRecentUniverse(ctx context.Context, writer HistoricalBarWrit
 			}
 		}
 	}
-	if catalog != nil {
+	if catalog != nil && wrote {
 		_, err = catalog.Bump(ctx)
 		if err != nil {
 			return err
@@ -263,10 +289,15 @@ func (s *Store) generate(ctx context.Context, id string, spec market.DatasetSpec
 	fail := func(err error) {
 		s.mu.Lock()
 		s.tasks[id] = market.DatasetStatus{DatasetID: id, State: "failed", Error: err.Error()}
+		s.failedAt[id] = time.Now()
 		s.mu.Unlock()
 	}
 	bars, err := s.provider.Bars(ctx, spec)
 	if err != nil {
+		fail(err)
+		return
+	}
+	if err := ctx.Err(); err != nil {
 		fail(err)
 		return
 	}
@@ -277,6 +308,7 @@ func (s *Store) generate(ctx context.Context, id string, spec market.DatasetSpec
 	}
 	tmp := filepath.Join(s.root, "datasets", id+".building")
 	_ = os.RemoveAll(tmp)
+	defer os.RemoveAll(tmp)
 	if err := os.MkdirAll(filepath.Join(tmp, "files"), 0o755); err != nil {
 		fail(err)
 		return
@@ -293,6 +325,10 @@ func (s *Store) generate(ctx context.Context, id string, spec market.DatasetSpec
 	}
 	m := market.Manifest{DatasetID: id, Spec: spec, Provider: description.Name, SchemaVersion: market.SchemaVersion, DataVersion: description.DataVersion, GeneratedAt: time.Now().UTC()}
 	for _, name := range names {
+		if err := ctx.Err(); err != nil {
+			fail(err)
+			return
+		}
 		rows := groups[name]
 		path := filepath.Join(tmp, "files", filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -314,6 +350,10 @@ func (s *Store) generate(ctx context.Context, id string, spec market.DatasetSpec
 		m.Partitions = append(m.Partitions, market.Partition{Name: name, Symbol: rows[0].Symbol, Year: from.Year(), Rows: len(rows), From: from, To: to, SHA256: hex.EncodeToString(sum[:]), SizeBytes: info.Size()})
 	}
 	b, _ := json.MarshalIndent(m, "", "  ")
+	if err := ctx.Err(); err != nil {
+		fail(err)
+		return
+	}
 	if err := os.WriteFile(filepath.Join(tmp, "manifest.json"), b, 0o644); err != nil {
 		fail(err)
 		return
@@ -326,14 +366,12 @@ func (s *Store) generate(ctx context.Context, id string, spec market.DatasetSpec
 		}
 	}
 	s.mu.Lock()
-	s.tasks[id] = market.DatasetStatus{DatasetID: id, State: "ready"}
+	delete(s.tasks, id)
+	delete(s.failedAt, id)
 	s.mu.Unlock()
 }
 
 func (s *Store) RunCleanup(ctx context.Context, ttl time.Duration) {
-	if ttl <= 0 {
-		return
-	}
 	ticker := time.NewTicker(time.Hour)
 	defer ticker.Stop()
 	for {
@@ -341,7 +379,10 @@ func (s *Store) RunCleanup(ctx context.Context, ttl time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.prune(ttl)
+			s.cleanupFailed()
+			if ttl > 0 {
+				s.prune(ttl)
+			}
 		}
 	}
 }
@@ -365,5 +406,16 @@ func (s *Store) prune(ttl time.Duration) {
 		s.mu.Lock()
 		delete(s.tasks, entry.Name())
 		s.mu.Unlock()
+	}
+}
+
+func (s *Store) cleanupFailed() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, failedAt := range s.failedAt {
+		if failedAt.Before(time.Now().Add(-time.Hour)) {
+			delete(s.failedAt, id)
+			delete(s.tasks, id)
+		}
 	}
 }

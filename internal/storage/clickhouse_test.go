@@ -36,12 +36,15 @@ func TestClickHouseSchemaAndBarInsert(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(600 * time.Millisecond)
+	if _, err := sink.QueryBars(ctx, market.DatasetSpec{Symbols: []string{"AAPL"}, Interval: "1m", From: event.Bar.Timestamp, To: event.Bar.Timestamp.Add(time.Minute), Session: market.RegularSession, Adjustment: market.Raw}); err != nil {
+		t.Fatal(err)
+	}
 	cancel()
 	time.Sleep(20 * time.Millisecond)
 	mu.Lock()
 	joined := strings.Join(queries, "\n")
 	mu.Unlock()
-	if !strings.Contains(joined, "TTL timestamp + INTERVAL 1 YEAR") || !strings.Contains(joined, "CREATE TABLE IF NOT EXISTS market.kline_1m") || !strings.Contains(joined, "PARTITION BY (market, toDate(timestamp))") || !strings.Contains(joined, "INSERT INTO market.bars") || !strings.Contains(joined, "123.450000") {
+	if !strings.Contains(joined, "TTL timestamp + INTERVAL 1 YEAR") || !strings.Contains(joined, "CREATE TABLE IF NOT EXISTS market.kline_1m") || !strings.Contains(joined, "PARTITION BY (market, toDate(timestamp))") || !strings.Contains(joined, "INSERT INTO market.bars") || !strings.Contains(joined, "123.450000") || !strings.Contains(joined, `"adjustment":"raw"`) || !strings.Contains(joined, "adjustment='raw'") {
 		t.Fatalf("missing schema or insert: %s", joined)
 	}
 }

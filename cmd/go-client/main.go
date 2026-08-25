@@ -41,7 +41,11 @@ func main() {
 		}
 		go clickhouse.Run(ctx)
 	}
-	cache, err := localclient.NewCacheWithClickHouse(cfg, clickhouse)
+	var historicalClickHouse localclient.HistoricalClickHouse
+	if clickhouse != nil {
+		historicalClickHouse = clickhouse
+	}
+	cache, err := localclient.NewCacheWithClickHouse(cfg, historicalClickHouse)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -55,7 +59,7 @@ func main() {
 		}
 		live := localclient.NewLiveProxy(cfg, cache)
 		go live.Run(ctx)
-		srv := &http.Server{Addr: cfg.Listen, Handler: (&localclient.HTTP{Cache: cache, Live: live}).Handler()}
+		srv := &http.Server{Addr: cfg.Listen, Handler: (&localclient.HTTP{Cache: cache, Live: live}).Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 1 << 20}
 		go func() {
 			<-ctx.Done()
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
