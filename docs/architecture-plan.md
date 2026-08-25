@@ -256,7 +256,7 @@ type DatasetSpec struct {
 - 时间统一转换为 UTC。
 - 默认周期为 `1m`。
 - 默认交易时段为 `regular`。
-- 默认调整模式为 `split_adjusted`。
+- API 的 `auto` 按市场解析：美股为 `split_adjusted`，港股/A 股为 `forward_adjusted`，Binance 为 `raw`。浏览器页面会对美股显式请求 `forward_adjusted`。
 
 ### Bar
 
@@ -278,7 +278,9 @@ type Bar struct {
 
 价格使用定点十进制表示，JSON 中编码为字符串，避免浮点误差。上游未提供的字段保持为空，不使用推测值补齐。
 
-Massive 的 `adjusted` 只表示拆股调整，因此当前模型使用 `raw` 和 `split_adjusted`，不将其描述为包含股息的完整复权。
+Massive 的 `adjusted=true` 只表示拆股调整。模型同时保留 `raw`、`split_adjusted` 和 `forward_adjusted`：美股前复权从拆股调整行情出发，将每次分红的历史调整因子从新到旧连乘，并只修改除息日前 OHLC；成交量沿用拆股调整数量，现金分红不修改 turnover。周、月、年线先逐日复权，再按纽约 ISO 周、自然月和自然年聚合。
+
+ClickHouse 只保存 `split_adjusted` 的规范化一分钟美股母数据，美股 QFQ 在读取时动态生成。Schema 和缓存语义版本为 v2；QFQ Redis、Parquet 和服务端 dataset 的身份包含因子版本，因此公司行动曲线变化后不会复用旧结果。因子接口由 `history:read` 权限保护，go-client 将曲线缓存到下一个纽约自然日。旧缓存由新身份自动停止命中并按 TTL 清理，不要求清空 ClickHouse 数据。
 
 ### LiveEvent
 

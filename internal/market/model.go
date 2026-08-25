@@ -207,7 +207,7 @@ func IsUSForwardAdjusted(spec DatasetSpec) bool {
 // SemanticDataVersion keeps forward-adjusted caches current as Massive's
 // corporate-action factors are refreshed daily. Other adjustment modes retain
 // their stable cache identity.
-func SemanticDataVersion(spec DatasetSpec, base string, now time.Time) string {
+func SemanticDataVersion(spec DatasetSpec, base string, now time.Time, factorVersions ...string) string {
 	if !IsUSForwardAdjusted(spec) {
 		return base
 	}
@@ -215,7 +215,12 @@ func SemanticDataVersion(spec DatasetSpec, base string, now time.Time) string {
 	if err != nil {
 		location = time.FixedZone("America/New_York", -5*60*60)
 	}
-	return base + ":us-qfq-v1:" + now.In(location).Format("2006-01-02")
+	sort.Strings(factorVersions)
+	version := base + ":us-qfq-v2:" + now.In(location).Format("2006-01-02")
+	if len(factorVersions) > 0 {
+		version += ":" + strings.Join(factorVersions, "+")
+	}
+	return version
 }
 
 func (s DatasetSpec) Hash(schemaVersion, dataVersion string) (string, error) {

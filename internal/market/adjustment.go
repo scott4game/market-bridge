@@ -10,8 +10,8 @@ import (
 )
 
 // ForwardFactor is a cumulative multiplicative price factor effective for bars
-// strictly before EffectiveDate. Massive publishes these factors on the same
-// basis used by its dividend corporate-action endpoint.
+// strictly before EffectiveDate. Provider adapters convert per-event upstream
+// factors into this cumulative representation.
 type ForwardFactor struct {
 	EffectiveDate string  `json:"effective_date"`
 	Factor        Decimal `json:"factor"`
@@ -74,6 +74,25 @@ func NormalizeForwardFactors(curve ForwardFactors) (ForwardFactors, error) {
 		}
 	}
 	sort.Slice(curve.Factors, func(i, j int) bool { return curve.Factors[i].EffectiveDate < curve.Factors[j].EffectiveDate })
+	return curve, nil
+}
+
+// AccumulateForwardFactors converts per-event factors into the cumulative
+// curve consumed by ApplyForwardFactors. Each returned factor includes that
+// event and every later event in the response.
+func AccumulateForwardFactors(curve ForwardFactors) (ForwardFactors, error) {
+	curve, err := NormalizeForwardFactors(curve)
+	if err != nil {
+		return curve, err
+	}
+	cumulative := Decimal(decimalScale)
+	for index := len(curve.Factors) - 1; index >= 0; index-- {
+		cumulative, err = multiplyDecimal(cumulative, curve.Factors[index].Factor)
+		if err != nil {
+			return curve, fmt.Errorf("accumulate adjustment factor for %s: %w", curve.Factors[index].EffectiveDate, err)
+		}
+		curve.Factors[index].Factor = cumulative
+	}
 	return curve, nil
 }
 

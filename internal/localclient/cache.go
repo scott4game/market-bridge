@@ -41,6 +41,13 @@ type Cache struct {
 	capabilityStale bool
 	capabilityError string
 	coverage        *coverage.Store
+	factorMu        sync.Mutex
+	factorCache     map[string]cachedForwardFactors
+}
+
+type cachedForwardFactors struct {
+	curve     market.ForwardFactors
+	expiresAt time.Time
 }
 
 type HistoricalClickHouse interface {
@@ -108,7 +115,7 @@ func NewCacheWithClickHouse(cfg config.Client, clickhouse HistoricalClickHouse) 
 		db.Close()
 		return nil, err
 	}
-	c := &Cache{cfg: cfg, db: db, http: &http.Client{Timeout: 2 * time.Minute}, inflight: map[string]*flight{}, active: map[string]int{}, datasetLocks: map[string]*datasetGuard{}, clickhouse: clickhouse, coverage: coverageStore}
+	c := &Cache{cfg: cfg, db: db, http: &http.Client{Timeout: 2 * time.Minute}, inflight: map[string]*flight{}, active: map[string]int{}, datasetLocks: map[string]*datasetGuard{}, clickhouse: clickhouse, coverage: coverageStore, factorCache: map[string]cachedForwardFactors{}}
 	if cfg.RedisEnabled {
 		c.redis = redis.NewClient(&redis.Options{Addr: cfg.RedisAddress, Username: cfg.RedisUsername, Password: cfg.RedisPassword, DB: cfg.RedisDB, DialTimeout: 300 * time.Millisecond, ReadTimeout: 500 * time.Millisecond, WriteTimeout: 500 * time.Millisecond})
 	}
@@ -178,7 +185,11 @@ func (c *Cache) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar
 }
 
 func (c *Cache) legacyBars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar, string, error) {
-	key, err := spec.Hash(market.SchemaVersion, market.SemanticDataVersion(spec, "request", time.Now()))
+	version, err := c.semanticCacheVersion(ctx, spec, "request")
+	if err != nil {
+		return nil, "", err
+	}
+	key, err := spec.Hash(market.SchemaVersion, version)
 	if err != nil {
 		return nil, "", err
 	}
@@ -275,7 +286,10 @@ func (c *Cache) routedBars(ctx context.Context, spec market.DatasetSpec, capabil
 
 func (c *Cache) recentBars(ctx context.Context, spec market.DatasetSpec, capability StorageCapability) ([]market.Bar, string, error) {
 	if spec.Interval != "1m" {
-		version := market.SemanticDataVersion(spec, "provider-recent:"+capability.DataVersion, time.Now())
+		version, err := c.semanticCacheVersion(ctx, spec, "provider-recent:"+capability.DataVersion)
+		if err != nil {
+			return nil, "", err
+		}
 		key, _ := spec.Hash(market.SchemaVersion, version)
 		if bars, ok := c.redisBars(ctx, "recent:"+key); ok {
 			return bars, "redis", nil
@@ -293,7 +307,10 @@ func (c *Cache) recentBars(ctx context.Context, spec market.DatasetSpec, capabil
 		mode = "server-clickhouse"
 		version = fmt.Sprintf("%s:%d", capability.DataVersion, capability.HistoryRevision)
 	}
-	cacheVersion := market.SemanticDataVersion(spec, mode+":"+version, time.Now())
+	cacheVersion, err := c.semanticCacheVersion(ctx, spec, mode+":"+version)
+	if err != nil {
+		return nil, "", err
+	}
 	key, _ := spec.Hash(market.SchemaVersion, cacheVersion)
 	if bars, ok := c.redisBars(ctx, "recent:"+key); ok {
 		return bars, "redis", nil
@@ -388,7 +405,10 @@ func (c *Cache) archiveBars(ctx context.Context, spec market.DatasetSpec, dataVe
 		}
 		chunk := spec
 		chunk.From, chunk.To = start, next
-		version := market.SemanticDataVersion(chunk, "provider-archive:"+dataVersion, time.Now())
+		version, err := c.semanticCacheVersion(ctx, chunk, "provider-archive:"+dataVersion)
+		if err != nil {
+			return nil, "", err
+		}
 		key, _ := chunk.Hash(market.SchemaVersion, version)
 		cached, ok := c.redisBars(ctx, "archive:"+key)
 		if !ok {
@@ -418,19 +438,72 @@ func (c *Cache) forwardAdjustBars(ctx context.Context, spec market.DatasetSpec, 
 	if err != nil {
 		return nil, err
 	}
+	curves, err := c.forwardFactorCurves(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	return market.ApplyForwardFactors(bars, curves, location)
+}
+
+func (c *Cache) semanticCacheVersion(ctx context.Context, spec market.DatasetSpec, base string) (string, error) {
+	if !market.IsUSForwardAdjusted(spec) {
+		return market.SemanticDataVersion(spec, base, time.Now()), nil
+	}
+	curves, err := c.forwardFactorCurves(ctx, spec)
+	if err != nil {
+		return "", err
+	}
+	versions := make([]string, 0, len(spec.Symbols))
+	for _, symbol := range spec.Symbols {
+		versions = append(versions, curves[symbol].Version)
+	}
+	return market.SemanticDataVersion(spec, base, time.Now(), versions...), nil
+}
+
+func (c *Cache) forwardFactorCurves(ctx context.Context, spec market.DatasetSpec) (map[string]market.ForwardFactors, error) {
 	curves := make(map[string]market.ForwardFactors, len(spec.Symbols))
 	for _, symbol := range spec.Symbols {
-		var curve market.ForwardFactors
-		if err := c.getJSON(ctx, "/v1/market-history/adjustments/"+url.PathEscape(symbol), &curve); err != nil {
-			return nil, err
-		}
-		curve, err = market.NormalizeForwardFactors(curve)
+		curve, err := c.forwardFactors(ctx, symbol)
 		if err != nil {
 			return nil, err
 		}
 		curves[symbol] = curve
 	}
-	return market.ApplyForwardFactors(bars, curves, location)
+	return curves, nil
+}
+
+func (c *Cache) forwardFactors(ctx context.Context, symbol string) (market.ForwardFactors, error) {
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return market.ForwardFactors{}, err
+	}
+	now := time.Now().In(location)
+	c.factorMu.Lock()
+	if cached, ok := c.factorCache[symbol]; ok && now.Before(cached.expiresAt) {
+		c.factorMu.Unlock()
+		return cached.curve, nil
+	}
+	c.factorMu.Unlock()
+
+	var curve market.ForwardFactors
+	if err := c.getJSON(ctx, "/v1/market-history/adjustments/"+url.PathEscape(symbol), &curve); err != nil {
+		return market.ForwardFactors{}, err
+	}
+	curve, err = market.NormalizeForwardFactors(curve)
+	if err != nil {
+		return market.ForwardFactors{}, err
+	}
+	if curve.Symbol != symbol || curve.Mode != market.ForwardAdjusted || curve.Version == "" {
+		return market.ForwardFactors{}, fmt.Errorf("invalid forward-adjustment response for %s", symbol)
+	}
+	if _, err := time.Parse("2006-01-02", curve.AsOf); err != nil {
+		return market.ForwardFactors{}, fmt.Errorf("invalid forward-adjustment as_of for %s: %w", symbol, err)
+	}
+	expiresAt := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, location)
+	c.factorMu.Lock()
+	c.factorCache[symbol] = cachedForwardFactors{curve: curve, expiresAt: expiresAt}
+	c.factorMu.Unlock()
+	return curve, nil
 }
 
 func (c *Cache) remoteHistoryBars(ctx context.Context, spec market.DatasetSpec, providerOnly bool) ([]market.Bar, string, error) {

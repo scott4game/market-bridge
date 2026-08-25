@@ -5,13 +5,29 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/scott4game/market-bridge/internal/market"
 	"github.com/scott4game/market-bridge/internal/provider"
 )
 
 type fakeUsageReader struct{ snapshot provider.UsageSnapshot }
+
+type factorProvider struct{ version string }
+
+func (p *factorProvider) Name() string        { return "factor-test" }
+func (p *factorProvider) DataVersion() string { return "bars-v1" }
+func (p *factorProvider) Bars(context.Context, market.DatasetSpec) ([]market.Bar, error) {
+	return nil, nil
+}
+func (p *factorProvider) ForwardAdjustmentFactors(context.Context, string) (market.ForwardFactors, error) {
+	return market.ForwardFactors{
+		Symbol: "SNDK", Mode: market.ForwardAdjusted, AsOf: "2026-08-25", Version: p.version,
+		Factors: []market.ForwardFactor{{EffectiveDate: "2026-08-20", Factor: market.DecimalFromFloat(0.9)}},
+	}, nil
+}
 
 func (f fakeUsageReader) Snapshot(context.Context, string) (provider.UsageSnapshot, error) {
 	return f.snapshot, nil
@@ -49,5 +65,48 @@ func TestMassiveUsageEndpointDisabled(t *testing.T) {
 	(&HTTP{}).Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/providers/massive/usage", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestForwardAdjustmentEndpointIsProtectedAndVersioned(t *testing.T) {
+	p := &factorProvider{version: "factor-v1"}
+	store, err := NewStore(t.TempDir(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := (&HTTP{Store: store, Token: "secret"}).Handler()
+	unauthorized := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/v1/market-history/adjustments/SNDK", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized=%d", unauthorized.Code)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/market-history/adjustments/SNDK", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var curve market.ForwardFactors
+	if err := json.NewDecoder(recorder.Body).Decode(&curve); err != nil {
+		t.Fatal(err)
+	}
+	if curve.Symbol != "SNDK" || curve.AsOf != "2026-08-25" || curve.Version != "factor-v1" || len(curve.Factors) != 1 {
+		t.Fatalf("curve=%+v", curve)
+	}
+
+	now := time.Now()
+	spec := market.DatasetSpec{Symbols: []string{"SNDK"}, Interval: "1d", From: now.Add(-time.Hour), To: now, Session: market.RegularSession, Adjustment: market.ForwardAdjusted}
+	first, err := store.describe(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.version = "factor-v2"
+	second, err := store.describe(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.DataVersion == second.DataVersion || !strings.Contains(first.DataVersion, "factor-v1") || !strings.Contains(second.DataVersion, "factor-v2") {
+		t.Fatalf("first=%q second=%q", first.DataVersion, second.DataVersion)
 	}
 }

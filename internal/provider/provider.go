@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -130,11 +131,10 @@ func (m *Massive) DataVersion() string {
 	return m.Version
 }
 func (m *Massive) Describe(spec market.DatasetSpec) (Description, error) {
-	normalized, err := spec.Normalize()
-	if err != nil {
+	if _, err := spec.Normalize(); err != nil {
 		return Description{}, err
 	}
-	return Description{Name: m.Name(), DataVersion: market.SemanticDataVersion(normalized, m.DataVersion(), time.Now())}, nil
+	return Description{Name: m.Name(), DataVersion: m.DataVersion()}, nil
 }
 
 func (m *Massive) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar, error) {
@@ -150,9 +150,10 @@ func (m *Massive) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.B
 		return nil, fmt.Errorf("load New York timezone: %w", err)
 	}
 	if market.IsUSForwardAdjusted(spec) && strings.EqualFold(m.PlanName, "stocks_basic") {
-		oldest := time.Now().In(location).AddDate(-2, 0, 0)
-		if spec.From.Before(oldest) {
-			return nil, fmt.Errorf("Massive Stocks Basic forward_adjusted history is limited to the most recent two years")
+		now := time.Now().In(location)
+		oldest := time.Date(now.Year()-2, now.Month(), now.Day(), 0, 0, 0, 0, location)
+		if spec.From.In(location).Before(oldest) {
+			return nil, fmt.Errorf("Massive Stocks Basic forward_adjusted history is limited to the most recent two years; upgrade the Massive plan or use split_adjusted")
 		}
 	}
 	target := spec.Interval
@@ -341,6 +342,7 @@ func (m *Massive) ForwardAdjustmentFactors(ctx context.Context, symbol string) (
 	next := baseURL + "/stocks/v1/dividends"
 	visited := map[string]struct{}{}
 	var factors []market.ForwardFactor
+	pages := 0
 	for next != "" {
 		u, parseErr := url.Parse(next)
 		if parseErr != nil {
@@ -353,6 +355,10 @@ func (m *Massive) ForwardAdjustmentFactors(ctx context.Context, symbol string) (
 			return market.ForwardFactors{}, fmt.Errorf("massive dividends: pagination cycle")
 		}
 		visited[u.String()] = struct{}{}
+		pages++
+		if pages > 10_000 {
+			return market.ForwardFactors{}, fmt.Errorf("massive dividends: pagination exceeded 10000 pages")
+		}
 		q := u.Query()
 		q.Set("apiKey", m.APIKey)
 		q.Set("ticker", normalized)
@@ -370,24 +376,37 @@ func (m *Massive) ForwardAdjustmentFactors(ctx context.Context, symbol string) (
 			finish(0, requestErr)
 			return market.ForwardFactors{}, requestErr
 		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+		resp.Body.Close()
+		if readErr != nil {
+			finish(resp.StatusCode, readErr)
+			return market.ForwardFactors{}, readErr
+		}
+		if resp.StatusCode/100 != 2 {
+			finish(resp.StatusCode, nil)
+			var failure struct {
+				Error string `json:"error"`
+			}
+			_ = json.Unmarshal(body, &failure)
+			message := strings.TrimSpace(string(body))
+			if failure.Error != "" {
+				message = failure.Error
+			}
+			return market.ForwardFactors{}, fmt.Errorf("massive dividends: status %d: %s", resp.StatusCode, message)
+		}
 		var payload struct {
 			NextURL string `json:"next_url"`
-			Error   string `json:"error"`
 			Results []struct {
 				Date   string       `json:"ex_dividend_date"`
 				Factor *json.Number `json:"historical_adjustment_factor"`
 			} `json:"results"`
 		}
-		decoder := json.NewDecoder(resp.Body)
+		decoder := json.NewDecoder(bytes.NewReader(body))
 		decoder.UseNumber()
 		decodeErr := decoder.Decode(&payload)
-		resp.Body.Close()
 		finish(resp.StatusCode, decodeErr)
 		if decodeErr != nil {
 			return market.ForwardFactors{}, decodeErr
-		}
-		if resp.StatusCode/100 != 2 {
-			return market.ForwardFactors{}, fmt.Errorf("massive dividends: status %d: %s", resp.StatusCode, payload.Error)
 		}
 		for _, item := range payload.Results {
 			if item.Date == "" || item.Factor == nil {
@@ -402,13 +421,13 @@ func (m *Massive) ForwardAdjustmentFactors(ctx context.Context, symbol string) (
 		next = payload.NextURL
 	}
 	curve := market.ForwardFactors{Symbol: normalized, Mode: market.ForwardAdjusted, AsOf: now.Format("2006-01-02"), Factors: factors}
-	curve, err = market.NormalizeForwardFactors(curve)
+	curve, err = market.AccumulateForwardFactors(curve)
 	if err != nil {
 		return market.ForwardFactors{}, err
 	}
 	raw, _ := json.Marshal(curve.Factors)
 	digest := sha256.Sum256(raw)
-	curve.Version = fmt.Sprintf("massive-qfq-v1:%s:%x", curve.AsOf, digest[:8])
+	curve.Version = fmt.Sprintf("massive-qfq-v2:%s:%x", curve.AsOf, digest[:8])
 	expiresAt := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, location)
 	m.factorMu.Lock()
 	if m.factorCache == nil {

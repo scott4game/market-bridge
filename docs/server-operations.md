@@ -30,15 +30,17 @@ GO_SERVER_LIVE_PROVIDERS=longbridge,binance
 
 ### 1.1 市场代码和默认参数
 
-| 市场 | 示例 | 默认 session | 默认 adjustment |
+| 市场 | 示例 | 默认 session | 页面 / API `auto` adjustment |
 | --- | --- | --- | --- |
-| 美股 | `AAPL` 或 `AAPL.US` | `regular` | `split_adjusted` |
+| 美股 | `AAPL` 或 `AAPL.US` | `regular` | `forward_adjusted` / `split_adjusted` |
 | 港股 | `700.HK` | `regular` | `forward_adjusted` |
 | 沪市 | `600519.SH` | `regular` | `forward_adjusted` |
 | 深市 | `000001.SZ` | `regular` | `forward_adjusted` |
 | Binance Spot | `BTCUSDT.BINANCE` | `continuous` | `raw` |
 
-一个 dataset 不能混合证券与币圈代码；同类证券可以混合，此时未指定复权会安全地回落为 `raw`。创建请求可省略 `session` 和 `adjustment` 让服务按市场推断。
+一个 dataset 不能混合证券与币圈代码。页面对美股显式发送 `forward_adjusted`；API 为兼容已有调用，省略 adjustment 或传 `auto` 时，美股仍解析为 `split_adjusted`。港股/A 股的 `auto` 为 `forward_adjusted`，Binance 为 `raw`。
+
+美股 `regular` 的 `1h/2h/3h/4h` 统一从 Massive 30 分钟母线按纽约时间 `09:30` 锚定聚合，最后不足完整周期的 K 线仍返回。美股 `forward_adjusted` 使用拆股调整行情叠加累计分红因子；Stocks Basic 只支持最近两年，超出范围需升级 Massive 套餐或改用 `split_adjusted`。
 
 ## 2. Docker Compose 运维
 

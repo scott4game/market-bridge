@@ -155,6 +155,12 @@ curl --fail --get 'http://127.0.0.1:17600/v1/bars/SNDK' \
 Massive 的拆股调整行情和累计现金分红因子实现美股连乘前复权。时间边界应与 Futu
 一致，但两家供应商对有效成交的筛选可能不同，因此 OHLC 和成交量不保证逐值相同。
 
+受保护的 `GET /v1/market-history/adjustments/{symbol}` 返回 `symbol`、`mode`、`as_of`、
+`version` 和按 `effective_date` 升序排列的 Decimal `factors`。每条 factor 已包含该日
+及之后公司行动的累计连乘值，只应用于生效日前的 OHLC；因子错误或上游不可用时请求
+会失败，不会静默退回 `split_adjusted`。go-client 缓存曲线至下一个纽约自然日，QFQ
+数据缓存身份同时包含 factor version。
+
 ## 6. 多标的历史 K 线
 
 同一市场、相同周期和时间范围的多标的查询使用：

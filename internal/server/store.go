@@ -36,9 +36,11 @@ type HistoricalBarWriter interface {
 }
 
 type buildJob struct {
-	id     string
-	spec   market.DatasetSpec
-	userID string
+	id           string
+	spec         market.DatasetSpec
+	userID       string
+	providerName string
+	dataVersion  string
 }
 
 var ErrBuildQuota = errors.New("concurrent dataset build quota exceeded")
@@ -95,7 +97,7 @@ func (s *Store) EnsureForAdmission(ctx context.Context, spec market.DatasetSpec,
 	if err != nil {
 		return market.DatasetStatus{}, err
 	}
-	description, err := provider.Describe(s.provider, spec)
+	description, err := s.describe(ctx, spec)
 	if err != nil {
 		return market.DatasetStatus{}, err
 	}
@@ -128,7 +130,7 @@ func (s *Store) EnsureForAdmission(ctx context.Context, spec market.DatasetSpec,
 	s.active[userID]++
 	s.mu.Unlock()
 	select {
-	case s.queue <- buildJob{id: id, spec: spec, userID: userID}:
+	case s.queue <- buildJob{id: id, spec: spec, userID: userID, providerName: description.Name, dataVersion: description.DataVersion}:
 	default:
 		s.mu.Lock()
 		delete(s.tasks, id)
@@ -161,7 +163,7 @@ func (s *Store) worker() {
 			}()
 			buildCtx, cancel := context.WithTimeout(s.ctx, s.timeout)
 			defer cancel()
-			s.generate(buildCtx, job.id, job.spec)
+			s.generate(buildCtx, job)
 		}()
 	}
 }
@@ -178,6 +180,26 @@ func (s *Store) ProviderBars(ctx context.Context, spec market.DatasetSpec) ([]ma
 
 func (s *Store) ForwardAdjustmentFactors(ctx context.Context, symbol string) (market.ForwardFactors, error) {
 	return provider.ForwardAdjustmentFactors(ctx, s.provider, symbol)
+}
+
+func (s *Store) describe(ctx context.Context, spec market.DatasetSpec) (provider.Description, error) {
+	description, err := provider.Describe(s.provider, spec)
+	if err != nil {
+		return provider.Description{}, err
+	}
+	if !market.IsUSForwardAdjusted(spec) {
+		return description, nil
+	}
+	versions := make([]string, 0, len(spec.Symbols))
+	for _, symbol := range spec.Symbols {
+		curve, err := s.ForwardAdjustmentFactors(ctx, symbol)
+		if err != nil {
+			return provider.Description{}, err
+		}
+		versions = append(versions, curve.Version)
+	}
+	description.DataVersion = market.SemanticDataVersion(spec, description.DataVersion, time.Now(), versions...)
+	return description, nil
 }
 
 func (s *Store) Universe(ctx context.Context) ([]string, error) {
@@ -292,7 +314,8 @@ func (s *Store) PartitionPath(id, name string) (string, error) {
 	return path, nil
 }
 
-func (s *Store) generate(ctx context.Context, id string, spec market.DatasetSpec) {
+func (s *Store) generate(ctx context.Context, job buildJob) {
+	id, spec := job.id, job.spec
 	fail := func(err error) {
 		s.mu.Lock()
 		s.tasks[id] = market.DatasetStatus{DatasetID: id, State: "failed", Error: err.Error()}
@@ -325,12 +348,7 @@ func (s *Store) generate(ctx context.Context, id string, spec market.DatasetSpec
 		names = append(names, n)
 	}
 	sort.Strings(names)
-	description, err := provider.Describe(s.provider, spec)
-	if err != nil {
-		fail(err)
-		return
-	}
-	m := market.Manifest{DatasetID: id, Spec: spec, Provider: description.Name, SchemaVersion: market.SchemaVersion, DataVersion: description.DataVersion, GeneratedAt: time.Now().UTC()}
+	m := market.Manifest{DatasetID: id, Spec: spec, Provider: job.providerName, SchemaVersion: market.SchemaVersion, DataVersion: job.dataVersion, GeneratedAt: time.Now().UTC()}
 	for _, name := range names {
 		if err := ctx.Err(); err != nil {
 			fail(err)
