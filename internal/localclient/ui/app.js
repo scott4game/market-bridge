@@ -1,7 +1,15 @@
 const $ = id => document.getElementById(id)
 const NX_STORAGE_KEY = 'market-bridge:nx-indicator'
+const MX_STORAGE_KEY = 'market-bridge:mx-macd-indicator'
+const MX_INDICATOR_NAME = 'MX_MACD'
+const MX_PANE_ID = 'mx_macd_pane'
 const BLUE = '#4f8cff'
 const YELLOW = '#f2c94c'
+const ORANGE = '#ff8d1e'
+const CYAN = '#0caee6'
+const PURPLE = '#e970dc'
+const RED = '#ff4d5a'
+const GREEN = '#2ac99a'
 let socket = null
 let activeQuery = null
 
@@ -124,6 +132,143 @@ function registerNX() {
   })
 }
 
+function emaNumbers(values, period) {
+  const alpha = 2 / (period + 1)
+  let previous = null
+  return values.map(raw => {
+    const value = Number(raw)
+    previous = previous === null ? value : value * alpha + previous * (1 - alpha)
+    return previous
+  })
+}
+
+function dynamicRef(values, index, distance) {
+  if (!Number.isInteger(distance) || distance < 0 || index - distance < 0) return null
+  const value = values[index - distance]
+  return value === undefined ? null : value
+}
+
+function finiteValues(...values) {
+  return values.every(Number.isFinite)
+}
+
+function calculateMX(data, params) {
+  const closes = data.map(bar => Number(bar.close))
+  const shortEMA = emaNumbers(closes, params[0])
+  const longEMA = emaNumbers(closes, params[1])
+  const diff = closes.map((_, index) => shortEMA[index] - longEMA[index])
+  const dea = emaNumbers(diff, params[2])
+  const macd = diff.map((value, index) => (value - dea[index]) * 2)
+  const length = data.length
+  const n1 = Array(length).fill(null)
+  const m1 = Array(length).fill(null)
+  const cc1 = Array(length).fill(null)
+  const cc2 = Array(length).fill(null)
+  const cc3 = Array(length).fill(null)
+  const ch1 = Array(length).fill(null)
+  const ch2 = Array(length).fill(null)
+  const ch3 = Array(length).fill(null)
+  const difl1 = Array(length).fill(null)
+  const difl2 = Array(length).fill(null)
+  const difl3 = Array(length).fill(null)
+  const difh1 = Array(length).fill(null)
+  const difh2 = Array(length).fill(null)
+  const difh3 = Array(length).fill(null)
+  const ccc = Array(length).fill(false)
+  const jjj = Array(length).fill(false)
+  const dbbl = Array(length).fill(false)
+  const dbjg = Array(length).fill(false)
+  let lastNegativeCross = null
+  let lastPositiveCross = null
+
+  for (let index = 0; index < length; index++) {
+    const previousMACD = index > 0 ? macd[index - 1] : null
+    const negativeCross = index > 0 && previousMACD >= 0 && macd[index] < 0
+    const positiveCross = index > 0 && previousMACD <= 0 && macd[index] > 0
+    if (negativeCross) lastNegativeCross = index
+    if (positiveCross) lastPositiveCross = index
+    if (lastNegativeCross !== null) {
+      n1[index] = index - lastNegativeCross
+      cc1[index] = negativeCross ? closes[index] : Math.min(cc1[index - 1], closes[index])
+      difl1[index] = negativeCross ? diff[index] : Math.min(difl1[index - 1], diff[index])
+    }
+    if (lastPositiveCross !== null) {
+      m1[index] = index - lastPositiveCross
+      ch1[index] = positiveCross ? closes[index] : Math.max(ch1[index - 1], closes[index])
+      difh1[index] = positiveCross ? diff[index] : Math.max(difh1[index - 1], diff[index])
+    }
+
+    const previousMACDNegative = index > 0 && previousMACD < 0 && diff[index] < 0
+    const negativeRefDistance = m1[index] === null ? null : m1[index] + 1
+    cc2[index] = dynamicRef(cc1, index, negativeRefDistance)
+    cc3[index] = dynamicRef(cc2, index, negativeRefDistance)
+    difl2[index] = dynamicRef(difl1, index, negativeRefDistance)
+    difl3[index] = dynamicRef(difl2, index, negativeRefDistance)
+    const aaa = finiteValues(cc1[index], cc2[index], difl1[index], difl2[index]) &&
+      cc1[index] < cc2[index] && difl1[index] > difl2[index] && previousMACDNegative
+    const bbb = finiteValues(cc1[index], cc3[index], difl1[index], difl2[index], difl3[index]) &&
+      cc1[index] < cc3[index] && difl1[index] < difl2[index] && difl1[index] > difl3[index] && previousMACDNegative
+    ccc[index] = (aaa || bbb) && diff[index] < 0
+    jjj[index] = index > 0 && ccc[index - 1] && Math.abs(diff[index - 1]) >= Math.abs(diff[index]) * 1.01
+
+    const previousMACDPositive = index > 0 && previousMACD > 0 && diff[index] > 0
+    const positiveRefDistance = n1[index] === null ? null : n1[index] + 1
+    ch2[index] = dynamicRef(ch1, index, positiveRefDistance)
+    ch3[index] = dynamicRef(ch2, index, positiveRefDistance)
+    difh2[index] = dynamicRef(difh1, index, positiveRefDistance)
+    difh3[index] = dynamicRef(difh2, index, positiveRefDistance)
+    const zjdbl = finiteValues(ch1[index], ch2[index], difh1[index], difh2[index]) &&
+      ch1[index] > ch2[index] && difh1[index] < difh2[index] && previousMACDPositive
+    const gxdbl = finiteValues(ch1[index], ch3[index], difh1[index], difh2[index], difh3[index]) &&
+      ch1[index] > ch3[index] && difh1[index] > difh2[index] && difh1[index] < difh3[index] && previousMACDPositive
+    dbbl[index] = (zjdbl || gxdbl) && diff[index] > 0
+    dbjg[index] = index > 0 && dbbl[index - 1] && diff[index - 1] >= diff[index] * 1.01
+  }
+
+  return data.map((_, index) => ({
+    diff: diff[index],
+    dea: dea[index],
+    macd: macd[index],
+    buy: index > 0 && !jjj[index - 1] && jjj[index] ? diff[index] / 0.81 : null,
+    sell: index > 0 && !dbjg[index - 1] && dbjg[index] ? diff[index] * 1.31 : null
+  }))
+}
+
+function signalFigure(key, text, color) {
+  return {
+    key,
+    type: 'text',
+    attrs: () => ({ text }),
+    styles: () => ({ color, size: 16, weight: 'bold' })
+  }
+}
+
+function registerMX() {
+  window.klinecharts.registerIndicator({
+    name: MX_INDICATOR_NAME,
+    shortName: 'MX MACD 背离',
+    precision: 4,
+    calcParams: [12, 26, 9],
+    figures: [
+      lineFigure('diff', 'DIFF: ', ORANGE),
+      lineFigure('dea', 'DEA: ', CYAN),
+      {
+        key: 'macd',
+        title: 'MACD: ',
+        type: 'bar',
+        baseValue: 0,
+        styles: () => ({ style: 'fill', color: PURPLE, borderColor: PURPLE })
+      },
+      signalFigure('buy', 'B', RED),
+      signalFigure('sell', 'S', GREEN)
+    ],
+    calc: (data, indicator) => {
+      const params = indicator.calcParams.map(value => Math.min(500, Math.max(1, Number(value) || 1)))
+      return calculateMX(data, params)
+    }
+  })
+}
+
 function readNXConfig() {
   const defaults = { enabled: true, params: [24, 23, 89, 90] }
   try {
@@ -149,6 +294,33 @@ function configFromNXInputs() {
   const params = ['nx-blue-high', 'nx-blue-low', 'nx-yellow-high', 'nx-yellow-low']
     .map(id => Math.min(500, Math.max(1, Number($(id).value) || 1)))
   return { enabled: $('nx-enabled').checked, params }
+}
+
+function readMXConfig() {
+  const defaults = { enabled: true, params: [12, 26, 9] }
+  try {
+    const saved = JSON.parse(localStorage.getItem(MX_STORAGE_KEY))
+    if (!saved || !Array.isArray(saved.params) || saved.params.length !== 3) return defaults
+    return {
+      enabled: saved.enabled !== false,
+      params: saved.params.map(value => Math.min(500, Math.max(1, Number(value) || 1)))
+    }
+  } catch (_) {
+    return defaults
+  }
+}
+
+function writeMXInputs(config) {
+  $('mx-enabled').checked = config.enabled
+  ;['mx-short', 'mx-long', 'mx-signal'].forEach((id, index) => {
+    $(id).value = config.params[index]
+  })
+}
+
+function configFromMXInputs() {
+  const params = ['mx-short', 'mx-long', 'mx-signal']
+    .map(id => Math.min(500, Math.max(1, Number($(id).value) || 1)))
+  return { enabled: $('mx-enabled').checked, params }
 }
 
 function normalizeBar(bar) {
@@ -186,6 +358,7 @@ if (!window.klinecharts) {
 }
 
 registerNX()
+registerMX()
 const chart = window.klinecharts.init('chart', {
   locale: 'zh-CN',
   timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -296,9 +469,30 @@ function applyNX() {
     : 'NX 已隐藏'
 }
 
+function applyMX() {
+  const config = configFromMXInputs()
+  writeMXInputs(config)
+  localStorage.setItem(MX_STORAGE_KEY, JSON.stringify(config))
+  const existing = chart.getIndicators({ name: MX_INDICATOR_NAME, paneId: MX_PANE_ID })
+  if (!config.enabled) {
+    if (existing.length) chart.removeIndicator({ name: MX_INDICATOR_NAME, paneId: MX_PANE_ID })
+  } else if (existing.length) {
+    chart.overrideIndicator({ name: MX_INDICATOR_NAME, paneId: MX_PANE_ID, calcParams: config.params })
+  } else {
+    chart.createIndicator({ name: MX_INDICATOR_NAME, paneId: MX_PANE_ID, calcParams: config.params })
+    chart.setPaneOptions({ id: MX_PANE_ID, height: 190, minHeight: 110 })
+  }
+  $('mx-state').textContent = config.enabled
+    ? `S/P/M ${config.params.join('/')} · B 买点 · S 卖点`
+    : 'MX MACD 已隐藏'
+}
+
 const nxConfig = readNXConfig()
 writeNXInputs(nxConfig)
 applyNX()
+const mxConfig = readMXConfig()
+writeMXInputs(mxConfig)
+applyMX()
 
 const now = new Date()
 const past = new Date(now.getTime() - 180 * 24 * 3600 * 1000)
@@ -307,6 +501,8 @@ $('to').value = localDateTimeValue(now)
 
 $('apply-nx').addEventListener('click', applyNX)
 $('nx-enabled').addEventListener('change', applyNX)
+$('apply-mx').addEventListener('click', applyMX)
+$('mx-enabled').addEventListener('change', applyMX)
 $('save-watchlist').addEventListener('click', async () => {
   try {
     const symbols = $('watchlist-symbols').value.split(',').map(value => value.trim()).filter(Boolean)

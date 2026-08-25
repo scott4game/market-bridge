@@ -26,6 +26,14 @@
     <button id="apply-nx" type="button">应用指标</button>
     <span id="nx-state">蓝 24/23 · 黄 89/90</span>
   </section>
+  <section class="indicator-controls mx-controls" aria-label="MX MACD 背离指标设置">
+    <label class="toggle"><input id="mx-enabled" type="checkbox" checked>显示 MX MACD 背离副图</label>
+    <label>快线 S<input id="mx-short" type="number" min="1" max="500" value="12"></label>
+    <label>慢线 P<input id="mx-long" type="number" min="1" max="500" value="26"></label>
+    <label>信号 M<input id="mx-signal" type="number" min="1" max="500" value="9"></label>
+    <button id="apply-mx" type="button">应用副图</button>
+    <span id="mx-state">S/P/M 12/26/9 · B 买点 · S 卖点</span>
+  </section>
   <section class="usage" aria-label="团队账号状态">
     <div><small>当前成员</small><strong id="account-name">—</strong><span id="account-key">正在读取</span></div>
     <div><small>API 请求</small><strong id="account-requests">—</strong><span id="account-daily">—</span></div>

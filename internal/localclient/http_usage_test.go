@@ -12,19 +12,24 @@ import (
 
 func TestEmbeddedKLineChartAssets(t *testing.T) {
 	handler := (&HTTP{}).Handler()
-	for path, want := range map[string]string{
-		"/":                        "/klinecharts.min.js",
-		"/klinecharts.min.js":      "KLineChart v10.0.2",
-		"/klinecharts.LICENSE.txt": "Apache License",
+	for _, test := range []struct {
+		path string
+		want string
+	}{
+		{path: "/", want: "/klinecharts.min.js"},
+		{path: "/", want: "MX MACD 背离副图"},
+		{path: "/app.js", want: "MX_INDICATOR_NAME = 'MX_MACD'"},
+		{path: "/klinecharts.min.js", want: "KLineChart v10.0.2"},
+		{path: "/klinecharts.LICENSE.txt", want: "Apache License"},
 	} {
 		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, test.path, nil))
 		body, err := io.ReadAll(recorder.Result().Body)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if recorder.Code != http.StatusOK || !strings.Contains(string(body), want) {
-			t.Fatalf("path=%s status=%d missing=%q", path, recorder.Code, want)
+		if recorder.Code != http.StatusOK || !strings.Contains(string(body), test.want) {
+			t.Fatalf("path=%s status=%d missing=%q", test.path, recorder.Code, test.want)
 		}
 	}
 }

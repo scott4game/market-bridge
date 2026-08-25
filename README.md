@@ -178,6 +178,8 @@ go-client 内置并自行托管 KLineChart `10.0.2`，页面运行时不依赖�
 
 主图默认启用 NX 牛熊分界线：蓝线上下轨为 `EMA(HIGH,24)` / `EMA(LOW,23)`，黄线上下轨为 `EMA(HIGH,89)` / `EMA(LOW,90)`。页面可以开关指标或修改四个周期，设置保存在当前浏览器的 localStorage。默认加载最近 180 天日线，为 89/90 周期 EMA 提供足够的预热数据；缩短查询范围会改变长周期 EMA 的起始结果。
 
+页面还默认启用独立的 MX MACD 背离副图，展示 `DIFF`、`DEA` 和 `MACD` 柱，并按背离公式在确认柱标注红色 `B` 买点与绿色 `S` 卖点。默认参数为 `S/P/M=12/26/9`，可在页面修改、关闭并保存到当前浏览器。指标只根据当前加载范围内的 K 线计算，建议保留足够长的查询范围作为 EMA 和背离分段的预热数据。
+
 KLineChart 使用 Apache License 2.0，固定版本、校验和及许可证位置记录在 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
 
 ## 开发运行
