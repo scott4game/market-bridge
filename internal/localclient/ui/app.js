@@ -159,10 +159,13 @@ function securityForInput(value) {
   )
 }
 
-function securityLabel(symbol) {
+function renderSecurityIdentity(symbol) {
   const security = universeSecurities.find(item => item.symbol === symbol)
-  const name = security?.name_cn || security?.name_en
-  return name ? `${name}（${symbol}）` : symbol
+  const title = security?.name_cn || security?.name_en || symbol
+  const subtitle = security?.name_cn && security?.name_en ? security.name_en : '证券行情'
+  $('security-title').textContent = title
+  $('security-subtitle').textContent = subtitle
+  $('security-code').textContent = symbol || '—'
 }
 
 function normalizeSelectedMarketSymbol(value) {
@@ -189,6 +192,8 @@ async function loadSymbolOptions() {
     const values = Array.isArray(data.securities) && data.securities.length ? data.securities : (data.symbols || [])
     universeSecurities = values.map(normalizeSecurity).filter(value => value.symbol && !value.symbol.endsWith('.BINANCE'))
     renderSymbolOptions()
+    const current = normalizeSelectedMarketSymbol($('symbol').value)
+    if (current) renderSecurityIdentity(current)
     localStorage.setItem(UNIVERSE_STORAGE_KEY, JSON.stringify({ savedAt: Date.now(), securities: universeSecurities }))
   } catch (error) {
     $('symbol-options-state').textContent = `代码列表加载失败，仍可直接输入：${error.message}`
@@ -934,7 +939,7 @@ $('query').addEventListener('submit', event => {
     if (!symbol) throw new Error('请输入股票代码')
     if (!marketHistoryEnabled(symbolMarket(symbol))) throw new Error('服务端未启用 Longbridge 港股/A股历史行情，请设置 GO_SERVER_LONGBRIDGE_HISTORY_ENABLED=true 后重启 go-server')
     $('symbol').value = symbol
-    $('security-name').textContent = `股票：${securityLabel(symbol)}`
+    renderSecurityIdentity(symbol)
     const interval = $('interval').value
     const defaults = marketDefaults(symbol)
     const to = Date.now()
@@ -963,12 +968,11 @@ $('query').addEventListener('submit', event => {
 
 resetFormulaWorker()
 loadIndicators().catch(error => { $('indicator-state').textContent = error.message })
-loadSymbolOptions()
 setInterval(refreshAccount, 10000)
 setInterval(renderWSStatus, 1000)
 
 async function bootstrap() {
-  await refreshAccount()
+  await Promise.all([refreshAccount(), loadSymbolOptions()])
   $('query').requestSubmit()
 }
 
