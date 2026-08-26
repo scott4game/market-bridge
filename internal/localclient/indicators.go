@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	localIndicatorTemplateVersion = 1
+	localIndicatorTemplateVersion = 2
 	maxLocalIndicators            = 50
 	maxLocalEnabledIndicators     = 18
 )
@@ -130,7 +130,7 @@ func (c *Cache) ensureLocalIndicators(ctx context.Context) error {
 			return err
 		}
 		params, _ := json.Marshal(template.params)
-		if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO local_indicators(id,kind,template_key,name,pane,formula,parameters_json,enabled,sort_order,revision,created_at,updated_at) VALUES(?,'template',?,?,?,?,?,1,?,1,?,?)`, id, template.key, template.name, template.pane, template.formula, string(params), template.sortOrder, now, now); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO local_indicators(id,kind,template_key,name,pane,formula,parameters_json,enabled,sort_order,revision,created_at,updated_at) VALUES(?,'template',?,?,?,?,?,0,?,1,?,?)`, id, template.key, template.name, template.pane, template.formula, string(params), template.sortOrder, now, now); err != nil {
 			return err
 		}
 		if _, err = tx.ExecContext(ctx, `UPDATE local_indicators SET name=?,pane=?,formula=? WHERE template_key=?`, template.name, template.pane, template.formula, template.key); err != nil {
@@ -226,6 +226,24 @@ func (c *Cache) LocalIndicators(ctx context.Context) ([]localIndicator, error) {
 		result = append(result, item)
 	}
 	return result, rows.Err()
+}
+
+func (c *Cache) ResetLocalIndicatorDisplay(ctx context.Context) ([]localIndicator, error) {
+	if err := c.ensureLocalIndicators(ctx); err != nil {
+		return nil, err
+	}
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE local_indicators SET enabled=0,revision=revision+1,updated_at=? WHERE enabled=1`, time.Now().Unix()); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return c.LocalIndicators(ctx)
 }
 
 func (c *Cache) localIndicator(ctx context.Context, id string) (localIndicator, error) {

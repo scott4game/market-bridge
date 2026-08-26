@@ -1,5 +1,6 @@
 const $ = id => document.getElementById(id)
 const UNIVERSE_STORAGE_KEY = 'market-bridge:market-universe-v2'
+const Y_AXIS_ZOOM_STORAGE_KEY = 'market-bridge:y-axis-zoom-v1'
 const BLUE = '#4f8cff'
 const YELLOW = '#f2c94c'
 const CYAN = '#0caee6'
@@ -20,6 +21,16 @@ const registeredFormulaNames = new Set()
 let workerSequence = 0
 let formulaWorker = null
 const workerRequests = new Map()
+
+function storedYAxisZoomEnabled() {
+  try {
+    return localStorage.getItem(Y_AXIS_ZOOM_STORAGE_KEY) === 'true'
+  } catch (_) {
+    return false
+  }
+}
+
+let yAxisZoomEnabled = storedYAxisZoomEnabled()
 
 function setStatus(text, state = '') {
   $('status').textContent = text
@@ -282,20 +293,20 @@ const chart = window.klinecharts.init('chart', {
   timezone: marketDefaults($('symbol').value).timezone,
   zoomAnchor: 'cursor',
   styles: {
-    grid: { horizontal: { color: '#17352c' }, vertical: { color: '#17352c' } },
+    grid: { horizontal: { color: '#252a34' }, vertical: { color: '#252a34' } },
     candle: {
       bar: {
-        upColor: '#2ac99a', downColor: '#f06f78', noChangeColor: '#91aa9f',
-        upBorderColor: '#2ac99a', downBorderColor: '#f06f78', noChangeBorderColor: '#91aa9f',
-        upWickColor: '#2ac99a', downWickColor: '#f06f78', noChangeWickColor: '#91aa9f'
+        upColor: RED, downColor: GREEN, noChangeColor: '#9aa4b2',
+        upBorderColor: RED, downBorderColor: GREEN, noChangeBorderColor: '#9aa4b2',
+        upWickColor: RED, downWickColor: GREEN, noChangeWickColor: '#9aa4b2'
       }
     },
-    xAxis: { axisLine: { color: '#315649' }, tickLine: { color: '#315649' }, tickText: { color: '#91aa9f' } },
-    yAxis: { axisLine: { color: '#315649' }, tickLine: { color: '#315649' }, tickText: { color: '#91aa9f' } },
-    separator: { color: '#315649' },
+    xAxis: { axisLine: { color: '#343a46' }, tickLine: { color: '#343a46' }, tickText: { color: '#9aa4b2' } },
+    yAxis: { axisLine: { color: '#343a46' }, tickLine: { color: '#343a46' }, tickText: { color: '#9aa4b2' } },
+    separator: { color: '#343a46' },
     crosshair: {
-      horizontal: { line: { color: '#65d6aa' }, text: { backgroundColor: '#183b30' } },
-      vertical: { line: { color: '#65d6aa' }, text: { backgroundColor: '#183b30' } }
+      horizontal: { line: { color: '#7f8a99' }, text: { backgroundColor: '#343a46' } },
+      vertical: { line: { color: '#7f8a99' }, text: { backgroundColor: '#343a46' } }
     }
   }
 })
@@ -306,7 +317,19 @@ chart.setScrollEnabled(true)
 chart.setZoomAnchor('cursor')
 chart.setOffsetRightDistance(64)
 chart.overrideXAxis({ scrollZoomEnabled: true })
-chart.overrideYAxis({ paneId: 'candle_pane', scrollZoomEnabled: true })
+chart.overrideYAxis({ paneId: 'candle_pane', scrollZoomEnabled: yAxisZoomEnabled })
+$('y-axis-zoom').checked = yAxisZoomEnabled
+
+function setYAxisZoomEnabled(enabled, persist = true) {
+  yAxisZoomEnabled = Boolean(enabled)
+  $('y-axis-zoom').checked = yAxisZoomEnabled
+  chart.overrideYAxis({ paneId: 'candle_pane', scrollZoomEnabled: yAxisZoomEnabled })
+  if (persist) {
+    try {
+      localStorage.setItem(Y_AXIS_ZOOM_STORAGE_KEY, String(yAxisZoomEnabled))
+    } catch (_) {}
+  }
+}
 
 function stopLive() {
   closeSocket()
@@ -640,6 +663,30 @@ async function analyzeEditor() {
 }
 
 $('manage-indicators').addEventListener('click', () => { $('indicator-manager').hidden = !$('indicator-manager').hidden })
+$('y-axis-zoom').addEventListener('change', event => {
+  setYAxisZoomEnabled(event.target.checked)
+  if (!event.target.checked && $('symbol').value.trim()) $('query').requestSubmit()
+})
+$('reset-futu-view').addEventListener('click', async () => {
+  const button = $('reset-futu-view')
+  button.disabled = true
+  $('indicator-error').textContent = ''
+  try {
+    const response = await getJSON('/v1/me/indicators/reset-display', { method: 'POST' })
+    const selectedID = selectedIndicator?.id
+    localIndicators = response.indicators || []
+    selectIndicator(localIndicators.find(indicator => indicator.id === selectedID) || localIndicators[0] || null)
+    await applyFormulaIndicators()
+    chart.setBarSpace(10)
+    setYAxisZoomEnabled(false)
+    if ($('symbol').value.trim()) $('query').requestSubmit()
+    $('indicator-state').textContent = '已恢复 Futu 默认 · 0 个指标'
+  } catch (error) {
+    $('indicator-error').textContent = error.message
+  } finally {
+    button.disabled = false
+  }
+})
 $('close-indicators').addEventListener('click', () => { $('indicator-manager').hidden = true })
 $('new-indicator').addEventListener('click', () => selectIndicator(null))
 $('analyze-indicator').addEventListener('click', async () => { try { await analyzeEditor() } catch (error) { $('indicator-error').textContent = error.message } })

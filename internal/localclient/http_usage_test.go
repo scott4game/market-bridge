@@ -78,6 +78,10 @@ func TestEmbeddedUIUsesProviderCapabilitiesAndSignedHistogramColors(t *testing.T
 		"GO_SERVER_LONGBRIDGE_HISTORY_ENABLED=true",
 		"slice(0, 18)",
 		"Number(row[`o_${output.name}`]) >= 0 ? RED : GREEN",
+		"Y_AXIS_ZOOM_STORAGE_KEY",
+		"scrollZoomEnabled: yAxisZoomEnabled",
+		"/v1/me/indicators/reset-display",
+		"upColor: RED, downColor: GREEN",
 		"$('query').requestSubmit()",
 	} {
 		if !strings.Contains(source, want) {
@@ -278,6 +282,11 @@ func TestIndicatorsAreStoredLocallyWithoutCallingServer(t *testing.T) {
 	handler.ServeHTTP(created, httptest.NewRequest(http.MethodPost, "/v1/me/indicators", strings.NewReader(body)))
 	if created.Code != http.StatusCreated || !strings.Contains(created.Body.String(), `"kind":"personal"`) {
 		t.Fatalf("status=%d body=%q", created.Code, created.Body.String())
+	}
+	reset := httptest.NewRecorder()
+	handler.ServeHTTP(reset, httptest.NewRequest(http.MethodPost, "/v1/me/indicators/reset-display", nil))
+	if reset.Code != http.StatusOK || !strings.Contains(reset.Body.String(), `"storage":"local"`) || strings.Contains(reset.Body.String(), `"enabled":true`) {
+		t.Fatalf("status=%d body=%q", reset.Code, reset.Body.String())
 	}
 	if upstreamCalls != 0 {
 		t.Fatalf("local indicator API called go-server %d times", upstreamCalls)

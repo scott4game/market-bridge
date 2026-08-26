@@ -21,7 +21,7 @@ func TestLocalIndicatorDefaultsAndPersistence(t *testing.T) {
 	}
 	wantKeys := []string{"ma-v1", "ema-v1", "boll-v1", "vol-v1", "rsi-v1", "kdj-v1"}
 	for index, indicator := range defaults {
-		if indicator.Kind != "template" || indicator.TemplateKey != wantKeys[index] || !indicator.Enabled {
+		if indicator.Kind != "template" || indicator.TemplateKey != wantKeys[index] || indicator.Enabled {
 			t.Fatalf("default[%d]=%+v", index, indicator)
 		}
 	}
@@ -44,6 +44,81 @@ func TestLocalIndicatorDefaultsAndPersistence(t *testing.T) {
 	indicators, err := reopened.LocalIndicators(context.Background())
 	if err != nil || len(indicators) != 7 || indicators[6].Name != "Private Formula" || indicators[6].Formula != "M:MA(CLOSE,N);" {
 		t.Fatalf("reopened=%+v err=%v", indicators, err)
+	}
+}
+
+func TestLocalIndicatorTemplateUpgradePreservesExistingEnabledState(t *testing.T) {
+	root := t.TempDir()
+	cache, err := NewCache(config.Client{CacheDir: root, RedisEnabled: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cache.LocalIndicators(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cache.db.Exec(`UPDATE local_indicators SET enabled=1 WHERE template_key='ma-v1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cache.db.Exec(`UPDATE local_indicator_state SET version=1 WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := NewCache(config.Client{CacheDir: root, RedisEnabled: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	items, err := reopened.LocalIndicators(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range items {
+		if item.TemplateKey == "ma-v1" && !item.Enabled {
+			t.Fatal("template migration overwrote the existing enabled state")
+		}
+	}
+}
+
+func TestResetLocalIndicatorDisplayIsIdempotent(t *testing.T) {
+	cache, err := NewCache(config.Client{CacheDir: t.TempDir(), RedisEnabled: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cache.Close()
+	created, err := cache.CreateLocalIndicator(context.Background(), localIndicatorMutation{
+		Name: "Enabled Formula", Pane: "main", Formula: "M:MA(CLOSE,N);", Enabled: true, SortOrder: 100,
+		Parameters: []localIndicatorParameter{{Name: "N", Default: 5, Min: 1, Max: 500, Step: 1, Value: 5}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := cache.ResetLocalIndicatorDisplay(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reset localIndicator
+	for _, item := range first {
+		if item.ID == created.ID {
+			reset = item
+		}
+		if item.Enabled {
+			t.Fatalf("indicator remains enabled after reset: %+v", item)
+		}
+	}
+	if reset.ID == "" || reset.Revision != created.Revision+1 {
+		t.Fatalf("reset indicator=%+v created=%+v", reset, created)
+	}
+	second, err := cache.ResetLocalIndicatorDisplay(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range second {
+		if item.ID == created.ID && item.Revision != reset.Revision {
+			t.Fatalf("idempotent reset changed revision: first=%d second=%d", reset.Revision, item.Revision)
+		}
 	}
 }
 

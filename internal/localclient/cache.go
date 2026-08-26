@@ -104,7 +104,7 @@ func NewCacheWithClickHouse(cfg config.Client, clickhouse HistoricalClickHouse) 
 		`PRAGMA journal_mode=WAL`,
 		`CREATE TABLE IF NOT EXISTS datasets (id TEXT PRIMARY KEY, spec_hash TEXT NOT NULL, manifest_json BLOB NOT NULL, last_accessed_at INTEGER NOT NULL, state TEXT NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS datasets_spec ON datasets(spec_hash, last_accessed_at)`,
-		`CREATE TABLE IF NOT EXISTS local_indicators (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('template','personal')), template_key TEXT UNIQUE, name TEXT NOT NULL UNIQUE COLLATE NOCASE, pane TEXT NOT NULL CHECK(pane IN ('main','sub')), formula TEXT NOT NULL, parameters_json TEXT NOT NULL DEFAULT '[]', warnings_json TEXT NOT NULL DEFAULT '[]', enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS local_indicators (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('template','personal')), template_key TEXT UNIQUE, name TEXT NOT NULL UNIQUE COLLATE NOCASE, pane TEXT NOT NULL CHECK(pane IN ('main','sub')), formula TEXT NOT NULL, parameters_json TEXT NOT NULL DEFAULT '[]', warnings_json TEXT NOT NULL DEFAULT '[]', enabled INTEGER NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS local_indicators_order ON local_indicators(sort_order,name)`,
 		`CREATE TABLE IF NOT EXISTS local_indicator_state (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL)`,
 	}

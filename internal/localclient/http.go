@@ -44,6 +44,7 @@ func (h *HTTP) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/me/watchlist", h.proxyServerJSON)
 	mux.HandleFunc("GET /v1/me/indicators", h.getLocalIndicators)
 	mux.HandleFunc("POST /v1/me/indicators", h.createLocalIndicator)
+	mux.HandleFunc("POST /v1/me/indicators/reset-display", h.resetLocalIndicatorDisplay)
 	mux.HandleFunc("PUT /v1/me/indicators/{id}", h.updateLocalIndicator)
 	mux.HandleFunc("DELETE /v1/me/indicators/{id}", h.deleteLocalIndicator)
 	mux.HandleFunc("POST /v1/me/indicators/{id}/copy", h.copyLocalIndicator)
@@ -57,6 +58,15 @@ func (h *HTTP) Handler() http.Handler {
 
 func (h *HTTP) getLocalIndicators(w http.ResponseWriter, r *http.Request) {
 	indicators, err := h.Cache.LocalIndicators(r.Context())
+	if err != nil {
+		jsonResponse(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	jsonResponse(w, 200, map[string]any{"indicators": indicators, "storage": "local"})
+}
+
+func (h *HTTP) resetLocalIndicatorDisplay(w http.ResponseWriter, r *http.Request) {
+	indicators, err := h.Cache.ResetLocalIndicatorDisplay(r.Context())
 	if err != nil {
 		jsonResponse(w, 500, map[string]string{"error": err.Error()})
 		return

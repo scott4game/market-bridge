@@ -18,7 +18,10 @@
     <button>加载</button>
   </form>
   <section class="meta"><span id="source">缓存：—</span><span id="count">Bars：—</span><span id="updated">更新：—</span><span>滚轮缩放 · 拖动平移 · 悬停查看 OHLC</span></section>
-  <section class="indicator-toolbar" aria-label="公式指标"><div><strong>公式指标</strong><span id="indicator-state">正在读取本地配置</span></div><button id="manage-indicators" type="button">管理指标</button></section>
+  <section class="indicator-toolbar" aria-label="图表显示与公式指标">
+    <div><strong>公式指标</strong><span id="indicator-state">正在读取本地配置</span></div>
+    <div class="display-controls"><label class="axis-zoom-toggle"><input id="y-axis-zoom" type="checkbox">纵轴缩放</label><button id="reset-futu-view" type="button">恢复 Futu 默认</button><button id="manage-indicators" type="button">管理指标</button></div>
+  </section>
   <section id="indicator-manager" class="indicator-manager" hidden>
     <aside><div class="manager-title"><strong>我的指标</strong><button id="new-indicator" type="button">新建</button></div><div id="indicator-list"></div></aside>
     <form id="indicator-editor">
