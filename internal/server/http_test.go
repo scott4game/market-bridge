@@ -30,6 +30,17 @@ func (f *fakeRecentTrades) Trades(_ context.Context, symbol string, count int32)
 
 type factorProvider struct{ version string }
 
+type securityProvider struct{}
+
+func (securityProvider) Name() string        { return "security-test" }
+func (securityProvider) DataVersion() string { return "security-v1" }
+func (securityProvider) Bars(context.Context, market.DatasetSpec) ([]market.Bar, error) {
+	return nil, nil
+}
+func (securityProvider) Securities(context.Context) ([]provider.Security, error) {
+	return []provider.Security{{Symbol: "AAPL", NameCN: "苹果", NameEN: "Apple Inc."}}, nil
+}
+
 type pinnedDatasetProvider struct {
 	version string
 	used    chan string
@@ -149,6 +160,28 @@ func TestRecentTradesEndpointValidatesAvailabilityAndLimit(t *testing.T) {
 				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 			}
 		})
+	}
+}
+
+func TestUniverseEndpointReturnsNamesAndLegacySymbols(t *testing.T) {
+	store, err := NewStore(t.TempDir(), securityProvider{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	(&HTTP{Store: store, DataVersion: "test-v1"}).historyUniverse(recorder, httptest.NewRequest(http.MethodGet, "/v1/market-history/universe", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Symbols    []string            `json:"symbols"`
+		Securities []provider.Security `json:"securities"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Symbols) != 1 || response.Symbols[0] != "AAPL" || len(response.Securities) != 1 || response.Securities[0].NameCN != "苹果" {
+		t.Fatalf("response=%+v", response)
 	}
 }
 

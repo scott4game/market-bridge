@@ -11,13 +11,13 @@
   <header><div><p class="eyebrow">LOCAL MARKET DATA</p><h1>KLineChart</h1></div><span id="status">go-client</span></header>
   <form id="query">
     <label>股市<select id="market"><option value="us">美股</option><option value="hk" disabled>港股</option><option value="cn" disabled>A股</option></select><small id="market-state">正在读取市场能力</small></label>
-    <label>标的<input id="symbol" value="AAPL" list="symbol-options" placeholder="输入代码搜索，例如 SNDK" autocomplete="off"><datalist id="symbol-options"></datalist><small id="symbol-options-state">正在加载美股代码</small></label>
+    <label>标的<input id="symbol" value="AAPL" list="symbol-options" placeholder="输入代码或名称，例如 NVDA / 英伟达" autocomplete="off"><datalist id="symbol-options"></datalist><small id="symbol-options-state">正在加载美股代码和名称</small></label>
     <fieldset class="period-picker"><legend>周期</legend><input id="interval" type="hidden" value="1d"><div id="period-buttons">
       <button type="button" data-interval="1m" aria-pressed="false">1分</button><button type="button" data-interval="3m" aria-pressed="false">3分</button><button type="button" data-interval="5m" aria-pressed="false">5分</button><button type="button" data-interval="10m" aria-pressed="false">10分</button><button type="button" data-interval="15m" aria-pressed="false">15分</button><button type="button" data-interval="30m" aria-pressed="false">30分</button><button type="button" data-interval="1h" aria-pressed="false">1时</button><button type="button" data-interval="2h" aria-pressed="false">2时</button><button type="button" data-interval="3h" aria-pressed="false">3时</button><button type="button" data-interval="4h" aria-pressed="false">4时</button><button type="button" data-interval="1d" aria-pressed="true">日K</button><button type="button" data-interval="1w" aria-pressed="false">周K</button><button type="button" data-interval="1mo" aria-pressed="false">月K</button><button type="button" data-interval="1y" aria-pressed="false">年K</button>
     </div></fieldset>
     <button>加载</button>
   </form>
-  <section class="meta"><span id="source">缓存：—</span><span id="count">Bars：—</span><span id="updated">更新：—</span><span>滚轮缩放 · 拖动平移 · 悬停查看 OHLC</span></section>
+  <section class="meta"><span id="security-name">股票：—</span><span id="source">缓存：—</span><span id="count">Bars：—</span><span id="updated">更新：—</span><span>滚轮缩放 · 拖动平移 · 悬停查看 OHLC</span></section>
   <section class="indicator-toolbar" aria-label="图表显示与公式指标">
     <div><strong>公式指标</strong><span id="indicator-state">正在读取本地配置</span></div>
     <div class="display-controls"><label class="axis-zoom-toggle"><input id="y-axis-zoom" type="checkbox">纵轴缩放</label><button id="reset-futu-view" type="button">恢复 Futu 默认</button><button id="manage-indicators" type="button">管理指标</button></div>

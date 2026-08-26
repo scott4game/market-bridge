@@ -223,6 +223,21 @@ func (s *Store) Universe(ctx context.Context) ([]string, error) {
 	return lister.Universe(ctx)
 }
 
+func (s *Store) Securities(ctx context.Context) ([]provider.Security, error) {
+	if lister, ok := s.provider.(provider.SecurityLister); ok {
+		return lister.Securities(ctx)
+	}
+	symbols, err := s.Universe(ctx)
+	if err != nil {
+		return nil, err
+	}
+	securities := make([]provider.Security, 0, len(symbols))
+	for _, symbol := range symbols {
+		securities = append(securities, provider.Security{Symbol: symbol})
+	}
+	return securities, nil
+}
+
 func (s *Store) SyncRecentUniverse(ctx context.Context, writer HistoricalBarWriter, catalog *HistoryCatalog, dataVersion string, days int, emptyCoverageTTL time.Duration) error {
 	symbols, err := s.Universe(ctx)
 	if err != nil {

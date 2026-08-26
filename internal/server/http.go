@@ -134,12 +134,16 @@ func (h *HTTP) historyAdjustments(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) historyUniverse(w http.ResponseWriter, r *http.Request) {
-	symbols, err := h.Store.Universe(r.Context())
+	securities, err := h.Store.Securities(r.Context())
 	if err != nil {
 		writeJSON(w, 503, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"symbols": symbols, "updated_at": time.Now().UTC(), "data_version": h.DataVersion})
+	symbols := make([]string, 0, len(securities))
+	for _, security := range securities {
+		symbols = append(symbols, security.Symbol)
+	}
+	writeJSON(w, 200, map[string]any{"symbols": symbols, "securities": securities, "updated_at": time.Now().UTC(), "data_version": h.DataVersion})
 }
 
 func (h *HTTP) storageCapabilities(w http.ResponseWriter, r *http.Request) {

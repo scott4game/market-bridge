@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id)
-const UNIVERSE_STORAGE_KEY = 'market-bridge:market-universe-v2'
+const UNIVERSE_STORAGE_KEY = 'market-bridge:market-universe-v3'
 const Y_AXIS_ZOOM_STORAGE_KEY = 'market-bridge:y-axis-zoom-v1'
 const BLUE = '#4f8cff'
 const YELLOW = '#f2c94c'
@@ -10,7 +10,7 @@ const GREEN = '#2ac99a'
 let socket = null
 let liveGeneration = 0
 const liveFeed = { symbol: '', trades: [], bufferedTrades: [], initializing: false, recentCount: 0, liveCount: 0, depth: null, recoverOnConnect: false }
-let universeSymbols = []
+let universeSecurities = []
 const wsMonitor = { state: 'disabled', symbol: '', interval: '', count: 0, connectedAt: 0, lastMessageAt: 0, lastType: '', detail: '实时推送目前仅支持 1m 周期' }
 let activeQuery = null
 let lastBars = []
@@ -92,9 +92,10 @@ function closeSocket() {
   socket = null
 }
 
-function selectedMarketSymbols() {
+function selectedMarketSecurities() {
   const market = $('market').value
-  return universeSymbols.filter(symbol => {
+  return universeSecurities.filter(security => {
+    const symbol = security.symbol
     if (market === 'hk') return symbol.endsWith('.HK')
     if (market === 'cn') return symbol.endsWith('.SH') || symbol.endsWith('.SZ')
     return !/\.(HK|SH|SZ|BINANCE)$/.test(symbol)
@@ -126,19 +127,47 @@ function updateMarketAvailability() {
 }
 
 function renderSymbolOptions() {
-  const symbols = selectedMarketSymbols()
+  const securities = selectedMarketSecurities()
   const fragment = document.createDocumentFragment()
-  for (const symbol of symbols) {
+  for (const security of securities) {
     const option = document.createElement('option')
-    option.value = symbol
+    const name = security.name_cn || security.name_en
+    option.value = security.symbol
+    if (name) option.label = `${name}（${security.symbol}）`
     fragment.appendChild(option)
   }
   $('symbol-options').replaceChildren(fragment)
   const marketName = { us: '美股', hk: '港股', cn: 'A股' }[$('market').value]
-  $('symbol-options-state').textContent = `可搜索 ${symbols.length.toLocaleString()} 只${marketName}`
+  $('symbol-options-state').textContent = `可按代码或名称搜索 ${securities.length.toLocaleString()} 只${marketName}`
+}
+
+function normalizeSecurity(value) {
+  if (typeof value === 'string') return { symbol: value.toUpperCase(), name_cn: '', name_en: '' }
+  return {
+    symbol: String(value?.symbol || '').toUpperCase(),
+    name_cn: String(value?.name_cn || '').trim(),
+    name_en: String(value?.name_en || '').trim()
+  }
+}
+
+function securityForInput(value) {
+  const query = value.trim().toLocaleLowerCase()
+  return selectedMarketSecurities().find(security =>
+    security.symbol.toLocaleLowerCase() === query ||
+    security.name_cn.toLocaleLowerCase() === query ||
+    security.name_en.toLocaleLowerCase() === query
+  )
+}
+
+function securityLabel(symbol) {
+  const security = universeSecurities.find(item => item.symbol === symbol)
+  const name = security?.name_cn || security?.name_en
+  return name ? `${name}（${symbol}）` : symbol
 }
 
 function normalizeSelectedMarketSymbol(value) {
+  const matched = securityForInput(value)
+  if (matched) return matched.symbol
   const symbol = value.trim().toUpperCase()
   if (!symbol || symbol.includes('.')) return symbol
   if ($('market').value === 'hk') return `${symbol}.HK`
@@ -149,17 +178,18 @@ function normalizeSelectedMarketSymbol(value) {
 async function loadSymbolOptions() {
   try {
     const cached = JSON.parse(localStorage.getItem(UNIVERSE_STORAGE_KEY) || 'null')
-    if (cached && Array.isArray(cached.symbols) && Date.now() - cached.savedAt < 24 * 3600 * 1000) {
-      universeSymbols = cached.symbols
+    if (cached && Array.isArray(cached.securities) && Date.now() - cached.savedAt < 24 * 3600 * 1000) {
+      universeSecurities = cached.securities.map(normalizeSecurity).filter(value => value.symbol && !value.symbol.endsWith('.BINANCE'))
       renderSymbolOptions()
       return
     }
   } catch (_) {}
   try {
     const data = await getJSON('/v1/market-history/universe')
-    universeSymbols = (data.symbols || []).map(value => String(value).toUpperCase()).filter(value => !value.endsWith('.BINANCE'))
+    const values = Array.isArray(data.securities) && data.securities.length ? data.securities : (data.symbols || [])
+    universeSecurities = values.map(normalizeSecurity).filter(value => value.symbol && !value.symbol.endsWith('.BINANCE'))
     renderSymbolOptions()
-    localStorage.setItem(UNIVERSE_STORAGE_KEY, JSON.stringify({ savedAt: Date.now(), symbols: universeSymbols }))
+    localStorage.setItem(UNIVERSE_STORAGE_KEY, JSON.stringify({ savedAt: Date.now(), securities: universeSecurities }))
   } catch (error) {
     $('symbol-options-state').textContent = `代码列表加载失败，仍可直接输入：${error.message}`
   }
@@ -880,7 +910,7 @@ $('save-watchlist').addEventListener('click', async () => {
 })
 
 $('market').addEventListener('change', () => {
-  const placeholders = { us: '输入代码搜索，例如 SNDK', hk: '输入代码搜索，例如 700.HK', cn: '输入代码搜索，例如 600519.SH' }
+  const placeholders = { us: '输入代码或名称，例如 NVDA / 英伟达', hk: '输入代码或名称，例如 700.HK / 腾讯控股', cn: '输入代码或名称，例如 600519.SH / 贵州茅台' }
   $('symbol').value = ''
   $('symbol').placeholder = placeholders[$('market').value]
   renderSymbolOptions()
@@ -904,6 +934,7 @@ $('query').addEventListener('submit', event => {
     if (!symbol) throw new Error('请输入股票代码')
     if (!marketHistoryEnabled(symbolMarket(symbol))) throw new Error('服务端未启用 Longbridge 港股/A股历史行情，请设置 GO_SERVER_LONGBRIDGE_HISTORY_ENABLED=true 后重启 go-server')
     $('symbol').value = symbol
+    $('security-name').textContent = `股票：${securityLabel(symbol)}`
     const interval = $('interval').value
     const defaults = marketDefaults(symbol)
     const to = Date.now()

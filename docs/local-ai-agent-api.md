@@ -70,10 +70,17 @@ curl -fsS 'http://127.0.0.1:17600/v1/market-history/universe'
 ```json
 {
   "symbols": ["000001.SZ", "600519.SH", "700.HK", "AAPL", "SNDK"],
+  "securities": [
+    {"symbol": "600519.SH", "name_cn": "贵州茅台", "name_en": "Kweichow Moutai"},
+    {"symbol": "AAPL", "name_cn": "苹果", "name_en": "Apple Inc."}
+  ],
   "updated_at": "2026-08-25T08:00:00Z",
   "data_version": "v1"
 }
 ```
+
+`symbols` 保留用于兼容现有脚本；页面或新客户端应优先读取 `securities`。名称来自已配置的
+行情目录，优先展示 `name_cn`，缺失时回退到 `name_en`，两者都缺失时仍显示代码。
 
 按市场筛选时使用后缀：`.HK` 为港股，`.SH/.SZ` 为 A 股，`.BINANCE` 为币圈；没有
 这些后缀的代码为美股。目录可能包含数千个代码，Agent 应在本地做前缀或子串筛选，

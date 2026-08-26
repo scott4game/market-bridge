@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	openapi "github.com/longbridge/openapi-go"
 	lbquote "github.com/longbridge/openapi-go/quote"
 	"github.com/scott4game/market-bridge/internal/market"
 	shopdecimal "github.com/shopspring/decimal"
@@ -49,6 +50,7 @@ func TestBinanceHistoricalPaginationAndDecimals(t *testing.T) {
 type longbridgeHistoryStub struct {
 	calls int
 	from  time.Time
+	lists map[openapi.Market][]*lbquote.Security
 }
 
 func (s *longbridgeHistoryStub) HistoryCandlesticksByOffset(_ context.Context, symbol string, _ lbquote.Period, adjust lbquote.AdjustType, forward bool, cursor *time.Time, count int32, _ ...lbquote.CandlestickRequestOption) ([]*lbquote.Candlestick, error) {
@@ -74,6 +76,10 @@ func (s *longbridgeHistoryStub) HistoryCandlesticksByOffset(_ context.Context, s
 	return result, nil
 }
 
+func (s *longbridgeHistoryStub) SecurityList(_ context.Context, market openapi.Market, _ lbquote.SecurityListCategory) ([]*lbquote.Security, error) {
+	return s.lists[market], nil
+}
+
 func TestLongbridgeHistoricalPaginationAndSuffix(t *testing.T) {
 	from := time.Date(2026, 8, 1, 1, 0, 0, 0, time.UTC)
 	stub := &longbridgeHistoryStub{from: from}
@@ -84,6 +90,42 @@ func TestLongbridgeHistoricalPaginationAndSuffix(t *testing.T) {
 	}
 	if len(bars) != 1001 || stub.calls != 2 || bars[0].Symbol != "700.HK" {
 		t.Fatalf("bars=%d calls=%d first=%+v", len(bars), stub.calls, bars[0])
+	}
+}
+
+func TestLongbridgeSecuritiesIncludeChineseNamesAcrossMarkets(t *testing.T) {
+	stub := &longbridgeHistoryStub{lists: map[openapi.Market][]*lbquote.Security{
+		openapi.MarketUS: {{Symbol: "NVDA.US", NameCN: "英伟达", NameEN: "NVIDIA"}},
+		openapi.MarketHK: {{Symbol: "700.HK", NameCN: "腾讯控股", NameEN: "Tencent"}},
+		openapi.MarketCN: {{Symbol: "600519.SH", NameCN: "贵州茅台"}},
+	}}
+	securities, err := (&Longbridge{Quote: stub}).Securities(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(securities) != 3 || securities[0].Symbol != "600519.SH" || securities[1].Symbol != "700.HK" || securities[2].Symbol != "NVDA" || securities[2].NameCN != "英伟达" {
+		t.Fatalf("securities=%+v", securities)
+	}
+}
+
+type securityRouteProvider struct {
+	routeProvider
+	securities []Security
+}
+
+func (p *securityRouteProvider) Securities(context.Context) ([]Security, error) {
+	return append([]Security(nil), p.securities...), nil
+}
+
+func TestRouterMergesSecurityNamesWithoutDuplicatingSymbols(t *testing.T) {
+	us := &securityRouteProvider{routeProvider: routeProvider{name: "massive", version: "us-v1"}, securities: []Security{{Symbol: "NVDA", NameEN: "NVIDIA Corporation"}}}
+	directory := &securityRouteProvider{routeProvider: routeProvider{name: "longbridge", version: "directory-v1"}, securities: []Security{{Symbol: "NVDA.US", NameCN: "英伟达", NameEN: "NVIDIA"}}}
+	securities, err := (&Router{US: us, UniverseProviders: []Provider{directory}}).Securities(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(securities) != 1 || securities[0].Symbol != "NVDA" || securities[0].NameCN != "英伟达" || securities[0].NameEN != "NVIDIA Corporation" {
+		t.Fatalf("securities=%+v", securities)
 	}
 }
 
