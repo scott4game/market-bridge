@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -137,5 +138,10 @@ func TestRouterCanListMarketsWithoutEnablingTheirHistoryRoute(t *testing.T) {
 	spec := market.DatasetSpec{Symbols: []string{"700.HK"}, Interval: "1d", From: time.Now().Add(-24 * time.Hour), To: time.Now(), Session: market.RegularSession, Adjustment: market.Raw}
 	if _, err := router.Bars(context.Background(), spec); err == nil || !strings.Contains(err.Error(), "historical provider is not enabled") {
 		t.Fatalf("unexpected history route error: %v", err)
+	} else {
+		var disabled *HistoricalProviderDisabledError
+		if !errors.As(err, &disabled) || disabled.Provider != "Longbridge" || disabled.Venue != market.VenueHK {
+			t.Fatalf("history route error is not typed: %v", err)
+		}
 	}
 }

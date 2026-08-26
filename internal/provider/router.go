@@ -2,12 +2,30 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/scott4game/market-bridge/internal/market"
 )
+
+type HistoricalProviderDisabledError struct {
+	Provider string
+	Venue    market.Venue
+}
+
+func (e *HistoricalProviderDisabledError) Error() string {
+	if e.Provider == "Longbridge" {
+		return fmt.Sprintf("Longbridge historical provider is not enabled for %s; set GO_SERVER_LONGBRIDGE_HISTORY_ENABLED=true and restart go-server", e.Venue)
+	}
+	return fmt.Sprintf("%s historical provider is not enabled for %s", e.Provider, e.Venue)
+}
+
+func IsHistoricalProviderDisabled(err error) bool {
+	var target *HistoricalProviderDisabledError
+	return errors.As(err, &target)
+}
 
 type Router struct {
 	US                Provider
@@ -29,12 +47,12 @@ func (r *Router) providerFor(venue market.Venue) (Provider, error) {
 		if r.Longbridge != nil {
 			return r.Longbridge, nil
 		}
-		return nil, fmt.Errorf("Longbridge historical provider is not enabled for %s", venue)
+		return nil, &HistoricalProviderDisabledError{Provider: "Longbridge", Venue: venue}
 	case market.VenueBinance:
 		if r.Binance != nil {
 			return r.Binance, nil
 		}
-		return nil, fmt.Errorf("Binance historical provider is not enabled")
+		return nil, &HistoricalProviderDisabledError{Provider: "Binance", Venue: venue}
 	}
 	return nil, fmt.Errorf("no historical provider for market %s", venue)
 }

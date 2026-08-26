@@ -42,17 +42,105 @@ func (h *HTTP) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/me/usage", h.proxyServerJSON)
 	mux.HandleFunc("GET /v1/me/watchlist", h.proxyServerJSON)
 	mux.HandleFunc("PUT /v1/me/watchlist", h.proxyServerJSON)
-	mux.HandleFunc("GET /v1/me/indicators", h.proxyServerJSON)
-	mux.HandleFunc("POST /v1/me/indicators", h.proxyServerJSON)
-	mux.HandleFunc("PUT /v1/me/indicators/{id}", h.proxyServerJSON)
-	mux.HandleFunc("DELETE /v1/me/indicators/{id}", h.proxyServerJSON)
-	mux.HandleFunc("POST /v1/me/indicators/{id}/copy", h.proxyServerJSON)
+	mux.HandleFunc("GET /v1/me/indicators", h.getLocalIndicators)
+	mux.HandleFunc("POST /v1/me/indicators", h.createLocalIndicator)
+	mux.HandleFunc("PUT /v1/me/indicators/{id}", h.updateLocalIndicator)
+	mux.HandleFunc("DELETE /v1/me/indicators/{id}", h.deleteLocalIndicator)
+	mux.HandleFunc("POST /v1/me/indicators/{id}/copy", h.copyLocalIndicator)
 	if h.Live != nil {
 		mux.Handle("/v1/live/ws", h.Live)
 	}
 	assets, _ := fs.Sub(ui, "ui")
 	mux.Handle("/", http.FileServer(http.FS(assets)))
 	return security(mux)
+}
+
+func (h *HTTP) getLocalIndicators(w http.ResponseWriter, r *http.Request) {
+	indicators, err := h.Cache.LocalIndicators(r.Context())
+	if err != nil {
+		jsonResponse(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	jsonResponse(w, 200, map[string]any{"indicators": indicators, "storage": "local"})
+}
+
+func decodeLocalIndicator(w http.ResponseWriter, r *http.Request) (localIndicatorMutation, bool) {
+	var mutation localIndicatorMutation
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&mutation); err != nil {
+		jsonResponse(w, 400, map[string]string{"error": err.Error()})
+		return mutation, false
+	}
+	return mutation, true
+}
+
+func localIndicatorError(w http.ResponseWriter, err error) {
+	status := http.StatusBadRequest
+	switch err {
+	case errLocalIndicatorNotFound:
+		status = http.StatusNotFound
+	case errLocalIndicatorConflict, errLocalIndicatorName:
+		status = http.StatusConflict
+	case errLocalIndicatorLimit, errLocalIndicatorEnabled:
+		status = http.StatusTooManyRequests
+	case errLocalIndicatorTemplate:
+		status = http.StatusForbidden
+	}
+	jsonResponse(w, status, map[string]string{"error": err.Error()})
+}
+
+func (h *HTTP) createLocalIndicator(w http.ResponseWriter, r *http.Request) {
+	mutation, ok := decodeLocalIndicator(w, r)
+	if !ok {
+		return
+	}
+	indicator, err := h.Cache.CreateLocalIndicator(r.Context(), mutation)
+	if err != nil {
+		localIndicatorError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusCreated, indicator)
+}
+
+func (h *HTTP) updateLocalIndicator(w http.ResponseWriter, r *http.Request) {
+	mutation, ok := decodeLocalIndicator(w, r)
+	if !ok {
+		return
+	}
+	indicator, err := h.Cache.UpdateLocalIndicator(r.Context(), r.PathValue("id"), mutation)
+	if err != nil {
+		localIndicatorError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, indicator)
+}
+
+func (h *HTTP) deleteLocalIndicator(w http.ResponseWriter, r *http.Request) {
+	revision, err := strconv.Atoi(r.URL.Query().Get("revision"))
+	if err != nil || revision < 1 {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "revision is required"})
+		return
+	}
+	if err := h.Cache.DeleteLocalIndicator(r.Context(), r.PathValue("id"), revision); err != nil {
+		localIndicatorError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *HTTP) copyLocalIndicator(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&body); err != nil && err != io.EOF {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	indicator, err := h.Cache.CopyLocalIndicator(r.Context(), r.PathValue("id"), body.Name)
+	if err != nil {
+		localIndicatorError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusCreated, indicator)
 }
 
 func (h *HTTP) proxyServerJSON(w http.ResponseWriter, r *http.Request) {

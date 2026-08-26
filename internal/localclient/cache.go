@@ -94,7 +94,8 @@ func NewCacheWithClickHouse(cfg config.Client, clickhouse HistoricalClickHouse) 
 	if err := os.MkdirAll(filepath.Join(root, "datasets"), 0o755); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", filepath.Join(root, "cache.db"))
+	dbPath := filepath.Join(root, "cache.db")
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, err
 	}
@@ -103,9 +104,18 @@ func NewCacheWithClickHouse(cfg config.Client, clickhouse HistoricalClickHouse) 
 		`PRAGMA journal_mode=WAL`,
 		`CREATE TABLE IF NOT EXISTS datasets (id TEXT PRIMARY KEY, spec_hash TEXT NOT NULL, manifest_json BLOB NOT NULL, last_accessed_at INTEGER NOT NULL, state TEXT NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS datasets_spec ON datasets(spec_hash, last_accessed_at)`,
+		`CREATE TABLE IF NOT EXISTS local_indicators (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('template','personal')), template_key TEXT UNIQUE, name TEXT NOT NULL UNIQUE COLLATE NOCASE, pane TEXT NOT NULL CHECK(pane IN ('main','sub')), formula TEXT NOT NULL, parameters_json TEXT NOT NULL DEFAULT '[]', warnings_json TEXT NOT NULL DEFAULT '[]', enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS local_indicators_order ON local_indicators(sort_order,name)`,
+		`CREATE TABLE IF NOT EXISTS local_indicator_state (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL)`,
 	}
 	for _, q := range stmts {
 		if _, err = db.Exec(q); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
+	for _, path := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
 			db.Close()
 			return nil, err
 		}
@@ -116,6 +126,10 @@ func NewCacheWithClickHouse(cfg config.Client, clickhouse HistoricalClickHouse) 
 		return nil, err
 	}
 	c := &Cache{cfg: cfg, db: db, http: &http.Client{Timeout: 2 * time.Minute}, inflight: map[string]*flight{}, active: map[string]int{}, datasetLocks: map[string]*datasetGuard{}, clickhouse: clickhouse, coverage: coverageStore, factorCache: map[string]cachedForwardFactors{}}
+	if err := c.importPrivateIndicators(context.Background()); err != nil {
+		c.Close()
+		return nil, err
+	}
 	if cfg.RedisEnabled {
 		c.redis = redis.NewClient(&redis.Options{Addr: cfg.RedisAddress, Username: cfg.RedisUsername, Password: cfg.RedisPassword, DB: cfg.RedisDB, DialTimeout: 300 * time.Millisecond, ReadTimeout: 500 * time.Millisecond, WriteTimeout: 500 * time.Millisecond})
 	}

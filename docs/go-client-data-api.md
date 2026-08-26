@@ -489,14 +489,16 @@ bar[t] 收盘 -> 计算 signal[t] -> 最早在 bar[t+1] 的可成交价格执行
 Provider 会继续请求到空结果。这个页面策略不改变本章 REST API：程序调用仍必须显式传
 `from/to`。
 
-- NX 和 MX 是每个账号的内置公式模板；用户可以调整参数，或复制为个人公式后编辑。
-- 个人配置由 go-server 的 `/v1/me/indicators` 保存并按账号隔离；浏览器只缓存最近一次配置。
+- MA、EMA、BOLL、VOL、RSI 和 KDJ 是随 go-client 提供的共享基础模板。
+- 用户复制或创建的个人公式只保存在 go-client 本地 `/data/cache.db`，不会上传到 go-server，
+  也不会与团队中的其他账号共享。
 - 浏览器 EMA 以当前已加载范围的第一根数据作为初始值，所以机器人要与页面逐点比对时，
   必须使用完全相同的标的、周期、已加载历史边界、时段、复权模式和参数。
 
-公式执行器位于 [`web/formula-worker.js`](../web/formula-worker.js)，内置 NX/MX 模板位于
-[`internal/access/indicators.go`](../internal/access/indicators.go)。需要验证 B/S 信号时，应把
-公式内容、参数、K 线查询范围和代码版本一并记录为策略依据。
+公式执行器位于 [`web/formula-worker.js`](../web/formula-worker.js)，基础模板和本地持久化
+位于 [`internal/localclient/indicators.go`](../internal/localclient/indicators.go)。验证个人公式时，
+应把公式内容、参数、K 线查询范围和本地配置版本一并记录为策略依据，但不要把私有公式
+提交到源码仓库。
 
 若机器人实现的公式与页面不同，应该把它视为另一个策略版本，不要只比较最终收益。
 建议先逐根比较指标值和信号时间，再比较成交与绩效。

@@ -24,6 +24,9 @@ type Server struct {
 	LiveProviders             []string
 	LongbridgeHistoryEnabled  bool
 	LongbridgeDepthEnabled    bool
+	LongbridgeAppKey          string
+	LongbridgeAppSecret       string
+	LongbridgeAccessToken     string
 	BinanceEnabled            bool
 	BinanceRESTURL            string
 	BinanceWSURL              string
@@ -51,6 +54,7 @@ func ServerFromEnv() Server {
 		MassivePlanName: env("MASSIVE_PLAN_NAME", "stocks_basic"), MassivePerMinute: integer("MASSIVE_REQUESTS_PER_MINUTE", 5), MassivePerMonth: integer("MASSIVE_REQUESTS_PER_MONTH", 0),
 		LiveProvider: env("GO_SERVER_LIVE_PROVIDER", "mock"), LiveProviders: split(os.Getenv("GO_SERVER_LIVE_PROVIDERS")),
 		LongbridgeHistoryEnabled: boolean("GO_SERVER_LONGBRIDGE_HISTORY_ENABLED", false), LongbridgeDepthEnabled: boolean("GO_SERVER_LONGBRIDGE_DEPTH_ENABLED", false),
+		LongbridgeAppKey: os.Getenv("LONGBRIDGE_APP_KEY"), LongbridgeAppSecret: os.Getenv("LONGBRIDGE_APP_SECRET"), LongbridgeAccessToken: os.Getenv("LONGBRIDGE_ACCESS_TOKEN"),
 		BinanceEnabled: boolean("GO_SERVER_BINANCE_ENABLED", false), BinanceRESTURL: env("BINANCE_REST_BASE_URL", "https://data-api.binance.vision"), BinanceWSURL: env("BINANCE_WS_URL", "wss://data-stream.binance.vision"),
 		ClickHouseEnabled: boolean("GO_SERVER_CLICKHOUSE_ENABLED", false),
 		ClickHouseURL:     os.Getenv("CLICKHOUSE_URL"), ClickHouseDatabase: env("CLICKHOUSE_DATABASE", "market"), ClickHouseUser: env("CLICKHOUSE_USER", "market"), ClickHousePassword: os.Getenv("CLICKHOUSE_PASSWORD"),
@@ -89,6 +93,18 @@ func (s Server) Validate() error {
 			return fmt.Errorf("mock live provider cannot be combined with real providers")
 		}
 	}
+	if s.LongbridgeHistoryEnabled || containsString(liveProviders, "longbridge") {
+		values := []struct{ name, value string }{
+			{"LONGBRIDGE_APP_KEY", s.LongbridgeAppKey},
+			{"LONGBRIDGE_APP_SECRET", s.LongbridgeAppSecret},
+			{"LONGBRIDGE_ACCESS_TOKEN", s.LongbridgeAccessToken},
+		}
+		for _, item := range values {
+			if strings.TrimSpace(item.value) == "" {
+				return fmt.Errorf("%s is required when Longbridge history or live data is enabled", item.name)
+			}
+		}
+	}
 	if !s.ClickHouseEnabled {
 		return nil
 	}
@@ -104,6 +120,15 @@ func (s Server) Validate() error {
 		}
 	}
 	return nil
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func split(v string) []string {

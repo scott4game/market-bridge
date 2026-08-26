@@ -57,6 +57,33 @@ func TestKLinePageUsesLazyHistoryWithoutDateControls(t *testing.T) {
 	if !strings.Contains(source, `/history.js`) {
 		t.Fatal("history policy is not loaded")
 	}
+	if strings.Contains(source, `<select id="interval"`) {
+		t.Fatal("period dropdown remains in page")
+	}
+	for _, interval := range []string{"1m", "3m", "5m", "10m", "15m", "30m", "1h", "2h", "3h", "4h", "1d", "1w", "1mo", "1y"} {
+		if !strings.Contains(source, `data-interval="`+interval+`"`) {
+			t.Fatalf("period button %s is missing", interval)
+		}
+	}
+}
+
+func TestEmbeddedUIUsesProviderCapabilitiesAndSignedHistogramColors(t *testing.T) {
+	raw, err := ui.ReadFile("ui/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(raw)
+	for _, want := range []string{
+		"providerStatus?.longbridge?.history_enabled === true",
+		"GO_SERVER_LONGBRIDGE_HISTORY_ENABLED=true",
+		"slice(0, 18)",
+		"Number(row[`o_${output.name}`]) >= 0 ? RED : GREEN",
+		"$('query').requestSubmit()",
+	} {
+		if !strings.Contains(source, want) {
+			t.Fatalf("embedded app is missing %q", want)
+		}
+	}
 }
 
 func TestEmbeddedMarketDefaultsUseExpectedAdjustments(t *testing.T) {
@@ -226,13 +253,11 @@ func TestUniverseProxyForwardsServerToken(t *testing.T) {
 	}
 }
 
-func TestIndicatorProxyPreservesRevisionAndNoContent(t *testing.T) {
+func TestIndicatorsAreStoredLocallyWithoutCallingServer(t *testing.T) {
+	upstreamCalls := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete || r.URL.Path != "/v1/me/indicators/test" || r.URL.Query().Get("revision") != "7" {
-			http.Error(w, "unexpected request", http.StatusBadRequest)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
+		upstreamCalls++
+		http.Error(w, "indicator data must remain local", http.StatusInternalServerError)
 	}))
 	defer upstream.Close()
 	cache, err := NewCache(config.Client{CacheDir: t.TempDir(), ServerURL: upstream.URL, ServerToken: "secret", RedisEnabled: false})
@@ -240,10 +265,22 @@ func TestIndicatorProxyPreservesRevisionAndNoContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cache.Close()
-	recorder := httptest.NewRecorder()
-	(&HTTP{Cache: cache}).Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodDelete, "/v1/me/indicators/test?revision=7", nil))
-	if recorder.Code != http.StatusNoContent || recorder.Body.Len() != 0 {
-		t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
+	handler := (&HTTP{Cache: cache}).Handler()
+
+	list := httptest.NewRecorder()
+	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/me/indicators", nil))
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), `"storage":"local"`) || !strings.Contains(list.Body.String(), `"template_key":"ma-v1"`) {
+		t.Fatalf("status=%d body=%q", list.Code, list.Body.String())
+	}
+
+	created := httptest.NewRecorder()
+	body := `{"name":"Private Formula","pane":"main","formula":"M:MA(CLOSE,N);","parameters":[{"name":"N","default":5,"min":1,"max":500,"step":1,"value":5}],"enabled":true,"sort_order":100}`
+	handler.ServeHTTP(created, httptest.NewRequest(http.MethodPost, "/v1/me/indicators", strings.NewReader(body)))
+	if created.Code != http.StatusCreated || !strings.Contains(created.Body.String(), `"kind":"personal"`) {
+		t.Fatalf("status=%d body=%q", created.Code, created.Body.String())
+	}
+	if upstreamCalls != 0 {
+		t.Fatalf("local indicator API called go-server %d times", upstreamCalls)
 	}
 }
 

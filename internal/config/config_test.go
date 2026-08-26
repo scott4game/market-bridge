@@ -76,6 +76,25 @@ func TestEffectiveLiveProviders(t *testing.T) {
 	}
 }
 
+func TestLongbridgeCredentialsAreRequiredWhenEnabled(t *testing.T) {
+	t.Setenv("GO_SERVER_LONGBRIDGE_HISTORY_ENABLED", "true")
+	t.Setenv("LONGBRIDGE_APP_KEY", "")
+	if err := ServerFromEnv().Validate(); err == nil || !strings.Contains(err.Error(), "LONGBRIDGE_APP_KEY") {
+		t.Fatalf("expected missing Longbridge key error, got %v", err)
+	}
+
+	t.Setenv("LONGBRIDGE_APP_KEY", "app-key")
+	t.Setenv("LONGBRIDGE_APP_SECRET", "app-secret")
+	t.Setenv("LONGBRIDGE_ACCESS_TOKEN", "access-token")
+	cfg := ServerFromEnv()
+	if !cfg.LongbridgeHistoryEnabled {
+		t.Fatal("Longbridge history should be enabled")
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected Longbridge validation error: %v", err)
+	}
+}
+
 func TestClientFromEnv(t *testing.T) {
 	t.Setenv("GO_CLIENT_PARQUET_TTL", "168h")
 	t.Setenv("GO_CLIENT_CLICKHOUSE_RETENTION", "")

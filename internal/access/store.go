@@ -95,14 +95,9 @@ func Open(path, legacyToken string) (*Store, error) {
 		`CREATE INDEX IF NOT EXISTS api_keys_user ON api_keys(user_id)`,
 		`CREATE TABLE IF NOT EXISTS quota_overrides (user_id TEXT PRIMARY KEY REFERENCES users(id), requests_per_minute INTEGER, datasets_per_minute INTEGER, concurrent_builds INTEGER, live_connections INTEGER, live_symbols INTEGER)`,
 		`CREATE TABLE IF NOT EXISTS user_watchlists (user_id TEXT NOT NULL REFERENCES users(id), symbol TEXT NOT NULL, PRIMARY KEY(user_id,symbol))`,
-		`CREATE TABLE IF NOT EXISTS user_indicators (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), kind TEXT NOT NULL CHECK(kind IN ('template','personal')), template_key TEXT, name TEXT NOT NULL, pane TEXT NOT NULL CHECK(pane IN ('main','sub')), formula TEXT NOT NULL, parameters_json TEXT NOT NULL DEFAULT '[]', warnings_json TEXT NOT NULL DEFAULT '[]', enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, UNIQUE(user_id,template_key))`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS user_indicators_name ON user_indicators(user_id,name COLLATE NOCASE)`,
-		`CREATE INDEX IF NOT EXISTS user_indicators_user_order ON user_indicators(user_id,sort_order,name)`,
-		`CREATE TABLE IF NOT EXISTS user_indicator_seed (user_id TEXT PRIMARY KEY REFERENCES users(id), template_version INTEGER NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS usage_daily (user_id TEXT NOT NULL, local_date TEXT NOT NULL, requests INTEGER NOT NULL DEFAULT 0, datasets INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(user_id,local_date))`,
 		`CREATE TABLE IF NOT EXISTS audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at INTEGER NOT NULL, request_id TEXT NOT NULL, user_id TEXT NOT NULL, key_id TEXT NOT NULL, method TEXT NOT NULL, route TEXT NOT NULL, status INTEGER NOT NULL, duration_ms INTEGER NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS audit_events_time ON audit_events(occurred_at)`,
-		`UPDATE api_keys SET scopes=scopes||',indicators:read,indicators:write' WHERE instr(','||scopes||',',',indicators:read,')=0`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			db.Close()
@@ -121,7 +116,7 @@ func Open(path, legacyToken string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 
 func scopesForRole(role string) []string {
-	scopes := []string{"history:read", "live:read", "profile:read", "indicators:read", "indicators:write"}
+	scopes := []string{"history:read", "live:read", "profile:read"}
 	if role == "admin" {
 		scopes = append(scopes, "provider:usage", "admin")
 	}

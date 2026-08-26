@@ -1,12 +1,7 @@
 const $ = id => document.getElementById(id)
 const UNIVERSE_STORAGE_KEY = 'market-bridge:market-universe-v2'
-const NX_STORAGE_KEY = 'market-bridge:nx-indicator'
-const MX_STORAGE_KEY = 'market-bridge:mx-macd-indicator'
-const MX_INDICATOR_NAME = 'MX_MACD'
-const MX_PANE_ID = 'mx_macd_pane'
 const BLUE = '#4f8cff'
 const YELLOW = '#f2c94c'
-const ORANGE = '#ff8d1e'
 const CYAN = '#0caee6'
 const PURPLE = '#e970dc'
 const RED = '#ff4d5a'
@@ -18,15 +13,13 @@ let activeQuery = null
 let lastBars = []
 let providerStatus = null
 let queryGeneration = 0
-let cloudIndicators = []
+let localIndicators = []
 let selectedIndicator = null
 let activeFormulaCharts = []
 const registeredFormulaNames = new Set()
 let workerSequence = 0
 let formulaWorker = null
-let indicatorUserID = localStorage.getItem('market-bridge:formula-indicators:user') || 'unknown'
 const workerRequests = new Map()
-const INDICATOR_MIGRATION_KEY = 'market-bridge:formula-indicators:migrated-v1'
 
 function setStatus(text, state = '') {
   $('status').textContent = text
@@ -95,6 +88,30 @@ function selectedMarketSymbols() {
   })
 }
 
+function marketHistoryEnabled(market) {
+  if (market === 'us') return true
+  if (market === 'hk' || market === 'cn') return providerStatus?.longbridge?.history_enabled === true
+  return false
+}
+
+function symbolMarket(symbol) {
+  const upper = symbol.toUpperCase()
+  if (upper.endsWith('.HK')) return 'hk'
+  if (upper.endsWith('.SH') || upper.endsWith('.SZ')) return 'cn'
+  return 'us'
+}
+
+function updateMarketAvailability() {
+  const longbridgeHistory = marketHistoryEnabled('hk')
+  for (const market of ['hk', 'cn']) {
+    const option = $('market').querySelector(`option[value="${market}"]`)
+    if (option) option.disabled = !longbridgeHistory
+  }
+  $('market-state').textContent = longbridgeHistory
+    ? '港股/A股历史行情已启用'
+    : '港股/A股需服务端启用 Longbridge 历史行情'
+}
+
 function renderSymbolOptions() {
   const symbols = selectedMarketSymbols()
   const fragment = document.createDocumentFragment()
@@ -161,6 +178,7 @@ async function refreshAccount() {
     $('account-symbols').textContent = `标的 ${usage.live.symbols} / ${usage.quotas.live_symbols}`
     const massive = providers.massive || {}
     providerStatus = providers
+    updateMarketAvailability()
     $('massive-status').textContent = massive.state || 'unknown'
     $('massive-plan').textContent = massive.plan || '—'
     const longbridge = providers.longbridge || {}
@@ -191,16 +209,6 @@ async function refreshAccount() {
   }
 }
 
-function ema(data, field, period) {
-  const alpha = 2 / (period + 1)
-  let previous = null
-  return data.map(item => {
-    const value = Number(item[field])
-    previous = previous === null ? value : value * alpha + previous * (1 - alpha)
-    return previous
-  })
-}
-
 function lineFigure(key, title, color) {
   return {
     key,
@@ -229,234 +237,6 @@ function stickFigure(key, upperKey, lowerKey, color) {
     },
     styles: () => ({ color, style: 'fill' })
   }
-}
-
-function registerNX() {
-  window.klinecharts.registerIndicator({
-    name: 'NX',
-    shortName: 'NX 牛熊分界线',
-    series: 'price',
-    calcParams: [24, 23, 89, 90],
-    figures: [
-      lineFigure('blueUpper', 'A: ', BLUE),
-      lineFigure('blueLower', 'B: ', BLUE),
-      stickFigure('blueBreak', 'blueUpper', 'blueLower', BLUE),
-      lineFigure('yellowUpper', 'A1: ', YELLOW),
-      lineFigure('yellowLower', 'B1: ', YELLOW),
-      stickFigure('yellowBreak', 'yellowUpper', 'yellowLower', YELLOW)
-    ],
-    calc: (data, indicator) => {
-      const params = indicator.calcParams.map(value => Math.max(1, Number(value) || 1))
-      const blueUpper = ema(data, 'high', params[0])
-      const blueLower = ema(data, 'low', params[1])
-      const yellowUpper = ema(data, 'high', params[2])
-      const yellowLower = ema(data, 'low', params[3])
-      return data.map((bar, index) => {
-        const close = Number(bar.close)
-        const blueOutside = close > blueUpper[index] || close < blueLower[index]
-        const yellowOutside = close > yellowUpper[index] || close < yellowLower[index]
-        return {
-          blueUpper: blueUpper[index],
-          blueLower: blueLower[index],
-          blueBreak: blueOutside ? (blueUpper[index] + blueLower[index]) / 2 : null,
-          yellowUpper: yellowUpper[index],
-          yellowLower: yellowLower[index],
-          yellowBreak: yellowOutside ? (yellowUpper[index] + yellowLower[index]) / 2 : null
-        }
-      })
-    }
-  })
-}
-
-function emaNumbers(values, period) {
-  const alpha = 2 / (period + 1)
-  let previous = null
-  return values.map(raw => {
-    const value = Number(raw)
-    previous = previous === null ? value : value * alpha + previous * (1 - alpha)
-    return previous
-  })
-}
-
-function dynamicRef(values, index, distance) {
-  if (!Number.isInteger(distance) || distance < 0 || index - distance < 0) return null
-  const value = values[index - distance]
-  return value === undefined ? null : value
-}
-
-function finiteValues(...values) {
-  return values.every(Number.isFinite)
-}
-
-function calculateMX(data, params) {
-  const closes = data.map(bar => Number(bar.close))
-  const shortEMA = emaNumbers(closes, params[0])
-  const longEMA = emaNumbers(closes, params[1])
-  const diff = closes.map((_, index) => shortEMA[index] - longEMA[index])
-  const dea = emaNumbers(diff, params[2])
-  const macd = diff.map((value, index) => (value - dea[index]) * 2)
-  const length = data.length
-  const n1 = Array(length).fill(null)
-  const m1 = Array(length).fill(null)
-  const cc1 = Array(length).fill(null)
-  const cc2 = Array(length).fill(null)
-  const cc3 = Array(length).fill(null)
-  const ch1 = Array(length).fill(null)
-  const ch2 = Array(length).fill(null)
-  const ch3 = Array(length).fill(null)
-  const difl1 = Array(length).fill(null)
-  const difl2 = Array(length).fill(null)
-  const difl3 = Array(length).fill(null)
-  const difh1 = Array(length).fill(null)
-  const difh2 = Array(length).fill(null)
-  const difh3 = Array(length).fill(null)
-  const ccc = Array(length).fill(false)
-  const jjj = Array(length).fill(false)
-  const dbbl = Array(length).fill(false)
-  const dbjg = Array(length).fill(false)
-  let lastNegativeCross = null
-  let lastPositiveCross = null
-
-  for (let index = 0; index < length; index++) {
-    const previousMACD = index > 0 ? macd[index - 1] : null
-    const negativeCross = index > 0 && previousMACD >= 0 && macd[index] < 0
-    const positiveCross = index > 0 && previousMACD <= 0 && macd[index] > 0
-    if (negativeCross) lastNegativeCross = index
-    if (positiveCross) lastPositiveCross = index
-    if (lastNegativeCross !== null) {
-      n1[index] = index - lastNegativeCross
-      cc1[index] = negativeCross ? closes[index] : Math.min(cc1[index - 1], closes[index])
-      difl1[index] = negativeCross ? diff[index] : Math.min(difl1[index - 1], diff[index])
-    }
-    if (lastPositiveCross !== null) {
-      m1[index] = index - lastPositiveCross
-      ch1[index] = positiveCross ? closes[index] : Math.max(ch1[index - 1], closes[index])
-      difh1[index] = positiveCross ? diff[index] : Math.max(difh1[index - 1], diff[index])
-    }
-
-    const previousMACDNegative = index > 0 && previousMACD < 0 && diff[index] < 0
-    const negativeRefDistance = m1[index] === null ? null : m1[index] + 1
-    cc2[index] = dynamicRef(cc1, index, negativeRefDistance)
-    cc3[index] = dynamicRef(cc2, index, negativeRefDistance)
-    difl2[index] = dynamicRef(difl1, index, negativeRefDistance)
-    difl3[index] = dynamicRef(difl2, index, negativeRefDistance)
-    const aaa = finiteValues(cc1[index], cc2[index], difl1[index], difl2[index]) &&
-      cc1[index] < cc2[index] && difl1[index] > difl2[index] && previousMACDNegative
-    const bbb = finiteValues(cc1[index], cc3[index], difl1[index], difl2[index], difl3[index]) &&
-      cc1[index] < cc3[index] && difl1[index] < difl2[index] && difl1[index] > difl3[index] && previousMACDNegative
-    ccc[index] = (aaa || bbb) && diff[index] < 0
-    jjj[index] = index > 0 && ccc[index - 1] && Math.abs(diff[index - 1]) >= Math.abs(diff[index]) * 1.01
-
-    const previousMACDPositive = index > 0 && previousMACD > 0 && diff[index] > 0
-    const positiveRefDistance = n1[index] === null ? null : n1[index] + 1
-    ch2[index] = dynamicRef(ch1, index, positiveRefDistance)
-    ch3[index] = dynamicRef(ch2, index, positiveRefDistance)
-    difh2[index] = dynamicRef(difh1, index, positiveRefDistance)
-    difh3[index] = dynamicRef(difh2, index, positiveRefDistance)
-    const zjdbl = finiteValues(ch1[index], ch2[index], difh1[index], difh2[index]) &&
-      ch1[index] > ch2[index] && difh1[index] < difh2[index] && previousMACDPositive
-    const gxdbl = finiteValues(ch1[index], ch3[index], difh1[index], difh2[index], difh3[index]) &&
-      ch1[index] > ch3[index] && difh1[index] > difh2[index] && difh1[index] < difh3[index] && previousMACDPositive
-    dbbl[index] = (zjdbl || gxdbl) && diff[index] > 0
-    dbjg[index] = index > 0 && dbbl[index - 1] && diff[index - 1] >= diff[index] * 1.01
-  }
-
-  return data.map((_, index) => ({
-    diff: diff[index],
-    dea: dea[index],
-    macd: macd[index],
-    buy: index > 0 && !jjj[index - 1] && jjj[index] ? diff[index] / 0.81 : null,
-    sell: index > 0 && !dbjg[index - 1] && dbjg[index] ? diff[index] * 1.31 : null
-  }))
-}
-
-function signalFigure(key, text, color) {
-  return {
-    key,
-    type: 'text',
-    attrs: () => ({ text }),
-    styles: () => ({ color, size: 16, weight: 'bold' })
-  }
-}
-
-function registerMX() {
-  window.klinecharts.registerIndicator({
-    name: MX_INDICATOR_NAME,
-    shortName: 'MX MACD 背离',
-    precision: 4,
-    calcParams: [12, 26, 9],
-    figures: [
-      lineFigure('diff', 'DIFF: ', ORANGE),
-      lineFigure('dea', 'DEA: ', CYAN),
-      {
-        key: 'macd',
-        title: 'MACD: ',
-        type: 'bar',
-        baseValue: 0,
-        styles: () => ({ style: 'fill', color: PURPLE, borderColor: PURPLE })
-      },
-      signalFigure('buy', 'B', RED),
-      signalFigure('sell', 'S', GREEN)
-    ],
-    calc: (data, indicator) => {
-      const params = indicator.calcParams.map(value => Math.min(500, Math.max(1, Number(value) || 1)))
-      return calculateMX(data, params)
-    }
-  })
-}
-
-function readNXConfig() {
-  const defaults = { enabled: true, params: [24, 23, 89, 90] }
-  try {
-    const saved = JSON.parse(localStorage.getItem(NX_STORAGE_KEY))
-    if (!saved || !Array.isArray(saved.params) || saved.params.length !== 4) return defaults
-    return {
-      enabled: saved.enabled !== false,
-      params: saved.params.map(value => Math.min(500, Math.max(1, Number(value) || 1)))
-    }
-  } catch (_) {
-    return defaults
-  }
-}
-
-function writeNXInputs(config) {
-  $('nx-enabled').checked = config.enabled
-  ;['nx-blue-high', 'nx-blue-low', 'nx-yellow-high', 'nx-yellow-low'].forEach((id, index) => {
-    $(id).value = config.params[index]
-  })
-}
-
-function configFromNXInputs() {
-  const params = ['nx-blue-high', 'nx-blue-low', 'nx-yellow-high', 'nx-yellow-low']
-    .map(id => Math.min(500, Math.max(1, Number($(id).value) || 1)))
-  return { enabled: $('nx-enabled').checked, params }
-}
-
-function readMXConfig() {
-  const defaults = { enabled: true, params: [12, 26, 9] }
-  try {
-    const saved = JSON.parse(localStorage.getItem(MX_STORAGE_KEY))
-    if (!saved || !Array.isArray(saved.params) || saved.params.length !== 3) return defaults
-    return {
-      enabled: saved.enabled !== false,
-      params: saved.params.map(value => Math.min(500, Math.max(1, Number(value) || 1)))
-    }
-  } catch (_) {
-    return defaults
-  }
-}
-
-function writeMXInputs(config) {
-  $('mx-enabled').checked = config.enabled
-  ;['mx-short', 'mx-long', 'mx-signal'].forEach((id, index) => {
-    $(id).value = config.params[index]
-  })
-}
-
-function configFromMXInputs() {
-  const params = ['mx-short', 'mx-long', 'mx-signal']
-    .map(id => Math.min(500, Math.max(1, Number($(id).value) || 1)))
-  return { enabled: $('mx-enabled').checked, params }
 }
 
 function normalizeBar(bar) {
@@ -642,39 +422,6 @@ chart.setDataLoader({
   }
 })
 
-function applyNX() {
-  const config = configFromNXInputs()
-  writeNXInputs(config)
-  localStorage.setItem(NX_STORAGE_KEY, JSON.stringify(config))
-  const existing = chart.getIndicators({ name: 'NX', paneId: 'candle_pane' })
-  if (existing.length) {
-    chart.overrideIndicator({ name: 'NX', paneId: 'candle_pane', calcParams: config.params, visible: config.enabled })
-  } else if (config.enabled) {
-    chart.createIndicator({ name: 'NX', paneId: 'candle_pane', calcParams: config.params }, true)
-  }
-  $('nx-state').textContent = config.enabled
-    ? `蓝 ${config.params[0]}/${config.params[1]} · 黄 ${config.params[2]}/${config.params[3]}`
-    : 'NX 已隐藏'
-}
-
-function applyMX() {
-  const config = configFromMXInputs()
-  writeMXInputs(config)
-  localStorage.setItem(MX_STORAGE_KEY, JSON.stringify(config))
-  const existing = chart.getIndicators({ name: MX_INDICATOR_NAME, paneId: MX_PANE_ID })
-  if (!config.enabled) {
-    if (existing.length) chart.removeIndicator({ name: MX_INDICATOR_NAME, paneId: MX_PANE_ID })
-  } else if (existing.length) {
-    chart.overrideIndicator({ name: MX_INDICATOR_NAME, paneId: MX_PANE_ID, calcParams: config.params })
-  } else {
-    chart.createIndicator({ name: MX_INDICATOR_NAME, paneId: MX_PANE_ID, calcParams: config.params })
-    chart.setPaneOptions({ id: MX_PANE_ID, height: 190, minHeight: 110 })
-  }
-  $('mx-state').textContent = config.enabled
-    ? `S/P/M ${config.params.join('/')} · B 买点 · S 卖点`
-    : 'MX MACD 已隐藏'
-}
-
 function resetFormulaWorker(reason) {
   if (formulaWorker) formulaWorker.terminate()
   formulaWorker = new Worker('/formula-worker.js')
@@ -718,7 +465,8 @@ function formulaManifest(formula) {
     const output = /^([\p{L}_][\p{L}\p{N}_]*)\s*:(?!=)([\s\S]*)$/u.exec(statement)
     if (output) {
       const suffix = output[2].split(',').slice(1).map(value => value.trim().toUpperCase())
-      outputs.push({ name: output[1], color: formulaColor(suffix.find(value => value.startsWith('COLOR') && value !== 'COLORSTICK')), bar: suffix.includes('COLORSTICK') || suffix.includes('VOLSTICK'), hidden: suffix.includes('NODRAW') })
+      const barMode = suffix.includes('VOLSTICK') ? 'volume' : suffix.includes('COLORSTICK') ? 'signed' : ''
+      outputs.push({ name: output[1], color: formulaColor(suffix.find(value => value.startsWith('COLOR') && value !== 'COLORSTICK')), barMode, hidden: suffix.includes('NODRAW') })
     }
     const drawing = /^(DRAWTEXT|DRAWICON|DRAWNUMBER|STICKLINE|DRAWLINE|POLYLINE|DRAWBAND|DRAWKLINE)\s*\(/i.exec(statement)
     if (drawing) drawings.push({ function: drawing[1].toUpperCase(), color: formulaColor((statement.match(/,\s*(COLOR(?:[0-9A-F]{6}|[A-Z]+))/i) || [])[1]) })
@@ -727,9 +475,15 @@ function formulaManifest(formula) {
 }
 
 function formulaFigures(manifest) {
-  const figures = manifest.outputs.filter(output => !output.hidden).map(output => output.bar ? {
+  const figures = manifest.outputs.filter(output => !output.hidden).map(output => output.barMode ? {
     key: `o_${output.name}`, title: `${output.name}: `, type: 'bar', baseValue: 0,
-    styles: () => ({ style: 'fill', color: output.color, borderColor: output.color })
+    styles: ({ data }) => {
+      const row = data?.current || {}
+      const color = output.barMode === 'volume'
+        ? (Number(row.__close) >= Number(row.__open) ? RED : GREEN)
+        : (Number(row[`o_${output.name}`]) >= 0 ? RED : GREEN)
+      return { style: 'fill', color, borderColor: color }
+    }
   } : lineFigure(`o_${output.name}`, `${output.name}: `, output.color))
   manifest.drawings.forEach((drawing, index) => {
     if (drawing.function === 'STICKLINE') {
@@ -755,7 +509,7 @@ async function formulaRows(indicator, data) {
     $('indicator-error').textContent = `${indicator.name}: ${error.message}`
     return data.map(() => ({}))
   }
-  const rows = data.map(() => ({}))
+  const rows = data.map(bar => ({ __open: Number(bar.open), __close: Number(bar.close) }))
   for (const output of result.outputs || []) output.data.forEach((value, index) => { rows[index][`o_${output.name}`] = value })
   for (const event of result.drawings || []) {
     const index = event.barIndex
@@ -778,7 +532,7 @@ async function applyFormulaIndicators() {
     if (chart.getIndicators({ name: active.name, paneId: active.paneId }).length) chart.removeIndicator({ name: active.name, paneId: active.paneId })
   }
   activeFormulaCharts = []
-  const enabled = cloudIndicators.filter(indicator => indicator.enabled).slice(0, 12)
+  const enabled = localIndicators.filter(indicator => indicator.enabled).slice(0, 18)
   for (const indicator of enabled) {
     const name = `TDX_${indicator.id}_${indicator.revision}`.replace(/[^A-Za-z0-9_]/g, '_')
     const manifest = formulaManifest(indicator.formula)
@@ -791,7 +545,7 @@ async function applyFormulaIndicators() {
     if (indicator.pane !== 'main') chart.setPaneOptions({ id: paneId, height: 190, minHeight: 100 })
     activeFormulaCharts.push({ name, paneId })
   }
-  $('indicator-state').textContent = `${enabled.length} 个已启用 · 云端个人配置`
+  $('indicator-state').textContent = `${enabled.length} 个已启用 · 仅保存在本机`
 }
 
 function renderParameterRows(parameters) {
@@ -836,7 +590,7 @@ function selectIndicator(indicator) {
 
 function renderIndicatorList() {
   $('indicator-list').innerHTML = ''
-  for (const indicator of cloudIndicators) {
+  for (const indicator of localIndicators) {
     const row = document.createElement('button')
     row.type = 'button'
     row.className = `indicator-item${selectedIndicator?.id === indicator.id ? ' active' : ''}`
@@ -845,9 +599,9 @@ function renderIndicatorList() {
       event.stopPropagation()
       try {
         const updated = await getJSON(`/v1/me/indicators/${indicator.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...indicator, enabled: event.target.checked }) })
-        cloudIndicators = cloudIndicators.map(item => item.id === updated.id ? updated : item)
+        localIndicators = localIndicators.map(item => item.id === updated.id ? updated : item)
         if (selectedIndicator?.id === updated.id) selectIndicator(updated)
-        await applyFormulaIndicators(); renderIndicatorList(); cacheIndicators()
+        await applyFormulaIndicators(); renderIndicatorList()
       } catch (error) { $('indicator-error').textContent = error.message; event.target.checked = indicator.enabled }
     })
     row.addEventListener('click', () => selectIndicator(indicator))
@@ -855,40 +609,16 @@ function renderIndicatorList() {
   }
 }
 
-function indicatorCacheKey() { return `market-bridge:formula-indicators:${indicatorUserID}` }
-function cacheIndicators() { localStorage.setItem(indicatorCacheKey(), JSON.stringify(cloudIndicators)) }
-
-async function migrateLegacyIndicatorSettings() {
-  const migrationKey = `${INDICATOR_MIGRATION_KEY}:${indicatorUserID}`
-  if (localStorage.getItem(migrationKey)) return
-  const migrations = [[NX_STORAGE_KEY, 'nx-v1'], [MX_STORAGE_KEY, 'mx-macd-v1']]
-  for (const [storageKey, templateKey] of migrations) {
-    let legacy
-    try { legacy = JSON.parse(localStorage.getItem(storageKey)) } catch (_) { legacy = null }
-    const template = cloudIndicators.find(item => item.template_key === templateKey)
-    if (!template || !legacy || !Array.isArray(legacy.params) || legacy.params.length !== template.parameters.length) continue
-    const mutation = { ...template, enabled: legacy.enabled !== false, parameters: template.parameters.map((parameter, index) => ({ ...parameter, value: Number(legacy.params[index]) })) }
-    const updated = await getJSON(`/v1/me/indicators/${template.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(mutation) })
-    cloudIndicators = cloudIndicators.map(item => item.id === updated.id ? updated : item)
-  }
-  localStorage.setItem(migrationKey, '1')
-}
-
 async function loadIndicators() {
   try {
-    const me = await getJSON('/v1/me')
-    indicatorUserID = me.id || me.name || 'unknown'
-    localStorage.setItem('market-bridge:formula-indicators:user', indicatorUserID)
     const response = await getJSON('/v1/me/indicators')
-    cloudIndicators = response.indicators || []
-    await migrateLegacyIndicatorSettings()
-    cacheIndicators()
+    localIndicators = response.indicators || []
   } catch (error) {
-    try { cloudIndicators = JSON.parse(localStorage.getItem(indicatorCacheKey())) || [] } catch (_) { cloudIndicators = [] }
-    $('indicator-state').textContent = cloudIndicators.length ? '云端不可用，使用上次缓存' : '指标配置不可用'
+    localIndicators = []
+    $('indicator-state').textContent = `本地指标读取失败：${error.message}`
   }
   renderIndicatorList()
-  if (cloudIndicators.length) selectIndicator(cloudIndicators[0])
+  if (localIndicators.length) selectIndicator(localIndicators[0])
   await applyFormulaIndicators()
 }
 
@@ -920,23 +650,23 @@ $('indicator-editor').addEventListener('submit', async event => {
     const mutation = { ...editorIndicator(), warnings: analysis.warnings || [] }
     const id = $('indicator-id').value
     const saved = await getJSON(id ? `/v1/me/indicators/${id}` : '/v1/me/indicators', { method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(mutation) })
-    cloudIndicators = id ? cloudIndicators.map(item => item.id === saved.id ? saved : item) : [...cloudIndicators, saved]
-    cacheIndicators(); selectIndicator(saved); await applyFormulaIndicators()
-    $('indicator-error').textContent = '已保存到当前账号'
+    localIndicators = id ? localIndicators.map(item => item.id === saved.id ? saved : item) : [...localIndicators, saved]
+    selectIndicator(saved); await applyFormulaIndicators()
+    $('indicator-error').textContent = '已保存到本机数据缓存，不会上传到 go-server'
   } catch (error) { $('indicator-error').textContent = error.message }
 })
 $('copy-indicator').addEventListener('click', async () => {
   if (!selectedIndicator) return
   try {
     const copy = await getJSON(`/v1/me/indicators/${selectedIndicator.id}/copy`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) })
-    cloudIndicators.push(copy); cacheIndicators(); selectIndicator(copy); await applyFormulaIndicators()
+    localIndicators.push(copy); selectIndicator(copy); await applyFormulaIndicators()
   } catch (error) { $('indicator-error').textContent = error.message }
 })
 $('delete-indicator').addEventListener('click', async () => {
   if (!selectedIndicator || selectedIndicator.kind === 'template' || !confirm(`删除指标“${selectedIndicator.name}”？`)) return
   try {
     await getJSON(`/v1/me/indicators/${selectedIndicator.id}?revision=${selectedIndicator.revision}`, { method: 'DELETE' })
-    cloudIndicators = cloudIndicators.filter(item => item.id !== selectedIndicator.id); cacheIndicators(); selectIndicator(cloudIndicators[0] || null); await applyFormulaIndicators()
+    localIndicators = localIndicators.filter(item => item.id !== selectedIndicator.id); selectIndicator(localIndicators[0] || null); await applyFormulaIndicators()
   } catch (error) { $('indicator-error').textContent = error.message }
 })
 $('save-watchlist').addEventListener('click', async () => {
@@ -961,12 +691,23 @@ $('market').addEventListener('change', () => {
   renderSymbolOptions()
 })
 
+for (const button of document.querySelectorAll('#period-buttons button[data-interval]')) {
+  button.addEventListener('click', () => {
+    $('interval').value = button.dataset.interval
+    for (const item of document.querySelectorAll('#period-buttons button[data-interval]')) {
+      item.setAttribute('aria-pressed', String(item === button))
+    }
+    if ($('symbol').value.trim()) $('query').requestSubmit()
+  })
+}
+
 $('query').addEventListener('submit', event => {
   event.preventDefault()
   $('error').textContent = ''
   try {
     const symbol = normalizeSelectedMarketSymbol($('symbol').value)
     if (!symbol) throw new Error('请输入股票代码')
+    if (!marketHistoryEnabled(symbolMarket(symbol))) throw new Error('服务端未启用 Longbridge 港股/A股历史行情，请设置 GO_SERVER_LONGBRIDGE_HISTORY_ENABLED=true 后重启 go-server')
     $('symbol').value = symbol
     const interval = $('interval').value
     const defaults = marketDefaults(symbol)

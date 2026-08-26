@@ -75,10 +75,7 @@ func main() {
 	if cfg.BinanceEnabled {
 		binanceHistory = &provider.Binance{BaseURL: cfg.BinanceRESTURL, Version: "binance-spot-v1-" + cfg.DataVersion}
 	}
-	var p provider.Provider = usProvider
-	if longbridgeHistory != nil || binanceHistory != nil || len(universeProviders) > 0 {
-		p = &provider.Router{US: usProvider, Longbridge: longbridgeHistory, Binance: binanceHistory, UniverseProviders: universeProviders}
-	}
+	var p provider.Provider = &provider.Router{US: usProvider, Longbridge: longbridgeHistory, Binance: binanceHistory, UniverseProviders: universeProviders}
 	if err := os.MkdirAll(filepath.Dir(cfg.AuthDB), 0o755); err != nil {
 		log.Fatal(err)
 	}

@@ -100,7 +100,7 @@ func TestArchiveBypassesBothClickHouses(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cache.Close()
-	from := time.Now().UTC().AddDate(-2, 0, 0).Truncate(24 * time.Hour)
+	from := time.Now().UTC().AddDate(-3, 0, 0).Truncate(24 * time.Hour)
 	spec := market.DatasetSpec{Symbols: []string{"AAPL"}, Interval: "3m", From: from, To: from.Add(time.Hour), Session: market.RegularSession, Adjustment: market.SplitAdjusted}
 	if _, source, err := cache.Bars(context.Background(), spec); err != nil || source != "provider" {
 		t.Fatalf("source=%s err=%v", source, err)
