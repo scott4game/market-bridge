@@ -85,6 +85,17 @@ docker compose logs -f go-server
 docker compose up -d --force-recreate
 ```
 
+已有服务端部署在升级镜像前也应刷新 Compose 模板，否则新版本增加的环境变量不会传入
+容器。下面的脚本会保留现有 `.env`、校验新模板并备份旧 `compose.yaml`：
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/scott4game/market-bridge/dev/deploy/refresh-server-compose.sh |
+  bash
+docker compose pull
+docker compose up -d --force-recreate go-server
+```
+
 镜像直接从 `docker.io/otsgame/market-bridge-server:latest` 拉取，不需要下载源码或本机编译。端口仅绑定 `127.0.0.1:17601`，由宿主机 Nginx 提供公网 HTTPS/WSS。
 
 需要固定版本时，部署完成后把 `.env` 中的 `MARKET_BRIDGE_VERSION` 改为发布标签，例如 `v0.2.0`，再执行 `docker compose up -d`。

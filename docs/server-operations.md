@@ -130,6 +130,26 @@ docker compose logs --tail=100 go-server
 docker compose restart go-server
 ```
 
+如果 `.env` 中已经存在变量，但 `docker compose config` 和容器环境中都没有该变量，说明
+部署目录的 `compose.yaml` 版本较旧。保留 `.env` 并刷新服务端模板：
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/scott4game/market-bridge/dev/deploy/refresh-server-compose.sh |
+  bash
+docker compose up -d --force-recreate go-server
+```
+
+刷新脚本会先使用现有 `.env` 校验下载的模板，并把原文件备份为带时间戳的
+`compose.yaml.backup.*`。刷新后可以确认新增变量已进入容器：
+
+```bash
+docker compose config | grep GO_SERVER_LONGBRIDGE_HISTORY_ENABLED
+docker inspect "$(docker compose ps -q go-server)" \
+  --format '{{range .Config.Env}}{{println .}}{{end}}' |
+  grep '^GO_SERVER_LONGBRIDGE_HISTORY_ENABLED='
+```
+
 ### 2.5 团队成员与个人 API Key
 
 多账号模式有两类凭据：
