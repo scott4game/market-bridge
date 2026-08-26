@@ -50,6 +50,7 @@ Content-Type: application/json
 | GET | `/v1/market-history/universe` | 获取可搜索的全部标的代码 |
 | GET | `/v1/market-history/adjustments/{symbol}` | 获取美股前复权累计因子及版本 |
 | GET | `/v1/bars/{symbol}` | 查询单标的历史 K 线 |
+| GET | `/v1/live/trades/{symbol}?limit=100` | 查询 Longbridge 最近逐笔成交，最多 1000 笔 |
 | POST | `/v1/datasets/ensure` | 查询多个同市场标的的历史 K 线 |
 | GET | `/v1/me/usage` | 查看当前账号用量和配额 |
 | GET/PUT | `/v1/me/watchlist` | 读取/保存个人收藏；不触发实时订阅 |
@@ -190,6 +191,13 @@ curl -fsS -X POST 'http://127.0.0.1:17600/v1/datasets/ensure' \
 不会猜时间范围，仍必须显式传 `from/to`。
 
 ## 7. 实时 WebSocket
+
+如需在订阅建立时立即初始化逐笔列表，可先请求最近成交；响应中的 `timestamp` 为 Unix
+秒，随后用 WebSocket 的 `trade` 事件续接：
+
+```bash
+curl -fsS 'http://127.0.0.1:17600/v1/live/trades/AAPL?limit=100'
+```
 
 连接后立即发送一次 JSON 订阅消息：
 

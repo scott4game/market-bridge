@@ -369,6 +369,10 @@ func main() {
 
 地址：`ws://127.0.0.1:17600/v1/live/ws`
 
+页面或客户端需要立即填充逐笔列表时，可先调用
+`GET /v1/live/trades/{symbol}?limit=100` 获取 Longbridge 最近成交，再通过 WebSocket
+续接。`limit` 默认为 100、范围为 1–1000；该接口要求服务端启用 Longbridge 实时源。
+
 连接后第一条消息必须包含至少一个标的：
 
 ```json
@@ -594,4 +598,5 @@ curl -fsS -X POST \
 | `GET /v1/me/usage` | 查看配额和用量 |
 | `GET /v1/me/watchlist` | 查看个人实时关注列表 |
 | `PUT /v1/me/watchlist` | 修改个人实时关注列表 |
+| `GET /v1/live/trades/{symbol}?limit=100` | 查询 Longbridge 最近逐笔成交 |
 | `GET /v1/live/ws` | 实时行情 WebSocket |

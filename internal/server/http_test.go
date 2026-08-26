@@ -9,11 +9,24 @@ import (
 	"testing"
 	"time"
 
+	lbquote "github.com/longbridge/openapi-go/quote"
 	"github.com/scott4game/market-bridge/internal/market"
 	"github.com/scott4game/market-bridge/internal/provider"
 )
 
 type fakeUsageReader struct{ snapshot provider.UsageSnapshot }
+
+type fakeRecentTrades struct {
+	symbol string
+	count  int32
+	rows   []*lbquote.Trade
+	err    error
+}
+
+func (f *fakeRecentTrades) Trades(_ context.Context, symbol string, count int32) ([]*lbquote.Trade, error) {
+	f.symbol, f.count = symbol, count
+	return f.rows, f.err
+}
 
 type factorProvider struct{ version string }
 
@@ -84,6 +97,58 @@ func TestMassiveUsageEndpointDisabled(t *testing.T) {
 	(&HTTP{}).Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/providers/massive/usage", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRecentTradesEndpointNormalizesLongbridgeResponse(t *testing.T) {
+	reader := &fakeRecentTrades{rows: []*lbquote.Trade{{Price: "227.15", Volume: 20, Timestamp: 1770000000, TradeType: "F", Direction: 2, TradeSession: lbquote.TradeSessionNormal}}}
+	handler := (&HTTP{Token: "secret", RecentTrades: reader}).Handler()
+
+	unauthorized := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/v1/live/trades/AAPL?limit=25", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized=%d", unauthorized.Code)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/live/trades/AAPL?limit=25", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if reader.symbol != "AAPL.US" || reader.count != 25 {
+		t.Fatalf("upstream symbol=%q count=%d", reader.symbol, reader.count)
+	}
+	var response struct {
+		Symbol string        `json:"symbol"`
+		Trades []recentTrade `json:"trades"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Symbol != "AAPL" || len(response.Trades) != 1 || response.Trades[0].TradeType != "F" || response.Trades[0].Direction != 2 {
+		t.Fatalf("response=%+v", response)
+	}
+}
+
+func TestRecentTradesEndpointValidatesAvailabilityAndLimit(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		http *HTTP
+		path string
+		want int
+	}{
+		{name: "disabled", http: &HTTP{}, path: "/v1/live/trades/AAPL", want: http.StatusServiceUnavailable},
+		{name: "invalid limit", http: &HTTP{RecentTrades: &fakeRecentTrades{}}, path: "/v1/live/trades/AAPL?limit=1001", want: http.StatusBadRequest},
+		{name: "binance", http: &HTTP{RecentTrades: &fakeRecentTrades{}}, path: "/v1/live/trades/BTCUSDT.BINANCE", want: http.StatusBadRequest},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			test.http.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, test.path, nil))
+			if recorder.Code != test.want {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+		})
 	}
 }
 

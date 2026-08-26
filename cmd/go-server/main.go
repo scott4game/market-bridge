@@ -204,9 +204,13 @@ func main() {
 	if clickhouse != nil {
 		historicalClickHouse = clickhouse
 	}
+	var recentTrades marketserver.RecentTradesReader
+	if longbridgeQuote != nil {
+		recentTrades = longbridgeQuote
+	}
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           (&marketserver.HTTP{Store: store, Token: cfg.BearerToken, Access: auth, Limiter: limiter, Live: hub, Usage: usage, ProviderStatus: providerStatus, ClickHouseEnabled: cfg.ClickHouseEnabled, ClickHouse: historicalClickHouse, HistoryCatalog: historyCatalog, DataVersion: cfg.DataVersion, EmptyCoverageTTL: cfg.EmptyCoverageTTL, HistoryRetention: cfg.ClickHouseRetention}).Handler(),
+		Handler:           (&marketserver.HTTP{Store: store, Token: cfg.BearerToken, Access: auth, Limiter: limiter, Live: hub, Usage: usage, ProviderStatus: providerStatus, ClickHouseEnabled: cfg.ClickHouseEnabled, ClickHouse: historicalClickHouse, HistoryCatalog: historyCatalog, DataVersion: cfg.DataVersion, EmptyCoverageTTL: cfg.EmptyCoverageTTL, HistoryRetention: cfg.ClickHouseRetention, RecentTrades: recentTrades}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    1 << 20,

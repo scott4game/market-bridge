@@ -9,10 +9,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/coder/websocket"
+	lbquote "github.com/longbridge/openapi-go/quote"
 	"github.com/scott4game/market-bridge/internal/access"
 	"github.com/scott4game/market-bridge/internal/coverage"
 	"github.com/scott4game/market-bridge/internal/market"
@@ -29,6 +31,10 @@ type HistoricalClickHouse interface {
 	WriteBars(context.Context, market.AdjustmentMode, []market.Bar, uint64) error
 }
 
+type RecentTradesReader interface {
+	Trades(context.Context, string, int32) ([]*lbquote.Trade, error)
+}
+
 type HTTP struct {
 	Store             *Store
 	Token             string
@@ -43,6 +49,7 @@ type HTTP struct {
 	DataVersion       string
 	EmptyCoverageTTL  time.Duration
 	HistoryRetention  time.Duration
+	RecentTrades      RecentTradesReader
 }
 
 func (h *HTTP) Handler() http.Handler {
@@ -53,6 +60,7 @@ func (h *HTTP) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/datasets/{id}/manifest", h.auth("history:read", h.manifest))
 	mux.HandleFunc("GET /v1/datasets/{id}/files/{name...}", h.auth("history:read", h.file))
 	mux.HandleFunc("GET /v1/live/ws", h.auth("live:read", h.live))
+	mux.HandleFunc("GET /v1/live/trades/{symbol}", h.auth("live:read", h.recentTrades))
 	mux.HandleFunc("GET /v1/providers/massive/usage", h.auth("provider:usage", h.usage))
 	mux.HandleFunc("GET /v1/providers/status", h.auth("profile:read", h.providerStatus))
 	mux.HandleFunc("GET /v1/storage/capabilities", h.auth("profile:read", h.storageCapabilities))
@@ -64,6 +72,56 @@ func (h *HTTP) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/me/watchlist", h.auth("profile:read", h.getWatchlist))
 	mux.HandleFunc("PUT /v1/me/watchlist", h.auth("profile:read", h.putWatchlist))
 	return mux
+}
+
+type recentTrade struct {
+	Price        string               `json:"price"`
+	Volume       int64                `json:"volume"`
+	Timestamp    int64                `json:"timestamp"`
+	TradeType    string               `json:"trade_type"`
+	Direction    int32                `json:"direction"`
+	TradeSession lbquote.TradeSession `json:"trade_session"`
+}
+
+func (h *HTTP) recentTrades(w http.ResponseWriter, r *http.Request) {
+	if h.RecentTrades == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Longbridge live provider is not enabled"})
+		return
+	}
+	symbol, venue, err := market.NormalizeSymbol(r.PathValue("symbol"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if venue == market.VenueBinance {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "recent trades are only available for Longbridge securities"})
+		return
+	}
+	limit := int64(100)
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		limit, err = strconv.ParseInt(raw, 10, 32)
+		if err != nil || limit < 1 || limit > 1000 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "limit must be between 1 and 1000"})
+			return
+		}
+	}
+	upstreamSymbol := symbol
+	if venue == market.VenueUS {
+		upstreamSymbol += ".US"
+	}
+	rows, err := h.RecentTrades.Trades(r.Context(), upstreamSymbol, int32(limit))
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Longbridge recent trades are unavailable"})
+		return
+	}
+	trades := make([]recentTrade, 0, len(rows))
+	for _, row := range rows {
+		if row == nil {
+			continue
+		}
+		trades = append(trades, recentTrade{Price: row.Price, Volume: row.Volume, Timestamp: row.Timestamp, TradeType: row.TradeType, Direction: row.Direction, TradeSession: row.TradeSession})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"symbol": symbol, "trades": trades})
 }
 
 func (h *HTTP) historyAdjustments(w http.ResponseWriter, r *http.Request) {

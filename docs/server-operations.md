@@ -26,7 +26,7 @@ GO_SERVER_LIVE_PROVIDERS=longbridge,binance
 
 不要把 `GO_SERVER_PROVIDER` 设置为 `longbridge` 或 `binance`。它只选择裸代码美股的基础历史 Provider；服务会根据代码后缀把 `.HK/.SH/.SZ` 路由到 Longbridge，把 `.BINANCE` 路由到 Binance。旧配置 `GO_SERVER_LIVE_PROVIDER=longbridge` 仍可用；需要多个实时源时使用复数配置。
 
-默认不开启 Longbridge 深度订阅，以减少权限和订阅额度要求。如账号已有深度权限，可设置 `GO_SERVER_LONGBRIDGE_DEPTH_ENABLED=true`。Longbridge 单次历史接口最多返回 1000 根，服务会自动分页；供应商的频率、市场权限和每月标的额度仍然适用。
+默认不开启 Longbridge 深度订阅，以减少权限和订阅额度要求。如账号已有深度权限，可设置 `GO_SERVER_LONGBRIDGE_DEPTH_ENABLED=true`；Web 页面会在 K 线右侧显示逐笔成交和盘口，并在该开关关闭时明确提示。Longbridge 单次历史接口最多返回 1000 根，服务会自动分页；供应商的频率、市场权限和每月标的额度仍然适用。
 
 ### 1.1 市场代码和默认参数
 

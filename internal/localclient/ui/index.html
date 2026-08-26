@@ -48,11 +48,27 @@
     <div aria-live="polite"><small>WebSocket 实时</small><strong id="ws-status">未启用</strong><span id="ws-detail">实时推送目前仅支持 1m 周期</span></div>
   </section>
   <section class="watchlist"><label>个人收藏（不自动订阅）<input id="watchlist-symbols" placeholder="AAPL,NVDA"></label><button id="save-watchlist" type="button">保存收藏</button><span id="watchlist-state">实时行情按当前页面/API 连接按需订阅</span></section>
-  <div id="chart" role="img" aria-label="交互式 K 线图"></div>
+  <section class="market-workspace">
+    <div id="chart" role="img" aria-label="交互式 K 线图"></div>
+    <aside id="live-market" aria-label="实时成交与盘口">
+      <section class="depth-panel">
+        <div class="live-panel-title"><strong>实时盘口</strong><span id="depth-state">等待订阅</span></div>
+        <div class="market-table-head"><span>档位</span><span>价格</span><span>挂单量</span><span>委托笔数</span></div>
+        <div id="depth-rows" class="market-table-body"><p class="live-empty">加载股票后显示盘口</p></div>
+      </section>
+      <section class="trades-panel">
+        <div class="live-panel-title"><strong>逐笔成交</strong><span id="trades-state">等待订阅</span></div>
+        <div class="trade-counts"><span id="recent-trade-count">最近成交 0 笔</span><span id="live-trade-count">实时新增 0 笔</span></div>
+        <div class="market-table-head trade-head"><span>时间</span><span>价格</span><span>成交量</span><span>类型</span></div>
+        <div id="trade-rows" class="market-table-body"><p class="live-empty">加载股票后显示成交</p></div>
+      </section>
+    </aside>
+  </section>
   <pre id="error"></pre>
 </main>
 <script src="/klinecharts.min.js"></script>
 <script src="/history.js"></script>
+<script src="/live-market.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

@@ -8,6 +8,8 @@ const PURPLE = '#e970dc'
 const RED = '#ff4d5a'
 const GREEN = '#2ac99a'
 let socket = null
+let liveGeneration = 0
+const liveFeed = { symbol: '', trades: [], bufferedTrades: [], initializing: false, recentCount: 0, liveCount: 0, depth: null, recoverOnConnect: false }
 let universeSymbols = []
 const wsMonitor = { state: 'disabled', symbol: '', interval: '', count: 0, connectedAt: 0, lastMessageAt: 0, lastType: '', detail: '实时推送目前仅支持 1m 周期' }
 let activeQuery = null
@@ -331,7 +333,127 @@ function setYAxisZoomEnabled(enabled, persist = true) {
   }
 }
 
+function setLivePanelState(id, text, className = '') {
+  $(id).textContent = text
+  $(id).className = className
+}
+
+function compactMarketNumber(value) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return '—'
+  return new Intl.NumberFormat('zh-CN', { notation: Math.abs(numeric) >= 10000 ? 'compact' : 'standard', maximumFractionDigits: 2 }).format(numeric)
+}
+
+function tradeTime(timestamp) {
+  if (!timestamp) return '—'
+  const timezone = marketDefaults(liveFeed.symbol).timezone
+  return new Date(timestamp).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: timezone })
+}
+
+function renderTrades() {
+  $('recent-trade-count').textContent = `最近成交 ${liveFeed.recentCount} 笔`
+  $('live-trade-count').textContent = `实时新增 ${liveFeed.liveCount} 笔`
+  if (!liveFeed.trades.length) {
+    const empty = document.createElement('p')
+    empty.className = 'live-empty'
+    empty.textContent = liveFeed.initializing ? '正在加载最近成交' : '等待新的逐笔成交'
+    $('trade-rows').replaceChildren(empty)
+    return
+  }
+  const fragment = document.createDocumentFragment()
+  for (const trade of liveFeed.trades) {
+    const row = document.createElement('div')
+    row.className = `market-row trade-row ${trade.direction === 2 ? 'up' : trade.direction === 1 ? 'down' : 'neutral'}`
+    const direction = trade.direction === 2 ? '↑' : trade.direction === 1 ? '↓' : '—'
+    const values = [tradeTime(trade.timestamp), trade.price, compactMarketNumber(trade.volume), trade.tradeType || direction]
+    for (const value of values) {
+      const cell = document.createElement('span')
+      cell.textContent = value
+      row.appendChild(cell)
+    }
+    row.title = `方向 ${direction} · 交易时段 ${trade.tradeSession}`
+    fragment.appendChild(row)
+  }
+  $('trade-rows').replaceChildren(fragment)
+}
+
+function renderDepth(depth = liveFeed.depth) {
+  if (providerStatus?.longbridge?.depth_enabled === false) {
+    setLivePanelState('depth-state', '服务端未启用深度', 'warn')
+    const empty = document.createElement('p')
+    empty.className = 'live-empty'
+    empty.textContent = '设置 GO_SERVER_LONGBRIDGE_DEPTH_ENABLED=true 并确认 OpenAPI 行情权限'
+    $('depth-rows').replaceChildren(empty)
+    return
+  }
+  if (!depth || (!depth.asks.length && !depth.bids.length)) {
+    setLivePanelState('depth-state', '等待盘口', 'warn')
+    const empty = document.createElement('p')
+    empty.className = 'live-empty'
+    empty.textContent = '休市、权限不足或尚未收到深度快照'
+    $('depth-rows').replaceChildren(empty)
+    return
+  }
+  setLivePanelState('depth-state', '实时更新', 'ok')
+  const fragment = document.createDocumentFragment()
+  const rows = depth.asks.map(level => ({ ...level, side: 'ask' })).concat(depth.bids.map((level, index) => ({ ...level, side: 'bid', spread: index === 0 })))
+  for (const level of rows) {
+    const row = document.createElement('div')
+    row.className = `market-row ${level.side}${level.spread ? ' book-spread' : ''}`
+    const values = [level.side === 'ask' ? `卖${level.position}` : `买${level.position}`, level.price, compactMarketNumber(level.volume), compactMarketNumber(level.orderNum)]
+    for (const value of values) {
+      const cell = document.createElement('span')
+      cell.textContent = value
+      row.appendChild(cell)
+    }
+    fragment.appendChild(row)
+  }
+  $('depth-rows').replaceChildren(fragment)
+}
+
+function resetLivePanel(symbol) {
+  Object.assign(liveFeed, { symbol, trades: [], bufferedTrades: [], initializing: true, recentCount: 0, liveCount: 0, depth: null, recoverOnConnect: false })
+  setLivePanelState('trades-state', '正在加载', 'warn')
+  renderTrades()
+  renderDepth()
+}
+
+async function loadRecentTrades(symbol, generation) {
+  liveFeed.initializing = true
+  setLivePanelState('trades-state', '正在同步最近成交', 'warn')
+  renderTrades()
+  try {
+    const data = await getJSON(`/v1/live/trades/${encodeURIComponent(symbol)}?limit=100`)
+    if (generation !== liveGeneration || liveFeed.symbol !== symbol) return
+    const recent = window.liveMarketUtils.normalizeTrades(data.trades)
+    liveFeed.trades = window.liveMarketUtils.mergeInitialAndBuffered(recent, liveFeed.bufferedTrades, 100)
+    liveFeed.recentCount = recent.length
+    liveFeed.bufferedTrades = []
+    liveFeed.initializing = false
+    setLivePanelState('trades-state', socket?.readyState === WebSocket.OPEN ? '实时更新' : '最近成交', socket?.readyState === WebSocket.OPEN ? 'ok' : 'warn')
+    renderTrades()
+  } catch (error) {
+    if (generation !== liveGeneration || liveFeed.symbol !== symbol) return
+    liveFeed.trades = liveFeed.bufferedTrades.slice().sort((a, b) => b.timestamp - a.timestamp).slice(0, 100)
+    liveFeed.bufferedTrades = []
+    liveFeed.initializing = false
+    setLivePanelState('trades-state', '最近成交加载失败，等待推送', 'warn')
+    renderTrades()
+  }
+}
+
+function consumeLiveTrades(value) {
+  const trades = window.liveMarketUtils.normalizeTrades(value)
+  if (!trades.length) return
+  liveFeed.liveCount += trades.length
+  if (liveFeed.initializing) liveFeed.bufferedTrades.push(...trades)
+  else liveFeed.trades = trades.concat(liveFeed.trades).sort((a, b) => b.timestamp - a.timestamp).slice(0, 100)
+  setLivePanelState('trades-state', '实时更新', 'ok')
+  renderTrades()
+}
+
 function stopLive() {
+  liveGeneration++
   closeSocket()
 }
 
@@ -339,17 +461,16 @@ function startLive(symbol, period, callback) {
   stopLive()
   const interval = periodToInterval(period)
   const monitorBase = { symbol, interval, count: 0, connectedAt: 0, lastMessageAt: 0, lastType: '' }
-  if (interval !== '1m') {
-    setWSState('disabled', { ...monitorBase, detail: `${interval} 周期只展示历史数据；实时推送目前仅支持 1m` })
-    return
-  }
+  const generation = ++liveGeneration
+  resetLivePanel(symbol)
+  loadRecentTrades(symbol, generation)
   const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
   const ws = new WebSocket(`${scheme}://${location.host}/v1/live/ws`)
   socket = ws
   setWSState('connecting', { ...monitorBase, detail: `正在连接并订阅 ${symbol}` })
   ws.onopen = () => {
     if (socket !== ws) return
-    ws.send(JSON.stringify({ action: 'subscribe', symbols: [symbol], events: ['bar'], status: true }))
+    ws.send(JSON.stringify({ action: 'subscribe', symbols: [symbol], events: ['bar', 'trade', 'depth'], status: true }))
     setWSState('connecting', { detail: `本地 WebSocket 已连接，正在按需订阅 ${symbol}` })
   }
   ws.onmessage = event => {
@@ -366,24 +487,51 @@ function startLive(symbol, period, callback) {
       const values = { detail: payload.detail || `正在按需订阅 ${symbol}` }
       if (state === 'connected') values.connectedAt = Date.now()
       setWSState(state, values)
+      if (state === 'reconnecting') {
+        liveFeed.recoverOnConnect = true
+        liveFeed.initializing = true
+        liveFeed.bufferedTrades = []
+        liveFeed.depth = null
+        setLivePanelState('trades-state', '连接恢复中', 'warn')
+        setLivePanelState('depth-state', '连接恢复中', 'warn')
+      } else if (state === 'connected' && liveFeed.recoverOnConnect) {
+        liveFeed.recoverOnConnect = false
+        loadRecentTrades(symbol, generation)
+        renderDepth()
+      }
       return
     }
     const now = Date.now()
     if (payload.type === 'gap') {
       setWSState('gap', { count: wsMonitor.count + 1, lastMessageAt: now, lastType: 'gap', detail: `${symbol} 推送出现缺口：${payload.reason || 'unknown'}` })
+      liveFeed.depth = null
+      liveFeed.bufferedTrades = []
+      loadRecentTrades(symbol, generation)
+      renderDepth()
       return
     }
     setWSState('connected', { count: wsMonitor.count + 1, lastMessageAt: now, lastType: payload.type || 'message' })
-    if (payload.type === 'bar' && payload.bar) callback(normalizeBar(payload.bar))
+    if (payload.type === 'bar' && payload.bar && interval === '1m') callback(normalizeBar(payload.bar))
+    if (payload.type === 'trade' && payload.trade) consumeLiveTrades(payload.trade)
+    if (payload.type === 'depth' && payload.depth) {
+      liveFeed.depth = window.liveMarketUtils.normalizeDepth(payload.depth, 10)
+      renderDepth()
+    }
   }
   ws.onerror = () => {
-    if (socket === ws) setWSState('error', { detail: `${symbol} WebSocket 连接异常` })
+    if (socket === ws) {
+      setWSState('error', { detail: `${symbol} WebSocket 连接异常` })
+      setLivePanelState('trades-state', '连接异常', 'bad')
+      setLivePanelState('depth-state', '连接异常', 'bad')
+    }
   }
   ws.onclose = event => {
     if (socket !== ws) return
     socket = null
     const reason = event.reason ? `：${event.reason}` : ''
     setWSState('closed', { detail: `${symbol} 连接已关闭（code ${event.code}）${reason}` })
+    setLivePanelState('trades-state', '连接已关闭', 'bad')
+    setLivePanelState('depth-state', '连接已关闭', 'bad')
   }
 }
 

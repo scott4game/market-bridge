@@ -22,13 +22,17 @@ func TestEmbeddedKLineChartAssets(t *testing.T) {
 	}{
 		{path: "/", want: "/klinecharts.min.js"},
 		{path: "/", want: "/history.js"},
+		{path: "/", want: "/live-market.js"},
 		{path: "/", want: "管理指标"},
 		{path: "/", want: "WebSocket 实时"},
+		{path: "/", want: "逐笔成交"},
+		{path: "/", want: "实时盘口"},
 		{path: "/", want: "symbol-options"},
 		{path: "/", want: "<label>股市"},
 		{path: "/app.js", want: "applyFormulaIndicators"},
 		{path: "/app.js", want: "loadSymbolOptions"},
 		{path: "/history.js", want: "MAX_BARS_PER_REQUEST"},
+		{path: "/live-market.js", want: "mergeInitialAndBuffered"},
 		{path: "/formula-worker.js", want: "Market Bridge TDX formula worker"},
 		{path: "/klinecharts.min.js", want: "KLineChart v10.0.2"},
 		{path: "/klinecharts.LICENSE.txt", want: "Apache License"},
@@ -83,6 +87,8 @@ func TestEmbeddedUIUsesProviderCapabilitiesAndSignedHistogramColors(t *testing.T
 		"/v1/me/indicators/reset-display",
 		"upColor: RED, downColor: GREEN",
 		"$('query').requestSubmit()",
+		"events: ['bar', 'trade', 'depth']",
+		"/v1/live/trades/",
 	} {
 		if !strings.Contains(source, want) {
 			t.Fatalf("embedded app is missing %q", want)
