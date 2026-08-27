@@ -53,7 +53,14 @@ func main() {
 		log.Fatal(err)
 	}
 	defer cache.Close()
-	if cfg.RedisEnabled {
+	storageStatus := cache.StorageStatus(ctx)
+	redisMode, _ := storageStatus["redis_mode"].(string)
+	switch redisMode {
+	case "remote_redis":
+		log.Printf("go-client Redis mode: remote server cache active; local Redis disabled")
+	case "remote_redis_degraded":
+		log.Printf("go-client Redis mode: remote server cache degraded; local Redis remains disabled and go-server will bypass cache")
+	case "local_redis":
 		redisCtx, redisCancel := context.WithTimeout(ctx, time.Second)
 		redisErr := cache.RedisHealthy(redisCtx)
 		redisCancel()
@@ -62,7 +69,7 @@ func main() {
 		} else {
 			log.Printf("go-client Redis connection succeeded: address=%s db=%d user=%s", cfg.RedisAddress, cfg.RedisDB, displayUser(cfg.RedisUsername))
 		}
-	} else {
+	default:
 		log.Printf("go-client Redis disabled")
 	}
 	switch cmd {

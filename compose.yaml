@@ -41,11 +41,18 @@ services:
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
       GO_SERVER_CLICKHOUSE_RETENTION: ${GO_SERVER_CLICKHOUSE_RETENTION:-17520h}
       GO_SERVER_CLICKHOUSE_CLEANUP_INTERVAL: ${GO_SERVER_CLICKHOUSE_CLEANUP_INTERVAL:-720h}
+      GO_SERVER_REDIS_ENABLED: ${GO_SERVER_REDIS_ENABLED:-false}
+      GO_SERVER_REDIS_ADDRESS: ${GO_SERVER_REDIS_ADDRESS:-}
+      GO_SERVER_REDIS_USERNAME: ${GO_SERVER_REDIS_USERNAME:-}
+      GO_SERVER_REDIS_PASSWORD: ${GO_SERVER_REDIS_PASSWORD:-}
+      GO_SERVER_REDIS_DB: ${GO_SERVER_REDIS_DB:-0}
+      GO_SERVER_REDIS_TTL: ${GO_SERVER_REDIS_TTL:-24h}
       GO_SERVER_MARKET_HISTORY_SYNC_ENABLED: ${GO_SERVER_MARKET_HISTORY_SYNC_ENABLED:-false}
       GO_SERVER_MARKET_HISTORY_SYNC_INTERVAL: ${GO_SERVER_MARKET_HISTORY_SYNC_INTERVAL:-24h}
     volumes:
       - server-data:/data
     ports: ["127.0.0.1:17601:17601"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
     restart: unless-stopped
 
   go-client:
@@ -61,9 +68,11 @@ services:
       GO_CLIENT_SERVER_TOKEN: ${GO_CLIENT_SERVER_TOKEN:?set GO_CLIENT_SERVER_TOKEN in .env}
       GO_CLIENT_PARQUET_TTL: ${GO_CLIENT_PARQUET_TTL:-720h}
       GO_CLIENT_CLEANUP_INTERVAL: ${GO_CLIENT_CLEANUP_INTERVAL:-6h}
-      GO_CLIENT_REDIS_ENABLED: "true"
-      GO_CLIENT_REDIS_ADDRESS: redis:6379
-      GO_CLIENT_REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+      GO_CLIENT_REDIS_ENABLED: ${GO_CLIENT_REDIS_ENABLED:-true}
+      GO_CLIENT_REDIS_ADDRESS: ${GO_CLIENT_REDIS_ADDRESS:-redis:6379}
+      GO_CLIENT_REDIS_USERNAME: ${GO_CLIENT_REDIS_USERNAME:-}
+      GO_CLIENT_REDIS_PASSWORD: ${GO_CLIENT_REDIS_PASSWORD:-${REDIS_PASSWORD:-}}
+      GO_CLIENT_REDIS_DB: ${GO_CLIENT_REDIS_DB:-0}
       GO_CLIENT_REDIS_TTL: ${GO_CLIENT_REDIS_TTL:-24h}
       GO_CLIENT_NEWS_RETENTION: ${GO_CLIENT_NEWS_RETENTION:-720h}
       GO_CLIENT_CLICKHOUSE_ENABLED: ${GO_CLIENT_CLICKHOUSE_ENABLED:-false}
@@ -82,20 +91,18 @@ services:
       - client-data:/data
     extra_hosts: ["host.docker.internal:host-gateway"]
     depends_on:
-      redis:
-        condition: service_healthy
       clickhouse:
         condition: service_healthy
         required: false
     restart: unless-stopped
 
   redis:
-    profiles: [local]
+    profiles: [local, local-redis]
     image: redis:7.4-alpine
     environment:
-      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       REDIS_MAXMEMORY: ${REDIS_MAXMEMORY:-1gb}
-    command: ["sh", "-c", "exec redis-server --save '' --appendonly no --maxmemory \"$$REDIS_MAXMEMORY\" --maxmemory-policy allkeys-lru --requirepass \"$$REDIS_PASSWORD\""]
+    command: ["sh", "-c", "test -n \"$$REDIS_PASSWORD\" || { echo 'REDIS_PASSWORD is required for local Redis' >&2; exit 1; }; exec redis-server --save '' --appendonly no --maxmemory \"$$REDIS_MAXMEMORY\" --maxmemory-policy allkeys-lru --requirepass \"$$REDIS_PASSWORD\""]
     expose: [6379]
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping 2>/dev/null | grep -q PONG"]

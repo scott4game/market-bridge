@@ -43,6 +43,12 @@ type Server struct {
 	ClickHousePassword        string
 	ClickHouseRetention       time.Duration
 	ClickHouseCleanupInterval time.Duration
+	RedisEnabled              bool
+	RedisAddress              string
+	RedisUsername             string
+	RedisPassword             string
+	RedisDB                   int
+	RedisTTL                  time.Duration
 	MarketHistorySyncEnabled  bool
 	MarketHistorySyncInterval time.Duration
 	DatasetTTL                time.Duration
@@ -66,6 +72,7 @@ func ServerFromEnv() Server {
 		ClickHouseEnabled: boolean("GO_SERVER_CLICKHOUSE_ENABLED", false),
 		ClickHouseURL:     os.Getenv("CLICKHOUSE_URL"), ClickHouseDatabase: env("CLICKHOUSE_DATABASE", "market"), ClickHouseUser: env("CLICKHOUSE_USER", "market"), ClickHousePassword: os.Getenv("CLICKHOUSE_PASSWORD"),
 		ClickHouseRetention: duration("GO_SERVER_CLICKHOUSE_RETENTION", 730*24*time.Hour), ClickHouseCleanupInterval: duration("GO_SERVER_CLICKHOUSE_CLEANUP_INTERVAL", 720*time.Hour),
+		RedisEnabled: boolean("GO_SERVER_REDIS_ENABLED", false), RedisAddress: os.Getenv("GO_SERVER_REDIS_ADDRESS"), RedisUsername: os.Getenv("GO_SERVER_REDIS_USERNAME"), RedisPassword: os.Getenv("GO_SERVER_REDIS_PASSWORD"), RedisDB: integer("GO_SERVER_REDIS_DB", 0), RedisTTL: duration("GO_SERVER_REDIS_TTL", 24*time.Hour),
 		MarketHistorySyncEnabled: boolean("GO_SERVER_MARKET_HISTORY_SYNC_ENABLED", false), MarketHistorySyncInterval: duration("GO_SERVER_MARKET_HISTORY_SYNC_INTERVAL", 24*time.Hour),
 		DatasetTTL: duration("GO_SERVER_DATASET_TTL", 24*time.Hour), DatasetWorkers: integer("GO_SERVER_DATASET_WORKERS", 2), DatasetQueueSize: integer("GO_SERVER_DATASET_QUEUE_SIZE", 100),
 		DatasetBuildTimeout: duration("GO_SERVER_DATASET_BUILD_TIMEOUT", 10*time.Minute), EmptyCoverageTTL: duration("GO_SERVER_EMPTY_COVERAGE_TTL", 15*time.Minute),
@@ -126,18 +133,26 @@ func (s Server) Validate() error {
 			}
 		}
 	}
-	if !s.ClickHouseEnabled {
-		return nil
+	if s.RedisEnabled && strings.TrimSpace(s.RedisAddress) == "" {
+		return fmt.Errorf("GO_SERVER_REDIS_ADDRESS is required when GO_SERVER_REDIS_ENABLED=true")
 	}
-	values := []struct{ name, value string }{
-		{"CLICKHOUSE_URL", s.ClickHouseURL},
-		{"CLICKHOUSE_DATABASE", s.ClickHouseDatabase},
-		{"CLICKHOUSE_USER", s.ClickHouseUser},
-		{"CLICKHOUSE_PASSWORD", s.ClickHousePassword},
+	if s.RedisEnabled && s.RedisDB < 0 {
+		return fmt.Errorf("GO_SERVER_REDIS_DB must be non-negative")
 	}
-	for _, item := range values {
-		if strings.TrimSpace(item.value) == "" {
-			return fmt.Errorf("%s is required when GO_SERVER_CLICKHOUSE_ENABLED=true", item.name)
+	if s.RedisEnabled && s.RedisTTL <= 0 {
+		return fmt.Errorf("GO_SERVER_REDIS_TTL must be greater than zero")
+	}
+	if s.ClickHouseEnabled {
+		values := []struct{ name, value string }{
+			{"CLICKHOUSE_URL", s.ClickHouseURL},
+			{"CLICKHOUSE_DATABASE", s.ClickHouseDatabase},
+			{"CLICKHOUSE_USER", s.ClickHouseUser},
+			{"CLICKHOUSE_PASSWORD", s.ClickHousePassword},
+		}
+		for _, item := range values {
+			if strings.TrimSpace(item.value) == "" {
+				return fmt.Errorf("%s is required when GO_SERVER_CLICKHOUSE_ENABLED=true", item.name)
+			}
 		}
 	}
 	return nil

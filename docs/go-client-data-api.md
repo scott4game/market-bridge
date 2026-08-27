@@ -62,7 +62,8 @@ GO_SERVER_CLICKHOUSE_ENABLED=false
 客户端 Docker 配置示例：
 
 ```dotenv
-COMPOSE_PROFILES=clickhouse
+COMPOSE_PROFILES=local-redis,clickhouse
+GO_CLIENT_REDIS_ENABLED=true
 GO_CLIENT_CLICKHOUSE_ENABLED=true
 GO_CLIENT_CLICKHOUSE_COMPLETED_BARS_ONLY=true
 GO_CLIENT_CLICKHOUSE_URL=http://clickhouse:8123
@@ -83,9 +84,20 @@ go-client 根据页面或 SDK 的活跃 WebSocket 连接维持共享的上游按
 时客户端保持远端模式并告警，不会自动切成本地双写。服务端明确关闭 CH 后，本地 CH
 才重新开始工作。
 
+服务端也可设置 `GO_SERVER_REDIS_ENABLED=true` 并通过 `GO_SERVER_REDIS_ADDRESS` 等配置
+连接已有 Redis。客户端探测到远端 Redis 后停止本地 Redis 读写，页面会独立显示
+“远端 Redis 热缓存”。远端 Redis 暂时不可用时，服务端绕过缓存读取 ClickHouse 或
+Provider，客户端不会恢复本地 Redis。若服务端同时提供 Redis 和 ClickHouse，客户端可用：
+
+```dotenv
+COMPOSE_PROFILES=
+GO_CLIENT_REDIS_ENABLED=false
+GO_CLIENT_CLICKHOUSE_ENABLED=false
+```
+
 最近730天的一分钟数据进入当前唯一启用的 ClickHouse；清理器每720小时删除超过730天
 的完整日分区。早于730天的查询始终绕过两侧 ClickHouse，经 go-server 直接访问
-Massive/Longbridge，并按股票、周期和自然月缓存在本地 Redis，默认 TTL 为24小时。
+Massive/Longbridge，并按股票、周期和自然月缓存在当前唯一启用的 Redis，默认 TTL 为24小时。
 跨越730天边界的请求会合并 CH 近期数据与 Provider 历史数据后去重排序。
 
 可查看实际存储模式：

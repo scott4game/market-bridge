@@ -254,6 +254,24 @@ async function refreshAccount() {
     $('storage-detail').textContent = storage.mode === 'remote_clickhouse'
       ? `本地 ClickHouse 存储关闭 · revision ${storage.history_revision ?? 0}`
       : `revision ${storage.history_revision ?? 0} · ${storage.data_version || '—'}`
+    const redisLabels = {
+      remote_redis: '远端 Redis 热缓存',
+      remote_redis_degraded: '远端 Redis 故障',
+      local_redis: '本地 Redis 热缓存',
+      disabled: 'Redis 缓存关闭'
+    }
+    $('redis-storage-status').textContent = redisLabels[storage.redis_mode] || storage.redis_mode || 'Redis 状态不可用'
+    $('redis-storage-status').className = storage.redis_mode === 'remote_redis_degraded' ? 'bad' : storage.redis_mode === 'disabled' ? 'warn' : 'ok'
+    if (storage.redis_mode === 'remote_redis') {
+      $('redis-storage-detail').textContent = '本地 Redis 已关闭'
+    } else if (storage.redis_mode === 'remote_redis_degraded') {
+      $('redis-storage-detail').textContent = '服务端正在绕过缓存回源'
+    } else if (storage.redis_mode === 'local_redis') {
+      $('redis-storage-detail').textContent = '服务端 Redis 未启用'
+    } else {
+      $('redis-storage-detail').textContent = '未启用 Redis 热缓存'
+    }
+    if (storage.capability_stale) $('redis-storage-detail').textContent += ' · 状态探测暂时不可用'
     $('watchlist-symbols').value = (watchlist.symbols || []).join(',')
     $('watchlist-state').textContent = `已收藏 ${(watchlist.symbols || []).length} / ${watchlist.max_symbols ?? usage.quotas.live_symbols} · 不自动订阅`
     if (!socket || socket.readyState !== WebSocket.OPEN) setStatus('账号在线', 'ok')

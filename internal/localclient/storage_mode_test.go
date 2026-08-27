@@ -179,3 +179,44 @@ func TestRemoteClickHouseLogicallyDisablesLocalWrites(t *testing.T) {
 		t.Fatalf("status=%#v", status)
 	}
 }
+
+func TestRemoteRedisRoutesHistoryAndDisablesLocalRedis(t *testing.T) {
+	var historyCalls, datasetCalls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/storage/capabilities":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"clickhouse":   map[string]any{"enabled": false, "healthy": false, "error": ""},
+				"redis":        map[string]any{"enabled": true, "healthy": true, "error": ""},
+				"data_version": "remote-redis-v1",
+			})
+		case "/v1/history/bars":
+			historyCalls++
+			_ = json.NewEncoder(w).Encode(map[string]any{"source": "server-redis", "bars": []market.Bar{}})
+		default:
+			datasetCalls++
+			http.Error(w, "unexpected dataset request", http.StatusInternalServerError)
+		}
+	}))
+	defer upstream.Close()
+	cache, err := localclient.NewCache(config.Client{
+		CacheDir: t.TempDir(), ServerURL: upstream.URL,
+		RedisEnabled: true, RedisAddress: "127.0.0.1:0", RedisTTL: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cache.Close()
+	from := time.Now().UTC().Add(-time.Hour).Truncate(time.Minute)
+	spec := market.DatasetSpec{Symbols: []string{"AAPL"}, Interval: "1h", From: from, To: from.Add(time.Hour), Session: market.RegularSession, Adjustment: market.SplitAdjusted}
+	if _, source, err := cache.Bars(context.Background(), spec); err != nil || source != "server-redis" {
+		t.Fatalf("source=%s err=%v", source, err)
+	}
+	if historyCalls != 1 || datasetCalls != 0 {
+		t.Fatalf("history calls=%d dataset calls=%d", historyCalls, datasetCalls)
+	}
+	status := cache.StorageStatus(context.Background())
+	if status["redis_mode"] != "remote_redis" || status["local_redis_enabled"] != true || status["local_redis_active"] != false {
+		t.Fatalf("status=%#v", status)
+	}
+}

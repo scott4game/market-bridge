@@ -62,6 +62,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		longbridgeConfig.SetLogger(newLongbridgeLogger(longbridgeAffectedFeatures(cfg, liveProviders)))
 		longbridgeQuote, err = lbquote.NewFromCfg(longbridgeConfig)
 		if err != nil {
 			log.Fatal(err)
@@ -114,6 +115,22 @@ func main() {
 	store, err := marketserver.NewStoreWithBuildOptions(ctx, cfg.DataDir, p, cfg.DatasetWorkers, cfg.DatasetQueueSize, cfg.DatasetBuildTimeout)
 	if err != nil {
 		log.Fatal(err)
+	}
+	var redisCache *storage.RedisBarCache
+	if cfg.RedisEnabled {
+		redisCache = storage.NewRedisBarCache(cfg.RedisAddress, cfg.RedisUsername, cfg.RedisPassword, cfg.RedisDB)
+		defer redisCache.Close()
+		store.ConfigureBarCache(redisCache, cfg.RedisTTL, cfg.EmptyCoverageTTL, cfg.ClickHouseRetention)
+		redisCtx, redisCancel := context.WithTimeout(ctx, time.Second)
+		redisErr := redisCache.Healthy(redisCtx)
+		redisCancel()
+		if redisErr != nil {
+			log.Printf("go-server Redis connection failed; bypassing hot cache: address=%s db=%d user=%s: %v", cfg.RedisAddress, cfg.RedisDB, displayUser(cfg.RedisUsername), redisErr)
+		} else {
+			log.Printf("go-server Redis connection succeeded: address=%s db=%d user=%s", cfg.RedisAddress, cfg.RedisDB, displayUser(cfg.RedisUsername))
+		}
+	} else {
+		log.Printf("go-server Redis disabled")
 	}
 	var newsService *news.Service
 	if cfg.NewsProvider == "fmp" {
@@ -243,7 +260,7 @@ func main() {
 	}
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           (&marketserver.HTTP{Store: store, Token: cfg.BearerToken, Access: auth, Limiter: limiter, Live: hub, Usage: usage, ProviderStatus: providerStatus, ClickHouseEnabled: cfg.ClickHouseEnabled, ClickHouse: historicalClickHouse, HistoryCatalog: historyCatalog, DataVersion: cfg.DataVersion, EmptyCoverageTTL: cfg.EmptyCoverageTTL, HistoryRetention: cfg.ClickHouseRetention, RecentTrades: recentTrades, News: newsService}).Handler(),
+		Handler:           (&marketserver.HTTP{Store: store, Token: cfg.BearerToken, Access: auth, Limiter: limiter, Live: hub, Usage: usage, ProviderStatus: providerStatus, ClickHouseEnabled: cfg.ClickHouseEnabled, ClickHouse: historicalClickHouse, RedisEnabled: cfg.RedisEnabled, Redis: redisCache, HistoryCatalog: historyCatalog, DataVersion: cfg.DataVersion, EmptyCoverageTTL: cfg.EmptyCoverageTTL, HistoryRetention: cfg.ClickHouseRetention, RecentTrades: recentTrades, News: newsService}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    1 << 20,

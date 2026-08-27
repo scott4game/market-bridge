@@ -66,6 +66,11 @@ validate_server_env() {
     false) ;;
     *) die "GO_SERVER_CLICKHOUSE_ENABLED must be true or false" ;;
   esac
+  case "${GO_SERVER_REDIS_ENABLED:-false}" in
+    true) require_env GO_SERVER_REDIS_ADDRESS ;;
+    false) ;;
+    *) die "GO_SERVER_REDIS_ENABLED must be true or false" ;;
+  esac
 }
 
 validate_client_env() {
@@ -79,7 +84,9 @@ validate_client_env() {
 
 validate_docker_client_env() {
   validate_client_env
-  require_env REDIS_PASSWORD
+  case ",${COMPOSE_PROFILES:-}," in
+    *,local-redis,*) require_env REDIS_PASSWORD ;;
+  esac
 }
 
 set_env_value() {

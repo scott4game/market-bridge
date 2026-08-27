@@ -32,6 +32,11 @@ type HistoricalClickHouse interface {
 	WriteBars(context.Context, market.AdjustmentMode, []market.Bar, uint64) error
 }
 
+type RemoteRedis interface {
+	BarCache
+	Healthy(context.Context) error
+}
+
 type RecentTradesReader interface {
 	Trades(context.Context, string, int32) ([]*lbquote.Trade, error)
 }
@@ -46,6 +51,8 @@ type HTTP struct {
 	ProviderStatus    func() any
 	ClickHouseEnabled bool
 	ClickHouse        HistoricalClickHouse
+	RedisEnabled      bool
+	Redis             RemoteRedis
 	HistoryCatalog    *HistoryCatalog
 	DataVersion       string
 	EmptyCoverageTTL  time.Duration
@@ -214,8 +221,20 @@ func (h *HTTP) storageCapabilities(w http.ResponseWriter, r *http.Request) {
 			healthError = err.Error()
 		}
 	}
+	redisHealthy := false
+	var redisHealthError string
+	if h.RedisEnabled && h.Redis != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := h.Redis.Healthy(ctx); err == nil {
+			redisHealthy = true
+		} else {
+			redisHealthError = err.Error()
+		}
+	}
 	writeJSON(w, 200, map[string]any{
 		"clickhouse":       map[string]any{"enabled": h.ClickHouseEnabled, "healthy": healthy, "error": healthError},
+		"redis":            map[string]any{"enabled": h.RedisEnabled, "healthy": redisHealthy, "error": redisHealthError},
 		"history_revision": revision, "data_version": h.DataVersion, "updated_at": updated,
 	})
 }
@@ -241,18 +260,39 @@ func (h *HTTP) historyBars(w http.ResponseWriter, r *http.Request) {
 	recent := !spec.From.Before(time.Now().UTC().Add(-retention))
 	canonical := recent && spec.Interval == "1m" && h.ClickHouseEnabled && h.ClickHouse != nil
 	if body.ProviderOnly || !canonical || h.HistoryCatalog == nil {
-		bars, err := h.Store.ProviderBars(r.Context(), spec)
+		bars, cached, err := h.Store.ProviderBarsCached(r.Context(), spec)
 		if err != nil {
 			writeProviderError(w, err)
 			return
 		}
-		writeJSON(w, 200, map[string]any{"source": "provider", "bars": nonNilBars(bars)})
+		source := "provider"
+		if cached {
+			source = "server-redis"
+		}
+		writeJSON(w, 200, map[string]any{"source": source, "bars": nonNilBars(bars)})
 		return
 	}
 	storageSpec := spec
 	applyForward := market.IsUSForwardAdjusted(spec)
 	if applyForward {
 		storageSpec.Adjustment = market.SplitAdjusted
+	}
+	revision, _, _ := h.HistoryCatalog.Current(r.Context())
+	cacheVersion, curves, err := h.Store.SemanticDataVersion(r.Context(), spec, fmt.Sprintf("clickhouse:%s:%d", h.DataVersion, revision))
+	if err != nil {
+		writeProviderError(w, err)
+		return
+	}
+	cacheKey, err := spec.Hash(market.SchemaVersion, cacheVersion)
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
+	if h.RedisEnabled && h.Redis != nil {
+		if bars, ok, cacheErr := h.Redis.Get(r.Context(), "clickhouse:"+cacheKey); cacheErr == nil && ok {
+			writeJSON(w, 200, map[string]any{"source": "server-redis", "bars": nonNilBars(bars)})
+			return
+		}
 	}
 
 	missing, err := h.HistoryCatalog.Missing(r.Context(), storageSpec, h.DataVersion)
@@ -283,10 +323,19 @@ func (h *HTTP) historyBars(w http.ResponseWriter, r *http.Request) {
 		source = "provider+server-clickhouse"
 	}
 	if applyForward {
-		bars, err = h.forwardAdjustBars(r.Context(), spec, bars)
+		bars, err = applyForwardFactorCurves(spec, bars, curves)
 		if err != nil {
 			writeProviderError(w, err)
 			return
+		}
+	}
+	if h.RedisEnabled && h.Redis != nil {
+		currentRevision, _, _ := h.HistoryCatalog.Current(r.Context())
+		currentVersion, _, versionErr := h.Store.SemanticDataVersion(r.Context(), spec, fmt.Sprintf("clickhouse:%s:%d", h.DataVersion, currentRevision))
+		if versionErr == nil {
+			if currentKey, keyErr := spec.Hash(market.SchemaVersion, currentVersion); keyErr == nil {
+				_ = h.Redis.Set(r.Context(), "clickhouse:"+currentKey, bars, h.Store.barCacheTTL(spec, bars))
+			}
 		}
 	}
 	writeJSON(w, 200, map[string]any{"source": source, "bars": nonNilBars(bars)})
@@ -312,6 +361,17 @@ func (h *HTTP) forwardAdjustBars(ctx context.Context, spec market.DatasetSpec, b
 			return nil, factorErr
 		}
 		curves[symbol] = curve
+	}
+	return market.ApplyForwardFactors(bars, curves, location)
+}
+
+func applyForwardFactorCurves(spec market.DatasetSpec, bars []market.Bar, curves map[string]market.ForwardFactors) ([]market.Bar, error) {
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return nil, err
+	}
+	if len(curves) != len(spec.Symbols) {
+		return nil, errors.New("incomplete forward-adjustment factor set")
 	}
 	return market.ApplyForwardFactors(bars, curves, location)
 }

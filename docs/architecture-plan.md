@@ -112,13 +112,14 @@ KLineChart / strategy / research tool
 
 ### Redis
 
-Redis 是可选的热缓存：
+Redis 是可选的热缓存，可由 go-client 本地运行，也可由 go-server 集中提供：
 
 - 保存解码后的热点数据，降低重复读取和反序列化开销。
 - 默认 TTL 为 24 小时，使用 LRU 淘汰策略。
 - Docker 部署默认使用 `maxmemory=1gb`，可通过 `REDIS_MAXMEMORY` 覆盖。
 - 不启用持久化，不作为数据完整性的来源。
-- 不可用时由 `go-client` 自动旁路到 Parquet。
+- 服务端声明 Redis 后，客户端本地 Redis 停止读写，不进行双缓存。
+- 服务端 Redis 不可用时由 `go-server` 旁路到 ClickHouse/Provider；本地模式仍由 `go-client` 旁路到 Parquet。
 
 ### Parquet 与 SQLite
 
@@ -353,7 +354,7 @@ GET  /v1/providers/massive/usage
 
 ### Redis 降级
 
-Redis 超时、断线或未启动时，`go-client` 立即旁路到 Parquet。Redis 恢复后，后续读取会自然回填热缓存，不需要人工重建。
+本地 Redis 超时、断线或未启动时，`go-client` 立即旁路到 Parquet。服务端 Redis 超时或断线时，`go-server` 直接读取 ClickHouse/Provider，客户端本地 Redis 保持失效。Redis 恢复后，后续读取会自然回填热缓存，不需要人工重建。
 
 ## 安全边界
 

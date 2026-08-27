@@ -100,6 +100,21 @@ docker compose up -d --force-recreate go-server
 
 需要固定版本时，部署完成后把 `.env` 中的 `MARKET_BRIDGE_VERSION` 改为发布标签，例如 `v0.2.0`，再执行 `docker compose up -d`。
 
+服务端可连接宿主机或内网 Redis，集中承担所有客户端原有的 K 线热缓存。Docker 部署连接
+宿主机 Redis 时可使用：
+
+```dotenv
+GO_SERVER_REDIS_ENABLED=true
+GO_SERVER_REDIS_ADDRESS=host.docker.internal:6379
+GO_SERVER_REDIS_USERNAME=massive_go
+GO_SERVER_REDIS_PASSWORD=使用随机长密码
+GO_SERVER_REDIS_DB=0
+GO_SERVER_REDIS_TTL=24h
+```
+
+go-client 探测到服务端 Redis 后会停止本地 Redis 读写；远端 Redis 故障时由 go-server
+直接回源 ClickHouse/Provider，不自动切回本地 Redis。
+
 原有的 systemd 安装方式仍可使用：
 
 ```bash
@@ -157,11 +172,20 @@ docker compose ps
 ```dotenv
 GO_CLIENT_SERVER_URL=https://stock.example.com
 GO_CLIENT_SERVER_TOKEN=管理员为当前用户签发的完整_API_Key
-COMPOSE_PROFILES=clickhouse
+COMPOSE_PROFILES=local-redis,clickhouse
+GO_CLIENT_REDIS_ENABLED=true
 GO_CLIENT_CLICKHOUSE_ENABLED=true
 REDIS_MAXMEMORY=1gb
 CLICKHOUSE_MEMORY_LIMIT=2g
 CLICKHOUSE_CPUS=2
+```
+
+如果服务端已经同时提供 Redis 和 ClickHouse，可完全关闭客户端两个容器：
+
+```dotenv
+COMPOSE_PROFILES=
+GO_CLIENT_REDIS_ENABLED=false
+GO_CLIENT_CLICKHOUSE_ENABLED=false
 ```
 
 使用客户端本地 ClickHouse 时，服务端应设置 `GO_SERVER_CLICKHOUSE_ENABLED=false`；如果服务端已经启用 ClickHouse，go-client 会自动停止本地 ClickHouse 的业务读写，避免两侧双写。客户端仅在页面或 API 存在活跃订阅时接收并保存实时数据。
@@ -185,7 +209,7 @@ docker compose exec redis sh -c \
   'redis-cli -a "$REDIS_PASSWORD" CONFIG GET maxmemory'
 ```
 
-Redis 达到上限后使用 `allkeys-lru` 淘汰较少访问的缓存；Parquet 磁盘缓存不受该内存上限影响。
+Redis 达到上限后使用 `allkeys-lru` 淘汰较少访问的缓存；Parquet 磁盘缓存不受该内存上限影响。页面和 `/v1/storage/status` 会分别显示实际使用的 ClickHouse 主存储与 Redis 热缓存位于本地还是远端。
 
 已有客户端部署需要更新 Compose 和镜像时，保留现有 `.env`，在部署目录执行：
 

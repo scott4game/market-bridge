@@ -106,6 +106,26 @@ func TestServerClickHouseOptInValidation(t *testing.T) {
 	}
 }
 
+func TestServerRedisOptInValidation(t *testing.T) {
+	t.Setenv("GO_SERVER_REDIS_ENABLED", "true")
+	t.Setenv("GO_SERVER_REDIS_ADDRESS", "")
+	if err := ServerFromEnv().Validate(); err == nil || !strings.Contains(err.Error(), "GO_SERVER_REDIS_ADDRESS") {
+		t.Fatalf("expected missing Redis address error, got %v", err)
+	}
+	t.Setenv("GO_SERVER_REDIS_ADDRESS", "redis.example:6379")
+	t.Setenv("GO_SERVER_REDIS_USERNAME", "market-bridge")
+	t.Setenv("GO_SERVER_REDIS_PASSWORD", "secret")
+	t.Setenv("GO_SERVER_REDIS_DB", "4")
+	t.Setenv("GO_SERVER_REDIS_TTL", "12h")
+	cfg := ServerFromEnv()
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.RedisEnabled || cfg.RedisAddress != "redis.example:6379" || cfg.RedisUsername != "market-bridge" || cfg.RedisPassword != "secret" || cfg.RedisDB != 4 || cfg.RedisTTL != 12*time.Hour {
+		t.Fatalf("unexpected Redis config: %+v", cfg)
+	}
+}
+
 func TestFMPNewsRequiresKeyAndReadsPollingConfig(t *testing.T) {
 	t.Setenv("GO_SERVER_NEWS_PROVIDER", "fmp")
 	t.Setenv("FMP_API_KEY", "")

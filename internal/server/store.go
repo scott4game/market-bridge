@@ -20,15 +20,24 @@ import (
 )
 
 type Store struct {
-	root     string
-	provider provider.Provider
-	ctx      context.Context
-	timeout  time.Duration
-	mu       sync.RWMutex
-	tasks    map[string]market.DatasetStatus
-	failedAt map[string]time.Time
-	queue    chan buildJob
-	active   map[string]int
+	root      string
+	provider  provider.Provider
+	barCache  BarCache
+	cacheTTL  time.Duration
+	emptyTTL  time.Duration
+	retention time.Duration
+	ctx       context.Context
+	timeout   time.Duration
+	mu        sync.RWMutex
+	tasks     map[string]market.DatasetStatus
+	failedAt  map[string]time.Time
+	queue     chan buildJob
+	active    map[string]int
+}
+
+type BarCache interface {
+	Get(context.Context, string) ([]market.Bar, bool, error)
+	Set(context.Context, string, []market.Bar, time.Duration) error
 }
 
 type HistoricalBarWriter interface {
@@ -88,6 +97,13 @@ func NewStoreWithBuildOptions(ctx context.Context, root string, p provider.Provi
 		go s.worker()
 	}
 	return s, nil
+}
+
+func (s *Store) ConfigureBarCache(cache BarCache, ttl, emptyTTL, retention time.Duration) {
+	s.barCache = cache
+	s.cacheTTL = ttl
+	s.emptyTTL = emptyTTL
+	s.retention = retention
 }
 
 func (s *Store) Ensure(ctx context.Context, spec market.DatasetSpec) (market.DatasetStatus, error) {
@@ -181,7 +197,43 @@ func (s *Store) ActiveBuilds(userID string) int {
 }
 
 func (s *Store) ProviderBars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar, error) {
-	return s.provider.Bars(ctx, spec)
+	bars, _, err := s.ProviderBarsCached(ctx, spec)
+	return bars, err
+}
+
+func (s *Store) ProviderBarsCached(ctx context.Context, spec market.DatasetSpec) ([]market.Bar, bool, error) {
+	spec, err := spec.Normalize()
+	if err != nil {
+		return nil, false, err
+	}
+	described, err := s.describeDataset(ctx, spec)
+	if err != nil {
+		return nil, false, err
+	}
+	return s.providerBarsCached(ctx, spec, described.DataVersion, described.factorCurves)
+}
+
+func (s *Store) providerBarsCached(ctx context.Context, spec market.DatasetSpec, dataVersion string, curves map[string]market.ForwardFactors) ([]market.Bar, bool, error) {
+	key, err := spec.Hash(market.SchemaVersion, "provider:"+dataVersion)
+	if err != nil {
+		return nil, false, err
+	}
+	if s.barCache != nil {
+		if bars, ok, cacheErr := s.barCache.Get(ctx, "provider:"+key); cacheErr == nil && ok {
+			return bars, true, nil
+		}
+	}
+	bars, err := provider.BarsWithForwardFactors(ctx, s.provider, spec, curves)
+	if err != nil {
+		return nil, false, err
+	}
+	if bars == nil {
+		bars = []market.Bar{}
+	}
+	if s.barCache != nil {
+		_ = s.barCache.Set(ctx, "provider:"+key, bars, s.barCacheTTL(spec, bars))
+	}
+	return bars, false, nil
 }
 
 func (s *Store) ForwardAdjustmentFactors(ctx context.Context, symbol string) (market.ForwardFactors, error) {
@@ -213,6 +265,44 @@ func (s *Store) describeDataset(ctx context.Context, spec market.DatasetSpec) (d
 	}
 	description.DataVersion = market.SemanticDataVersion(spec, description.DataVersion, time.Now(), versions...)
 	return datasetDescription{Description: description, factorCurves: curves}, nil
+}
+
+func (s *Store) SemanticDataVersion(ctx context.Context, spec market.DatasetSpec, base string) (string, map[string]market.ForwardFactors, error) {
+	if !market.IsUSForwardAdjusted(spec) {
+		return base, nil, nil
+	}
+	versions := make([]string, 0, len(spec.Symbols))
+	curves := make(map[string]market.ForwardFactors, len(spec.Symbols))
+	for _, symbol := range spec.Symbols {
+		curve, err := s.ForwardAdjustmentFactors(ctx, symbol)
+		if err != nil {
+			return "", nil, err
+		}
+		curves[symbol] = curve
+		versions = append(versions, symbol+"="+curve.Version)
+	}
+	return market.SemanticDataVersion(spec, base, time.Now(), versions...), curves, nil
+}
+
+func (s *Store) barCacheTTL(spec market.DatasetSpec, bars []market.Bar) time.Duration {
+	ttl := s.cacheTTL
+	if len(bars) != 0 {
+		return ttl
+	}
+	retention := s.retention
+	if retention <= 0 {
+		retention = 730 * 24 * time.Hour
+	}
+	limit := s.emptyTTL
+	if spec.From.Before(time.Now().UTC().Add(-retention)) {
+		limit = time.Hour
+	} else if limit <= 0 {
+		limit = 15 * time.Minute
+	}
+	if ttl <= 0 || ttl > limit {
+		return limit
+	}
+	return ttl
 }
 
 func (s *Store) Universe(ctx context.Context) ([]string, error) {
@@ -350,7 +440,7 @@ func (s *Store) generate(ctx context.Context, job buildJob) {
 		s.failedAt[id] = time.Now()
 		s.mu.Unlock()
 	}
-	bars, err := provider.BarsWithForwardFactors(ctx, s.provider, spec, job.factorCurves)
+	bars, _, err := s.providerBarsCached(ctx, spec, job.dataVersion, job.factorCurves)
 	if err != nil {
 		fail(err)
 		return

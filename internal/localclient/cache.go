@@ -63,6 +63,11 @@ type StorageCapability struct {
 		Healthy bool   `json:"healthy"`
 		Error   string `json:"error"`
 	} `json:"clickhouse"`
+	Redis struct {
+		Enabled bool   `json:"enabled"`
+		Healthy bool   `json:"healthy"`
+		Error   string `json:"error"`
+	} `json:"redis"`
 	HistoryRevision uint64 `json:"history_revision"`
 	DataVersion     string `json:"data_version"`
 }
@@ -202,13 +207,13 @@ func (c *Cache) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar
 	}
 	capability, capabilityErr := c.storageCapability(ctx)
 	cutoff := time.Now().UTC().Add(-c.clickhouseRetention())
-	if capabilityErr == nil && (spec.From.Before(cutoff) || spec.Interval == "1m" && (capability.ClickHouse.Enabled || c.clickhouse != nil)) {
+	if capabilityErr == nil && (capability.Redis.Enabled || spec.From.Before(cutoff) || spec.Interval == "1m" && (capability.ClickHouse.Enabled || c.clickhouse != nil)) {
 		return c.routedBars(ctx, spec, capability)
 	}
-	return c.legacyBars(ctx, spec)
+	return c.legacyBars(ctx, spec, capabilityErr != nil || !capability.Redis.Enabled)
 }
 
-func (c *Cache) legacyBars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar, string, error) {
+func (c *Cache) legacyBars(ctx context.Context, spec market.DatasetSpec, allowLocalRedis bool) ([]market.Bar, string, error) {
 	version, err := c.semanticCacheVersion(ctx, spec, "request")
 	if err != nil {
 		return nil, "", err
@@ -217,7 +222,7 @@ func (c *Cache) legacyBars(ctx context.Context, spec market.DatasetSpec) ([]mark
 	if err != nil {
 		return nil, "", err
 	}
-	if c.redis != nil {
+	if allowLocalRedis && c.redis != nil {
 		if b, err := c.redis.Get(ctx, "bars:"+key).Bytes(); err == nil {
 			var bars []market.Bar
 			if json.Unmarshal(b, &bars) == nil {
@@ -266,7 +271,7 @@ func (c *Cache) legacyBars(ctx context.Context, spec market.DatasetSpec) ([]mark
 	}
 	market.SortBars(bars)
 	_ = c.touch(ctx, m.DatasetID)
-	if c.redis != nil {
+	if allowLocalRedis && c.redis != nil {
 		if b, e := json.Marshal(bars); e == nil {
 			_ = c.redis.Set(ctx, "bars:"+key, b, c.cfg.RedisTTL).Err()
 		}
@@ -281,7 +286,7 @@ func (c *Cache) routedBars(ctx context.Context, spec market.DatasetSpec, capabil
 	if spec.From.Before(cutoff) {
 		archive := spec
 		archive.To = minTime(spec.To, cutoff)
-		part, source, err := c.archiveBars(ctx, archive, capability.DataVersion)
+		part, source, err := c.archiveBars(ctx, archive, capability.DataVersion, capability.Redis.Enabled)
 		if err != nil {
 			return nil, "", err
 		}
@@ -309,20 +314,25 @@ func (c *Cache) routedBars(ctx context.Context, spec market.DatasetSpec, capabil
 }
 
 func (c *Cache) recentBars(ctx context.Context, spec market.DatasetSpec, capability StorageCapability) ([]market.Bar, string, error) {
+	allowLocalRedis := !capability.Redis.Enabled
 	if spec.Interval != "1m" {
 		version, err := c.semanticCacheVersion(ctx, spec, "provider-recent:"+capability.DataVersion)
 		if err != nil {
 			return nil, "", err
 		}
 		key, _ := spec.Hash(market.SchemaVersion, version)
-		if bars, ok := c.redisBars(ctx, "recent:"+key); ok {
-			return bars, "redis", nil
+		if allowLocalRedis {
+			if bars, ok := c.redisBars(ctx, "recent:"+key); ok {
+				return bars, "redis", nil
+			}
 		}
 		bars, source, err := c.remoteHistoryBars(ctx, spec, true)
 		if err != nil {
 			return nil, "", err
 		}
-		c.setRedisBars(ctx, "recent:"+key, bars, c.recentRedisTTL(bars))
+		if allowLocalRedis {
+			c.setRedisBars(ctx, "recent:"+key, bars, c.recentRedisTTL(bars))
+		}
 		return bars, source, nil
 	}
 	mode := "local-clickhouse"
@@ -336,18 +346,22 @@ func (c *Cache) recentBars(ctx context.Context, spec market.DatasetSpec, capabil
 		return nil, "", err
 	}
 	key, _ := spec.Hash(market.SchemaVersion, cacheVersion)
-	if bars, ok := c.redisBars(ctx, "recent:"+key); ok {
-		return bars, "redis", nil
+	if allowLocalRedis {
+		if bars, ok := c.redisBars(ctx, "recent:"+key); ok {
+			return bars, "redis", nil
+		}
 	}
 	if capability.ClickHouse.Enabled {
-		if !capability.ClickHouse.Healthy {
+		if !capability.ClickHouse.Healthy && !capability.Redis.Enabled {
 			return nil, "", fmt.Errorf("remote ClickHouse is enabled but unhealthy: %s", capability.ClickHouse.Error)
 		}
 		bars, source, err := c.remoteHistoryBars(ctx, spec, false)
 		if err != nil {
 			return nil, "", err
 		}
-		c.setRedisBars(ctx, "recent:"+key, bars, c.recentRedisTTL(bars))
+		if allowLocalRedis {
+			c.setRedisBars(ctx, "recent:"+key, bars, c.recentRedisTTL(bars))
+		}
 		return bars, source, nil
 	}
 	if c.clickhouse == nil {
@@ -355,7 +369,9 @@ func (c *Cache) recentBars(ctx context.Context, spec market.DatasetSpec, capabil
 		if err != nil {
 			return nil, "", err
 		}
-		c.setRedisBars(ctx, "recent:"+key, bars, c.recentRedisTTL(bars))
+		if allowLocalRedis {
+			c.setRedisBars(ctx, "recent:"+key, bars, c.recentRedisTTL(bars))
+		}
 		return bars, source, nil
 	}
 	storageSpec := spec
@@ -401,7 +417,9 @@ func (c *Cache) recentBars(ctx context.Context, spec market.DatasetSpec, capabil
 	if fetched {
 		source = "provider+local-clickhouse"
 	}
-	c.setRedisBars(ctx, "recent:"+key, bars, c.recentRedisTTL(bars))
+	if allowLocalRedis {
+		c.setRedisBars(ctx, "recent:"+key, bars, c.recentRedisTTL(bars))
+	}
 	return bars, source, nil
 }
 
@@ -419,7 +437,7 @@ func (c *Cache) recentRedisTTL(bars []market.Bar) time.Duration {
 	return ttl
 }
 
-func (c *Cache) archiveBars(ctx context.Context, spec market.DatasetSpec, dataVersion string) ([]market.Bar, string, error) {
+func (c *Cache) archiveBars(ctx context.Context, spec market.DatasetSpec, dataVersion string, remoteRedis bool) ([]market.Bar, string, error) {
 	var all []market.Bar
 	allRedis := true
 	for start := spec.From; start.Before(spec.To); {
@@ -434,10 +452,15 @@ func (c *Cache) archiveBars(ctx context.Context, spec market.DatasetSpec, dataVe
 			return nil, "", err
 		}
 		key, _ := chunk.Hash(market.SchemaVersion, version)
-		cached, ok := c.redisBars(ctx, "archive:"+key)
+		var cached []market.Bar
+		ok := false
+		if !remoteRedis {
+			cached, ok = c.redisBars(ctx, "archive:"+key)
+		}
 		if !ok {
 			var err error
-			cached, _, err = c.remoteHistoryBars(ctx, chunk, true)
+			var source string
+			cached, source, err = c.remoteHistoryBars(ctx, chunk, true)
 			if err != nil {
 				return nil, "", err
 			}
@@ -445,13 +468,20 @@ func (c *Cache) archiveBars(ctx context.Context, spec market.DatasetSpec, dataVe
 			if len(cached) == 0 && (ttl <= 0 || ttl > time.Hour) {
 				ttl = time.Hour
 			}
-			c.setRedisBars(ctx, "archive:"+key, cached, ttl)
-			allRedis = false
+			if !remoteRedis {
+				c.setRedisBars(ctx, "archive:"+key, cached, ttl)
+			}
+			if source != "server-redis" {
+				allRedis = false
+			}
 		}
 		all = append(all, cached...)
 		start = next
 	}
 	if allRedis {
+		if remoteRedis {
+			return all, "server-redis", nil
+		}
 		return all, "redis", nil
 	}
 	return all, "provider", nil
@@ -596,7 +626,11 @@ func (c *Cache) storageCapability(ctx context.Context) (StorageCapability, error
 func (c *Cache) StorageStatus(ctx context.Context) map[string]any {
 	capability, err := c.storageCapability(ctx)
 	if err != nil {
-		return map[string]any{"mode": "unknown", "error": err.Error()}
+		redisMode := "disabled"
+		if c.redis != nil {
+			redisMode = "local_redis"
+		}
+		return map[string]any{"mode": "unknown", "redis_mode": redisMode, "local_redis_enabled": c.redis != nil, "local_redis_active": c.redis != nil, "error": err.Error()}
 	}
 	mode := "local_clickhouse"
 	if capability.ClickHouse.Enabled {
@@ -610,7 +644,20 @@ func (c *Cache) StorageStatus(ctx context.Context) map[string]any {
 	c.mu.Lock()
 	stale, capabilityError := c.capabilityStale, c.capabilityError
 	c.mu.Unlock()
-	return map[string]any{"mode": mode, "local_clickhouse_enabled": c.clickhouse != nil && !capability.ClickHouse.Enabled, "remote": capability.ClickHouse, "history_revision": capability.HistoryRevision, "data_version": capability.DataVersion, "capability_stale": stale, "capability_error": capabilityError}
+	redisMode := "disabled"
+	if capability.Redis.Enabled {
+		redisMode = "remote_redis"
+		if !capability.Redis.Healthy {
+			redisMode = "remote_redis_degraded"
+		}
+	} else if c.redis != nil {
+		redisMode = "local_redis"
+	}
+	return map[string]any{
+		"mode": mode, "local_clickhouse_enabled": c.clickhouse != nil && !capability.ClickHouse.Enabled, "remote": capability.ClickHouse,
+		"redis_mode": redisMode, "remote_redis": capability.Redis, "local_redis_enabled": c.redis != nil, "local_redis_active": c.redis != nil && !capability.Redis.Enabled,
+		"history_revision": capability.HistoryRevision, "data_version": capability.DataVersion, "capability_stale": stale, "capability_error": capabilityError,
+	}
 }
 
 func (c *Cache) Write(ctx context.Context, event market.LiveEvent) error {
@@ -1019,6 +1066,7 @@ func (c *Cache) Prune(ctx context.Context, expiredOnly bool) (int, error) {
 		return 0, err
 	}
 	n := 0
+	localRedisActive := c.localRedisActive(ctx)
 	for _, e := range entries {
 		if expiredOnly && (c.cfg.ParquetTTL <= 0 || e.LastAccessed.Add(c.cfg.ParquetTTL).After(time.Now())) {
 			continue
@@ -1039,7 +1087,7 @@ func (c *Cache) Prune(ctx context.Context, expiredOnly bool) (int, error) {
 			releaseGuard()
 			return n, err
 		}
-		if c.redis != nil {
+		if localRedisActive {
 			_ = c.redis.Del(ctx, "bars:"+e.SpecHash).Err()
 		}
 		if _, err := c.db.ExecContext(ctx, `DELETE FROM datasets WHERE id=?`, e.DatasetID); err != nil {
@@ -1084,12 +1132,21 @@ func (c *Cache) Delete(ctx context.Context, id string) error {
 	if err := os.RemoveAll(filepath.Join(c.cfg.CacheDir, "datasets", id)); err != nil {
 		return err
 	}
-	if c.redis != nil {
+	if c.localRedisActive(ctx) {
 		_ = c.redis.Del(ctx, "bars:"+key).Err()
 	}
 	_, err := c.db.ExecContext(ctx, `DELETE FROM datasets WHERE id=?`, id)
 	return err
 }
+
+func (c *Cache) localRedisActive(ctx context.Context) bool {
+	if c.redis == nil {
+		return false
+	}
+	capability, err := c.storageCapability(ctx)
+	return err != nil || !capability.Redis.Enabled
+}
+
 func (c *Cache) RunCleanup(ctx context.Context) {
 	var parquetC, clickhouseC <-chan time.Time
 	var parquetTicker, clickhouseTicker *time.Ticker
