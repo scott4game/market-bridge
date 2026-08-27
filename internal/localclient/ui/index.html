@@ -44,6 +44,7 @@
     <div><small>Massive</small><strong id="massive-status">—</strong><span id="massive-plan">—</span></div>
     <div><small>Longbridge</small><strong id="longbridge-status">—</strong><span id="longbridge-detail">—</span></div>
     <div><small>Binance Spot</small><strong id="binance-status">—</strong><span id="binance-detail">—</span></div>
+    <div><small>FMP 新闻</small><strong id="fmp-news-status">—</strong><span id="fmp-news-detail">—</span></div>
     <div><small>历史存储</small><strong id="storage-status">—</strong><span id="storage-detail">正在探测</span></div>
     <div aria-live="polite"><small>WebSocket 实时</small><strong id="ws-status">未启用</strong><span id="ws-detail">实时推送目前仅支持 1m 周期</span></div>
   </section>
@@ -57,16 +58,22 @@
       <div id="chart" role="img" aria-label="交互式 K 线图"></div>
     </section>
     <aside id="live-market" aria-label="实时成交与盘口">
-      <section class="depth-panel">
+      <nav class="live-tabs" aria-label="右侧信息面板"><button type="button" data-live-tab="depth" aria-pressed="true">盘口</button><button type="button" data-live-tab="trades" aria-pressed="false">成交</button><button type="button" data-live-tab="news" aria-pressed="false">新闻 <em id="news-unread" hidden>0</em></button></nav>
+      <section class="live-tab-view depth-panel" data-live-view="depth">
         <div class="live-panel-title"><strong>实时盘口</strong><span id="depth-state">等待订阅</span></div>
         <div class="market-table-head"><span>档位</span><span>价格</span><span>挂单量</span><span>委托笔数</span></div>
         <div id="depth-rows" class="market-table-body"><p class="live-empty">加载股票后显示盘口</p></div>
       </section>
-      <section class="trades-panel">
+      <section class="live-tab-view trades-panel" data-live-view="trades" hidden>
         <div class="live-panel-title"><strong>逐笔成交</strong><span id="trades-state">等待订阅</span></div>
         <div class="trade-counts"><span id="recent-trade-count">最近成交 0 笔</span><span id="live-trade-count">实时新增 0 笔</span></div>
         <div class="market-table-head trade-head"><span>时间</span><span>价格</span><span>成交量</span><span>类型</span></div>
         <div id="trade-rows" class="market-table-body"><p class="live-empty">加载股票后显示成交</p></div>
+      </section>
+      <section class="live-tab-view news-panel" data-live-view="news" hidden>
+        <div class="live-panel-title"><strong>最新新闻</strong><span id="news-state">正在连接</span></div>
+        <div class="news-filters"><button type="button" data-news-scope="symbol" aria-pressed="true">当前股票</button><button type="button" data-news-scope="all" aria-pressed="false">全部最新</button><select id="news-kind" aria-label="新闻类型"><option value="">全部</option><option value="stock_news">股票新闻</option><option value="press_release">公司公告</option></select></div>
+        <div id="news-rows" class="news-list"><p class="live-empty">正在加载新闻</p></div>
       </section>
     </aside>
   </section>
@@ -75,6 +82,7 @@
 <script src="/klinecharts.min.js"></script>
 <script src="/history.js"></script>
 <script src="/live-market.js"></script>
+<script src="/news.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

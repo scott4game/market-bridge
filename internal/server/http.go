@@ -18,6 +18,7 @@ import (
 	"github.com/scott4game/market-bridge/internal/access"
 	"github.com/scott4game/market-bridge/internal/coverage"
 	"github.com/scott4game/market-bridge/internal/market"
+	"github.com/scott4game/market-bridge/internal/news"
 	"github.com/scott4game/market-bridge/internal/provider"
 )
 
@@ -50,6 +51,7 @@ type HTTP struct {
 	EmptyCoverageTTL  time.Duration
 	HistoryRetention  time.Duration
 	RecentTrades      RecentTradesReader
+	News              *news.Service
 }
 
 func (h *HTTP) Handler() http.Handler {
@@ -61,6 +63,9 @@ func (h *HTTP) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/datasets/{id}/files/{name...}", h.auth("history:read", h.file))
 	mux.HandleFunc("GET /v1/live/ws", h.auth("live:read", h.live))
 	mux.HandleFunc("GET /v1/live/trades/{symbol}", h.auth("live:read", h.recentTrades))
+	mux.HandleFunc("GET /v1/news", h.auth("news:read", h.newsList))
+	mux.HandleFunc("GET /v1/news/ws", h.auth("news:read", h.newsWS))
+	mux.HandleFunc("GET /v1/news/stream", h.auth("news:read", h.newsSSE))
 	mux.HandleFunc("GET /v1/providers/massive/usage", h.auth("provider:usage", h.usage))
 	mux.HandleFunc("GET /v1/providers/status", h.auth("profile:read", h.providerStatus))
 	mux.HandleFunc("GET /v1/storage/capabilities", h.auth("profile:read", h.storageCapabilities))
@@ -72,6 +77,52 @@ func (h *HTTP) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/me/watchlist", h.auth("profile:read", h.getWatchlist))
 	mux.HandleFunc("PUT /v1/me/watchlist", h.auth("profile:read", h.putWatchlist))
 	return mux
+}
+
+func (h *HTTP) newsList(w http.ResponseWriter, r *http.Request) {
+	if h.News == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "news provider is not enabled"})
+		return
+	}
+	h.News.ListHTTP(w, r)
+}
+
+func (h *HTTP) newsWS(w http.ResponseWriter, r *http.Request) {
+	if h.News == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "news provider is not enabled"})
+		return
+	}
+	release, ok := h.acquireNewsStream(w, r)
+	if !ok {
+		return
+	}
+	defer release()
+	h.News.ServeWS(w, r)
+}
+
+func (h *HTTP) newsSSE(w http.ResponseWriter, r *http.Request) {
+	if h.News == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "news provider is not enabled"})
+		return
+	}
+	release, ok := h.acquireNewsStream(w, r)
+	if !ok {
+		return
+	}
+	defer release()
+	h.News.ServeSSE(w, r)
+}
+
+func (h *HTTP) acquireNewsStream(w http.ResponseWriter, r *http.Request) (func(), bool) {
+	p, secured := access.PrincipalFromContext(r.Context())
+	if !secured || h.Limiter == nil {
+		return func() {}, true
+	}
+	if !h.Limiter.AcquireLive(p, 0) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "live connection quota exceeded"})
+		return nil, false
+	}
+	return func() { h.Limiter.ReleaseLive(p.UserID, 0) }, true
 }
 
 type recentTrade struct {
@@ -350,6 +401,7 @@ func (w *statusRecorder) WriteHeader(status int) {
 	w.ResponseWriter.WriteHeader(status)
 }
 func (w *statusRecorder) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+func (w *statusRecorder) Flush()                      { _ = http.NewResponseController(w.ResponseWriter).Flush() }
 
 func requestID() string { var b [8]byte; _, _ = rand.Read(b[:]); return fmt.Sprintf("%x", b[:]) }
 func (h *HTTP) create(w http.ResponseWriter, r *http.Request) {

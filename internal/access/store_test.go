@@ -34,7 +34,7 @@ func TestAPIKeyLifecycleAndQuotas(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Name != "alice" || !p.HasScope("history:read") || p.HasScope("admin") {
+	if p.Name != "alice" || !p.HasScope("history:read") || !p.HasScope("news:read") || p.HasScope("admin") {
 		t.Fatalf("principal=%+v", p)
 	}
 
@@ -59,6 +59,33 @@ func TestAPIKeyLifecycleAndQuotas(t *testing.T) {
 	}
 	if _, err := store.Authenticate(ctx, token); err == nil {
 		t.Fatal("revoked key authenticated")
+	}
+}
+
+func TestOpenAddsNewsScopeToExistingKeys(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "auth.db")
+	store, err := Open(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = store.CreateUser(ctx, "legacy-member", "member")
+	token, _, err := store.CreateKey(ctx, "legacy-member", "old-key", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`UPDATE api_keys SET scopes='history:read,live:read,profile:read'`); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+	store, err = Open(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	p, err := store.Authenticate(ctx, token)
+	if err != nil || !p.HasScope("news:read") {
+		t.Fatalf("principal=%+v err=%v", p, err)
 	}
 }
 

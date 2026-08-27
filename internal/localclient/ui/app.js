@@ -235,6 +235,10 @@ async function refreshAccount() {
     const binance = providers.binance || {}
     $('binance-status').textContent = binance.state || 'unknown'
     $('binance-detail').textContent = `订阅池 ${binance.subscribed_symbols ?? 0} · 重连 ${binance.reconnects ?? 0}`
+    const fmpNews = providers.fmp_news || {}
+    $('fmp-news-status').textContent = fmpNews.state || 'disabled'
+    $('fmp-news-status').className = fmpNews.state === 'enabled' ? 'ok' : fmpNews.state === 'degraded' ? 'bad' : 'warn'
+    $('fmp-news-detail').textContent = fmpNews.last_success_at ? `最近成功 ${new Date(fmpNews.last_success_at).toLocaleString()}` : (fmpNews.error || `轮询 ${fmpNews.polling_interval || '—'}`)
     const storageLabels = {
       remote_clickhouse: '远端 ClickHouse 存储',
       remote_clickhouse_degraded: '远端 ClickHouse 故障',

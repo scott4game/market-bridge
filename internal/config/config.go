@@ -20,6 +20,11 @@ type Server struct {
 	MassivePlanName           string
 	MassivePerMinute          int
 	MassivePerMonth           int
+	NewsProvider              string
+	FMPAPIKey                 string
+	FMPBaseURL                string
+	FMPNewsPollInterval       time.Duration
+	NewsRetention             time.Duration
 	LiveProvider              string
 	LiveProviders             []string
 	LongbridgeHistoryEnabled  bool
@@ -52,6 +57,7 @@ func ServerFromEnv() Server {
 		Provider: env("GO_SERVER_PROVIDER", "mock"), DataVersion: env("GO_SERVER_DATA_VERSION", "market-v1"),
 		BearerToken: os.Getenv("GO_SERVER_TOKEN"), MassiveAPIKey: os.Getenv("MASSIVE_API_KEY"), MassiveBaseURL: env("MASSIVE_BASE_URL", "https://api.massive.com"),
 		MassivePlanName: env("MASSIVE_PLAN_NAME", "stocks_basic"), MassivePerMinute: integer("MASSIVE_REQUESTS_PER_MINUTE", 5), MassivePerMonth: integer("MASSIVE_REQUESTS_PER_MONTH", 0),
+		NewsProvider: env("GO_SERVER_NEWS_PROVIDER", "disabled"), FMPAPIKey: os.Getenv("FMP_API_KEY"), FMPBaseURL: env("FMP_BASE_URL", "https://financialmodelingprep.com"), FMPNewsPollInterval: duration("FMP_NEWS_POLL_INTERVAL", time.Minute), NewsRetention: duration("GO_SERVER_NEWS_RETENTION", 30*24*time.Hour),
 		LiveProvider: env("GO_SERVER_LIVE_PROVIDER", "mock"), LiveProviders: split(os.Getenv("GO_SERVER_LIVE_PROVIDERS")),
 		LongbridgeHistoryEnabled: boolean("GO_SERVER_LONGBRIDGE_HISTORY_ENABLED", false), LongbridgeDepthEnabled: boolean("GO_SERVER_LONGBRIDGE_DEPTH_ENABLED", false),
 		LongbridgeAppKey: os.Getenv("LONGBRIDGE_APP_KEY"), LongbridgeAppSecret: os.Getenv("LONGBRIDGE_APP_SECRET"), LongbridgeAccessToken: os.Getenv("LONGBRIDGE_ACCESS_TOKEN"),
@@ -84,6 +90,12 @@ func (s Server) EffectiveLiveProviders() []string {
 }
 
 func (s Server) Validate() error {
+	if s.NewsProvider != "disabled" && s.NewsProvider != "fmp" {
+		return fmt.Errorf("unsupported news provider %q", s.NewsProvider)
+	}
+	if s.NewsProvider == "fmp" && strings.TrimSpace(s.FMPAPIKey) == "" {
+		return fmt.Errorf("FMP_API_KEY is required when GO_SERVER_NEWS_PROVIDER=fmp")
+	}
 	liveProviders := s.EffectiveLiveProviders()
 	for _, name := range liveProviders {
 		if name != "mock" && name != "longbridge" && name != "binance" {
@@ -166,6 +178,7 @@ type Client struct {
 	MarketHistorySyncEnabled    bool
 	MarketHistorySyncInterval   time.Duration
 	EmptyCoverageTTL            time.Duration
+	NewsRetention               time.Duration
 }
 
 func ClientFromEnv() Client {
@@ -179,6 +192,7 @@ func ClientFromEnv() Client {
 		ClickHouseRetention:         duration("GO_CLIENT_CLICKHOUSE_RETENTION", 730*24*time.Hour), ClickHouseCleanupInterval: duration("GO_CLIENT_CLICKHOUSE_CLEANUP_INTERVAL", 720*time.Hour), StorageCapabilityInterval: duration("GO_CLIENT_STORAGE_CAPABILITY_INTERVAL", 5*time.Minute),
 		MarketHistorySyncEnabled: boolean("GO_CLIENT_MARKET_HISTORY_SYNC_ENABLED", false), MarketHistorySyncInterval: duration("GO_CLIENT_MARKET_HISTORY_SYNC_INTERVAL", 24*time.Hour),
 		EmptyCoverageTTL: duration("GO_CLIENT_EMPTY_COVERAGE_TTL", 15*time.Minute),
+		NewsRetention:    duration("GO_CLIENT_NEWS_RETENTION", 30*24*time.Hour),
 	}
 }
 

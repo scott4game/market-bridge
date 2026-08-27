@@ -600,3 +600,6 @@ curl -fsS -X POST \
 | `PUT /v1/me/watchlist` | 修改个人实时关注列表 |
 | `GET /v1/live/trades/{symbol}?limit=100` | 查询 Longbridge 最近逐笔成交 |
 | `GET /v1/live/ws` | 实时行情 WebSocket |
+| `GET /v1/news?symbols=AAPL&limit=50` | 查询本地 FMP 新闻镜像 |
+| `GET /v1/news/stream` | Agent 友好的 SSE 新闻监听流 |
+| `GET /v1/news/ws` | 新闻 WebSocket 订阅与断线续传 |

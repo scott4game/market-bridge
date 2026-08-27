@@ -57,6 +57,7 @@ require_env() {
 validate_server_env() {
   require_env GO_SERVER_TOKEN
   if [[ "${GO_SERVER_PROVIDER:-mock}" == "massive" ]]; then require_env MASSIVE_API_KEY; fi
+  if [[ "${GO_SERVER_NEWS_PROVIDER:-disabled}" == "fmp" ]]; then require_env FMP_API_KEY; fi
   if [[ "${GO_SERVER_LIVE_PROVIDER:-mock}" == "longbridge" ]]; then
     require_env LONGBRIDGE_APP_KEY LONGBRIDGE_APP_SECRET LONGBRIDGE_ACCESS_TOKEN
   fi

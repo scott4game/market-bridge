@@ -64,6 +64,14 @@ func TestMultiUserHTTPAuthenticationAndProfile(t *testing.T) {
 		t.Fatalf("provider usage status=%d", forbidden.Code)
 	}
 
+	newsUnavailable := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/v1/news", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	h.ServeHTTP(newsUnavailable, req)
+	if newsUnavailable.Code != http.StatusServiceUnavailable {
+		t.Fatalf("news status=%d body=%s", newsUnavailable.Code, newsUnavailable.Body.String())
+	}
+
 	watchlist := httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPut, "/v1/me/watchlist", bytes.NewBufferString(`{"symbols":["AAPL"]}`))
 	req.Header.Set("Authorization", "Bearer "+token)

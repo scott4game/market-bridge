@@ -19,6 +19,7 @@ var ui embed.FS
 type HTTP struct {
 	Cache *Cache
 	Live  *LiveProxy
+	News  *NewsProxy
 }
 
 func (h *HTTP) Handler() http.Handler {
@@ -51,6 +52,11 @@ func (h *HTTP) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/me/indicators/{id}/copy", h.copyLocalIndicator)
 	if h.Live != nil {
 		mux.Handle("/v1/live/ws", h.Live)
+	}
+	if h.News != nil {
+		mux.HandleFunc("GET /v1/news", h.News.Service.ListHTTP)
+		mux.HandleFunc("GET /v1/news/ws", h.News.Service.ServeWS)
+		mux.HandleFunc("GET /v1/news/stream", h.News.Service.ServeSSE)
 	}
 	assets, _ := fs.Sub(ui, "ui")
 	mux.Handle("/", http.FileServer(http.FS(assets)))
@@ -203,7 +209,7 @@ func (h *HTTP) refresh(w http.ResponseWriter, r *http.Request) {
 func security(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; worker-src 'self'; connect-src 'self' ws: wss:")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; worker-src 'self'; img-src 'self' https: data:; connect-src 'self' ws: wss:")
 		if origin := r.Header.Get("Origin"); origin != "" && !allowedOrigin(origin, r.Host) {
 			jsonResponse(w, 403, map[string]string{"error": "cross-origin request denied"})
 			return

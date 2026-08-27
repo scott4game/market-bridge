@@ -16,6 +16,7 @@ import (
 	"github.com/scott4game/market-bridge/internal/config"
 	"github.com/scott4game/market-bridge/internal/live"
 	"github.com/scott4game/market-bridge/internal/market"
+	"github.com/scott4game/market-bridge/internal/news"
 	"github.com/scott4game/market-bridge/internal/provider"
 	marketserver "github.com/scott4game/market-bridge/internal/server"
 	"github.com/scott4game/market-bridge/internal/storage"
@@ -98,6 +99,16 @@ func main() {
 	store, err := marketserver.NewStoreWithBuildOptions(ctx, cfg.DataDir, p, cfg.DatasetWorkers, cfg.DatasetQueueSize, cfg.DatasetBuildTimeout)
 	if err != nil {
 		log.Fatal(err)
+	}
+	var newsService *news.Service
+	if cfg.NewsProvider == "fmp" {
+		newsStore, newsErr := news.OpenStore(filepath.Join(cfg.DataDir, "news.db"))
+		if newsErr != nil {
+			log.Fatal(newsErr)
+		}
+		defer newsStore.Close()
+		newsService = news.NewService(newsStore, &news.FMP{APIKey: cfg.FMPAPIKey, BaseURL: cfg.FMPBaseURL}, cfg.FMPNewsPollInterval, cfg.NewsRetention)
+		go newsService.Run(ctx)
 	}
 	var source live.Source
 	var multiSource *live.MultiSource
@@ -198,6 +209,11 @@ func main() {
 			value["history_enabled"] = cfg.BinanceEnabled
 		}
 		status["massive"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[cfg.Provider == "massive"], "plan": cfg.MassivePlanName}
+		if newsService != nil {
+			status["fmp_news"] = newsService.Status()
+		} else {
+			status["fmp_news"] = map[string]any{"state": "disabled"}
+		}
 		return status
 	}
 	var historicalClickHouse marketserver.HistoricalClickHouse
@@ -210,7 +226,7 @@ func main() {
 	}
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           (&marketserver.HTTP{Store: store, Token: cfg.BearerToken, Access: auth, Limiter: limiter, Live: hub, Usage: usage, ProviderStatus: providerStatus, ClickHouseEnabled: cfg.ClickHouseEnabled, ClickHouse: historicalClickHouse, HistoryCatalog: historyCatalog, DataVersion: cfg.DataVersion, EmptyCoverageTTL: cfg.EmptyCoverageTTL, HistoryRetention: cfg.ClickHouseRetention, RecentTrades: recentTrades}).Handler(),
+		Handler:           (&marketserver.HTTP{Store: store, Token: cfg.BearerToken, Access: auth, Limiter: limiter, Live: hub, Usage: usage, ProviderStatus: providerStatus, ClickHouseEnabled: cfg.ClickHouseEnabled, ClickHouse: historicalClickHouse, HistoryCatalog: historyCatalog, DataVersion: cfg.DataVersion, EmptyCoverageTTL: cfg.EmptyCoverageTTL, HistoryRetention: cfg.ClickHouseRetention, RecentTrades: recentTrades, News: newsService}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    1 << 20,
@@ -231,6 +247,9 @@ func main() {
 func logEnabledProviders(cfg config.Server) {
 	if cfg.Provider == "massive" {
 		log.Printf("Massive historical provider enabled: plan=%s, data_version=%s", cfg.MassivePlanName, cfg.DataVersion)
+	}
+	if cfg.NewsProvider == "fmp" {
+		log.Printf("FMP news provider enabled: poll_interval=%s, retention=%s", cfg.FMPNewsPollInterval, cfg.NewsRetention)
 	}
 	if cfg.LongbridgeHistoryEnabled {
 		log.Printf("Longbridge historical provider enabled: markets=HK,SH,SZ, data_version=%s", cfg.DataVersion)

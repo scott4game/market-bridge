@@ -27,6 +27,8 @@ func TestEmbeddedKLineChartAssets(t *testing.T) {
 		{path: "/", want: "WebSocket 实时"},
 		{path: "/", want: "逐笔成交"},
 		{path: "/", want: "实时盘口"},
+		{path: "/", want: "最新新闻"},
+		{path: "/news.js", want: "/v1/news/ws"},
 		{path: "/", want: "symbol-options"},
 		{path: "/", want: "<label>股市"},
 		{path: "/app.js", want: "applyFormulaIndicators"},
@@ -89,6 +91,7 @@ func TestEmbeddedUIUsesProviderCapabilitiesAndSignedHistogramColors(t *testing.T
 		"$('query').requestSubmit()",
 		"events: ['bar', 'trade', 'depth']",
 		"/v1/live/trades/",
+		"fmp-news-status",
 	} {
 		if !strings.Contains(source, want) {
 			t.Fatalf("embedded app is missing %q", want)

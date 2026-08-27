@@ -51,6 +51,9 @@ Content-Type: application/json
 | GET | `/v1/market-history/adjustments/{symbol}` | 获取美股前复权累计因子及版本 |
 | GET | `/v1/bars/{symbol}` | 查询单标的历史 K 线 |
 | GET | `/v1/live/trades/{symbol}?limit=100` | 查询 Longbridge 最近逐笔成交，最多 1000 笔 |
+| GET | `/v1/news?symbols=AAPL&limit=50` | 查询本地新闻镜像，默认返回最新 50 条 |
+| GET | `/v1/news/stream?symbols=AAPL` | 使用 SSE 持续监听新闻 |
+| WS | `/v1/news/ws` | 使用 WebSocket 订阅全局或指定股票新闻 |
 | POST | `/v1/datasets/ensure` | 查询多个同市场标的的历史 K 线 |
 | GET | `/v1/me/usage` | 查看当前账号用量和配额 |
 | GET/PUT | `/v1/me/watchlist` | 读取/保存个人收藏；不触发实时订阅 |
@@ -197,7 +200,66 @@ curl -fsS -X POST 'http://127.0.0.1:17600/v1/datasets/ensure' \
 浏览器页面会自动分块加载至少两年并在左拖时继续追溯，但这是 UI 策略；Agent API
 不会猜时间范围，仍必须显式传 `from/to`。
 
-## 7. 实时 WebSocket
+## 7. 新闻查询与监听
+
+新闻由 go-server 的 FMP Provider 采集，go-client 持续镜像到本机。Agent 应连接本地
+`127.0.0.1:17600`，不需要持有 FMP API Key。查询当前股票最近新闻：
+
+```bash
+curl -fsS 'http://127.0.0.1:17600/v1/news?symbols=AAPL&limit=50'
+```
+
+`kinds` 可取 `stock_news`、`press_release`；省略 `symbols` 表示全部股票。响应中的
+`sequence` 是单调游标，断线后通过 `after_sequence` 补齐：
+
+```bash
+curl -fsS 'http://127.0.0.1:17600/v1/news?after_sequence=123&limit=500'
+```
+
+Grok CLI、Claude Code、Codex 等工具最方便的持续监听方式是 SSE：
+
+```bash
+curl -N 'http://127.0.0.1:17600/v1/news/stream?symbols=AAPL,NVDA&kinds=stock_news,press_release'
+```
+
+SSE 使用 `id` 作为新闻序号，并接受标准 `Last-Event-ID` 请求头。也可以使用 WebSocket，
+连接后发送一次订阅消息：
+
+```json
+{
+  "symbols": ["AAPL", "NVDA"],
+  "kinds": ["stock_news", "press_release"],
+  "after_sequence": 123,
+  "status": true
+}
+```
+
+地址为 `ws://127.0.0.1:17600/v1/news/ws`。`symbols` 为空表示接收全部新闻。事件格式：
+
+```json
+{
+  "type": "news",
+  "action": "created",
+  "sequence": 124,
+  "article": {
+    "id": "...",
+    "kind": "stock_news",
+    "symbols": ["AAPL"],
+    "title": "...",
+    "summary": "...",
+    "url": "https://...",
+    "publisher": "...",
+    "published_at": "2026-08-27T10:20:30Z",
+    "received_at": "2026-08-27T10:21:02Z",
+    "provider": "fmp"
+  }
+}
+```
+
+收到 `gap` 时记录其 `sequence`，然后调用 REST 接口补齐。新闻内容只保存标题、摘要和
+原文链接；Agent 不应假定摘要等于完整正文。
+
+## 8. 实时 WebSocket
 
 如需在订阅建立时立即初始化逐笔列表，可先请求最近成交；响应中的 `timestamp` 为 Unix
 秒，随后用 WebSocket 的 `trade` 事件续接：
@@ -303,7 +365,7 @@ Bar 事件示例：
 实时推送目前以供应商的 1 分钟 bar 为准；`1h/2h/3h/4h` 等高周期应通过历史 K 线
 接口查询或由 Agent 从 1 分钟数据按明确的交易时段边界聚合。
 
-## 8. 个人收藏与实时订阅的区别
+## 9. 个人收藏与实时订阅的区别
 
 读取收藏：
 
@@ -322,7 +384,7 @@ curl -fsS -X PUT 'http://127.0.0.1:17600/v1/me/watchlist' \
 响应包含 `subscription_mode:"on_demand"`。收藏只用于保存用户偏好，不会让服务器常驻
 订阅这些代码。真正的实时盯盘集合始终来自当前 WebSocket 连接中的 `symbols`。
 
-## 9. 错误和恢复
+## 10. 错误和恢复
 
 | 状态/现象 | 含义 | Agent 行为 |
 | --- | --- | --- |
@@ -337,7 +399,7 @@ curl -fsS -X PUT 'http://127.0.0.1:17600/v1/me/watchlist' \
 
 所有网络重试都应使用有上限的指数退避。历史 GET 可以安全重试；写收藏前避免并发覆盖。
 
-## 10. 可交给 Agent 的最小提示词
+## 11. 可交给 Agent 的最小提示词
 
 ```text
 只通过 http://127.0.0.1:17600 访问 go-client，不直接连接 go-server 或供应商。

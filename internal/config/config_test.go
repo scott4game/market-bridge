@@ -65,6 +65,20 @@ func TestServerClickHouseOptInValidation(t *testing.T) {
 	}
 }
 
+func TestFMPNewsRequiresKeyAndReadsPollingConfig(t *testing.T) {
+	t.Setenv("GO_SERVER_NEWS_PROVIDER", "fmp")
+	t.Setenv("FMP_API_KEY", "")
+	if err := ServerFromEnv().Validate(); err == nil || !strings.Contains(err.Error(), "FMP_API_KEY") {
+		t.Fatalf("expected missing FMP key, got %v", err)
+	}
+	t.Setenv("FMP_API_KEY", "secret")
+	t.Setenv("FMP_NEWS_POLL_INTERVAL", "90s")
+	cfg := ServerFromEnv()
+	if err := cfg.Validate(); err != nil || cfg.FMPNewsPollInterval != 90*time.Second {
+		t.Fatalf("cfg=%+v err=%v", cfg, err)
+	}
+}
+
 func TestEffectiveLiveProviders(t *testing.T) {
 	cfg := Server{LiveProvider: "mock", LiveProviders: []string{" Longbridge ", "BINANCE", "longbridge"}}
 	if got := cfg.EffectiveLiveProviders(); !reflect.DeepEqual(got, []string{"longbridge", "binance"}) {

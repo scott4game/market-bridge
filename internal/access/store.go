@@ -104,6 +104,11 @@ func Open(path, legacyToken string) (*Store, error) {
 			return nil, err
 		}
 	}
+	// News is a read capability like history/live; preserve existing keys when it is introduced.
+	if _, err := db.Exec(`UPDATE api_keys SET scopes=scopes||',news:read' WHERE instr(','||scopes||',', ',news:read,')=0`); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if legacyToken != "" {
 		if _, err := db.Exec(`INSERT OR IGNORE INTO users(id,name,role,enabled,created_at) VALUES('legacy-admin','legacy-admin','admin',1,?)`, time.Now().Unix()); err != nil {
 			db.Close()
@@ -116,7 +121,7 @@ func Open(path, legacyToken string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 
 func scopesForRole(role string) []string {
-	scopes := []string{"history:read", "live:read", "profile:read"}
+	scopes := []string{"history:read", "live:read", "news:read", "profile:read"}
 	if role == "admin" {
 		scopes = append(scopes, "provider:usage", "admin")
 	}

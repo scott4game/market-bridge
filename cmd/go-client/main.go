@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,7 @@ import (
 	"github.com/scott4game/market-bridge/internal/config"
 	"github.com/scott4game/market-bridge/internal/localclient"
 	"github.com/scott4game/market-bridge/internal/market"
+	"github.com/scott4game/market-bridge/internal/news"
 	"github.com/scott4game/market-bridge/internal/storage"
 )
 
@@ -59,7 +61,14 @@ func main() {
 		}
 		live := localclient.NewLiveProxy(cfg, cache)
 		go live.Run(ctx)
-		srv := &http.Server{Addr: cfg.Listen, Handler: (&localclient.HTTP{Cache: cache, Live: live}).Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 1 << 20}
+		newsStore, newsErr := news.OpenStore(filepath.Join(cfg.CacheDir, "news.db"))
+		if newsErr != nil {
+			log.Fatal(newsErr)
+		}
+		defer newsStore.Close()
+		newsProxy := localclient.NewNewsProxy(cfg, newsStore)
+		go newsProxy.Run(ctx)
+		srv := &http.Server{Addr: cfg.Listen, Handler: (&localclient.HTTP{Cache: cache, Live: live, News: newsProxy}).Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 1 << 20}
 		go func() {
 			<-ctx.Done()
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
