@@ -185,6 +185,16 @@ func (c *Cache) Close() error {
 	return c.db.Close()
 }
 
+// RedisHealthy verifies that the configured Redis hot cache is reachable.
+// A failed check does not disable the client: cache operations continue to
+// fall back to Parquet and can use Redis again after it recovers.
+func (c *Cache) RedisHealthy(ctx context.Context) error {
+	if c.redis == nil {
+		return errors.New("Redis is disabled")
+	}
+	return c.redis.Ping(ctx).Err()
+}
+
 func (c *Cache) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar, string, error) {
 	spec, err := spec.Normalize()
 	if err != nil {

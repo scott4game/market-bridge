@@ -158,8 +158,9 @@ func main() {
 	if cfg.ClickHouseEnabled {
 		ch, err := storage.NewClickHouseSink(ctx, cfg.ClickHouseURL, cfg.ClickHouseDatabase, cfg.ClickHouseUser, cfg.ClickHousePassword)
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("go-server ClickHouse connection failed: database=%s user=%s: %v", cfg.ClickHouseDatabase, displayUser(cfg.ClickHouseUser), err)
 		}
+		log.Printf("go-server ClickHouse connection succeeded: database=%s user=%s", cfg.ClickHouseDatabase, displayUser(cfg.ClickHouseUser))
 		sink = ch
 		clickhouse = ch
 		go ch.Run(ctx)
@@ -291,4 +292,11 @@ func contains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func displayUser(user string) string {
+	if user == "" {
+		return "default"
+	}
+	return user
 }

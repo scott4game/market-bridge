@@ -39,8 +39,9 @@ func main() {
 		var sinkErr error
 		clickhouse, sinkErr = storage.NewClickHouseSink(ctx, cfg.ClickHouseURL, cfg.ClickHouseDatabase, cfg.ClickHouseUser, cfg.ClickHousePassword)
 		if sinkErr != nil {
-			log.Fatalf("initialize client ClickHouse: %v", sinkErr)
+			log.Fatalf("go-client ClickHouse connection failed: database=%s user=%s: %v", cfg.ClickHouseDatabase, displayUser(cfg.ClickHouseUser), sinkErr)
 		}
+		log.Printf("go-client ClickHouse connection succeeded: database=%s user=%s", cfg.ClickHouseDatabase, displayUser(cfg.ClickHouseUser))
 		go clickhouse.Run(ctx)
 	}
 	var historicalClickHouse localclient.HistoricalClickHouse
@@ -52,6 +53,18 @@ func main() {
 		log.Fatal(err)
 	}
 	defer cache.Close()
+	if cfg.RedisEnabled {
+		redisCtx, redisCancel := context.WithTimeout(ctx, time.Second)
+		redisErr := cache.RedisHealthy(redisCtx)
+		redisCancel()
+		if redisErr != nil {
+			log.Printf("go-client Redis connection failed; using Parquet fallback: address=%s db=%d user=%s: %v", cfg.RedisAddress, cfg.RedisDB, displayUser(cfg.RedisUsername), redisErr)
+		} else {
+			log.Printf("go-client Redis connection succeeded: address=%s db=%d user=%s", cfg.RedisAddress, cfg.RedisDB, displayUser(cfg.RedisUsername))
+		}
+	} else {
+		log.Printf("go-client Redis disabled")
+	}
 	switch cmd {
 	case "serve":
 		go cache.RunCleanup(ctx)
@@ -89,6 +102,13 @@ func main() {
 	default:
 		log.Fatalf("unknown command %q", cmd)
 	}
+}
+
+func displayUser(user string) string {
+	if user == "" {
+		return "default"
+	}
+	return user
 }
 
 func marketHistoryCommand(ctx context.Context, cache *localclient.Cache) {
