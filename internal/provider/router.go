@@ -16,6 +16,9 @@ type HistoricalProviderDisabledError struct {
 }
 
 func (e *HistoricalProviderDisabledError) Error() string {
+	if e.Provider == "Index" {
+		return "index historical provider is disabled; set GO_SERVER_INDEX_PROVIDER to longbridge, fmp, massive, or mock and restart go-server"
+	}
 	if e.Provider == "Longbridge" {
 		return fmt.Sprintf("Longbridge historical provider is not enabled for %s; set GO_SERVER_LONGBRIDGE_HISTORY_ENABLED=true and restart go-server", e.Venue)
 	}
@@ -29,6 +32,7 @@ func IsHistoricalProviderDisabled(err error) bool {
 
 type Router struct {
 	US                Provider
+	Index             Provider
 	Longbridge        Provider
 	Binance           Provider
 	UniverseProviders []Provider
@@ -39,10 +43,15 @@ func (r *Router) DataVersion() string { return "router-v1" }
 
 func (r *Router) providerFor(venue market.Venue) (Provider, error) {
 	switch venue {
-	case market.VenueUS, market.VenueIndex, market.VenueFutures:
+	case market.VenueUS, market.VenueFutures:
 		if r.US != nil {
 			return r.US, nil
 		}
+	case market.VenueIndex:
+		if r.Index != nil {
+			return r.Index, nil
+		}
+		return nil, &HistoricalProviderDisabledError{Provider: "Index", Venue: venue}
 	case market.VenueHK, market.VenueSH, market.VenueSZ:
 		if r.Longbridge != nil {
 			return r.Longbridge, nil

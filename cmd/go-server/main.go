@@ -37,21 +37,25 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	var usage *provider.UsageTracker
-	var usProvider provider.Provider
-	switch cfg.Provider {
-	case "massive":
+	var massiveProvider *provider.Massive
+	if cfg.Provider == "massive" || cfg.IndexProvider == "massive" {
 		var err error
 		usage, err = provider.NewUsageTracker(filepath.Join(cfg.DataDir, "usage.db"), cfg.MassivePlanName, cfg.MassivePerMinute, cfg.MassivePerMonth, time.Local)
 		if err != nil {
 			log.Fatal(err)
 		}
 		defer usage.Close()
-		usProvider = &provider.Massive{APIKey: cfg.MassiveAPIKey, BaseURL: cfg.MassiveBaseURL, Version: cfg.DataVersion, PlanName: cfg.MassivePlanName, Usage: usage}
+		massiveProvider = &provider.Massive{APIKey: cfg.MassiveAPIKey, BaseURL: cfg.MassiveBaseURL, Version: cfg.DataVersion, PlanName: cfg.MassivePlanName, Usage: usage}
+	}
+	var usProvider provider.Provider
+	switch cfg.Provider {
+	case "massive":
+		usProvider = massiveProvider
 	default:
 		usProvider = &provider.Mock{Version: cfg.DataVersion}
 	}
 	liveProviders := cfg.EffectiveLiveProviders()
-	longbridgeNeeded := cfg.LongbridgeHistoryEnabled || contains(liveProviders, "longbridge")
+	longbridgeNeeded := cfg.LongbridgeHistoryEnabled || cfg.IndexProvider == "longbridge" || contains(liveProviders, "longbridge")
 	var longbridgeQuote *lbquote.QuoteContext
 	if longbridgeNeeded {
 		longbridgeConfig, err := lbconfig.New()
@@ -69,14 +73,25 @@ func main() {
 		longbridgeHistory = &provider.Longbridge{Quote: longbridgeQuote, Version: "longbridge-v1-" + cfg.DataVersion}
 	}
 	var universeProviders []provider.Provider
-	if longbridgeQuote != nil && longbridgeHistory == nil {
+	if contains(liveProviders, "longbridge") && longbridgeHistory == nil {
 		universeProviders = append(universeProviders, &provider.Longbridge{Quote: longbridgeQuote, Version: "longbridge-universe-v1-" + cfg.DataVersion})
 	}
 	var binanceHistory provider.Provider
 	if cfg.BinanceEnabled {
 		binanceHistory = &provider.Binance{BaseURL: cfg.BinanceRESTURL, Version: "binance-spot-v1-" + cfg.DataVersion}
 	}
-	var p provider.Provider = &provider.Router{US: usProvider, Longbridge: longbridgeHistory, Binance: binanceHistory, UniverseProviders: universeProviders}
+	var indexProvider provider.Provider
+	switch cfg.IndexProvider {
+	case "longbridge":
+		indexProvider = &provider.LongbridgeIndex{Quote: longbridgeQuote, Version: "longbridge-index-v1-" + cfg.DataVersion}
+	case "fmp":
+		indexProvider = &provider.FMPIndex{APIKey: cfg.FMPAPIKey, BaseURL: cfg.FMPBaseURL, Version: "fmp-index-v1-" + cfg.DataVersion}
+	case "massive":
+		indexProvider = massiveProvider
+	case "mock":
+		indexProvider = &provider.Mock{Version: "mock-index-v1-" + cfg.DataVersion}
+	}
+	var p provider.Provider = &provider.Router{US: usProvider, Index: indexProvider, Longbridge: longbridgeHistory, Binance: binanceHistory, UniverseProviders: universeProviders}
 	if err := os.MkdirAll(filepath.Dir(cfg.AuthDB), 0o755); err != nil {
 		log.Fatal(err)
 	}
@@ -208,7 +223,8 @@ func main() {
 		} else if value, ok := status["binance"].(map[string]any); ok {
 			value["history_enabled"] = cfg.BinanceEnabled
 		}
-		status["massive"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[cfg.Provider == "massive"], "plan": cfg.MassivePlanName}
+		status["index"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[cfg.IndexProvider != "disabled"], "provider": cfg.IndexProvider, "history_enabled": cfg.IndexProvider != "disabled"}
+		status["massive"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[cfg.Provider == "massive" || cfg.IndexProvider == "massive"], "plan": cfg.MassivePlanName}
 		if newsService != nil {
 			status["fmp_news"] = newsService.Status()
 		} else {
@@ -250,6 +266,9 @@ func logEnabledProviders(cfg config.Server) {
 	}
 	if cfg.NewsProvider == "fmp" {
 		log.Printf("FMP news provider enabled: poll_interval=%s, retention=%s", cfg.FMPNewsPollInterval, cfg.NewsRetention)
+	}
+	if cfg.IndexProvider != "" && cfg.IndexProvider != "disabled" && cfg.IndexProvider != "mock" {
+		log.Printf("Index historical provider enabled: provider=%s, data_version=%s", cfg.IndexProvider, cfg.DataVersion)
 	}
 	if cfg.LongbridgeHistoryEnabled {
 		log.Printf("Longbridge historical provider enabled: markets=HK,SH,SZ, data_version=%s", cfg.DataVersion)

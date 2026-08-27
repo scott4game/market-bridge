@@ -229,6 +229,9 @@ async function refreshAccount() {
     updateMarketAvailability()
     $('massive-status').textContent = massive.state || 'unknown'
     $('massive-plan').textContent = massive.plan || '—'
+    const indexProvider = providers.index || {}
+    $('index-status').textContent = indexProvider.state || 'disabled'
+    $('index-detail').textContent = indexProvider.provider || 'disabled'
     const longbridge = providers.longbridge || {}
     $('longbridge-status').textContent = longbridge.state || 'unknown'
     $('longbridge-detail').textContent = `订阅池 ${longbridge.subscribed_symbols ?? 0} · 重连 ${longbridge.reconnects ?? 0}`
@@ -319,6 +322,7 @@ function periodToInterval(period) {
 function marketDefaults(symbol) {
   const upper = symbol.toUpperCase()
   if (upper.startsWith('F:')) return { session: 'continuous', adjustment: 'raw', market: '美期期货', timezone: 'America/Chicago' }
+  if (/^I:(HSI|HSCEI|HSTECH)$/.test(upper)) return { session: 'regular', adjustment: 'raw', market: '香港指数', timezone: 'Asia/Hong_Kong' }
   if (upper.startsWith('I:')) return { session: 'regular', adjustment: 'raw', market: '美国指数', timezone: 'America/New_York' }
   if (upper.endsWith('.BINANCE')) return { session: 'continuous', adjustment: 'raw', market: 'Binance Spot', timezone: 'UTC' }
   if (upper.endsWith('.HK')) return { session: 'regular', adjustment: 'forward_adjusted', market: '港股', timezone: 'Asia/Hong_Kong' }
@@ -629,7 +633,8 @@ chart.setDataLoader({
   subscribeBar({ symbol, period, callback }) {
     if (/^(I|F):/.test(symbol.ticker)) {
       stopLive()
-      setWSState('disabled', { symbol: symbol.ticker, detail: 'Massive 指数/期货当前提供历史或延迟 K 线，尚未接入实时 WebSocket' })
+      const detail = symbol.ticker.startsWith('I:') ? '指数当前仅提供历史或延迟 K 线，尚未接入实时 WebSocket' : 'Massive 期货当前仅提供历史或延迟 K 线，尚未接入实时 WebSocket'
+      setWSState('disabled', { symbol: symbol.ticker, detail })
       return
     }
     startLive(symbol.ticker, period, callback)
@@ -926,7 +931,7 @@ $('save-watchlist').addEventListener('click', async () => {
 })
 
 $('market').addEventListener('change', () => {
-  const placeholders = { us: '输入代码或名称，例如 NVDA / 英伟达', hk: '输入代码或名称，例如 700.HK / 腾讯控股', cn: '输入代码或名称，例如 600519.SH / 贵州茅台' }
+  const placeholders = { us: '输入代码或名称，例如 NVDA / I:VIX / I:IXIC', hk: '输入代码或名称，例如 700.HK / I:HSI', cn: '输入代码或名称，例如 600519.SH / 贵州茅台' }
   $('symbol').value = ''
   $('symbol').placeholder = placeholders[$('market').value]
   renderSymbolOptions()

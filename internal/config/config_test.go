@@ -22,6 +22,9 @@ func TestServerFromEnv(t *testing.T) {
 	t.Setenv("MASSIVE_REQUESTS_PER_MONTH", "10000")
 
 	got := ServerFromEnv()
+	if got.IndexProvider != "disabled" {
+		t.Fatalf("default index provider=%q", got.IndexProvider)
+	}
 	if got.Listen != ":27601" || got.DatasetTTL != 48*time.Hour {
 		t.Fatalf("unexpected server settings: %+v", got)
 	}
@@ -42,6 +45,44 @@ func TestServerFromEnv(t *testing.T) {
 	}
 	if got.MassivePlanName != "stocks_developer" || got.MassivePerMinute != 0 || got.MassivePerMonth != 10000 {
 		t.Fatalf("unexpected Massive usage settings: %+v", got)
+	}
+}
+
+func TestIndexProviderValidation(t *testing.T) {
+	t.Setenv("GO_SERVER_INDEX_PROVIDER", "unknown")
+	if err := ServerFromEnv().Validate(); err == nil || !strings.Contains(err.Error(), "unsupported index provider") {
+		t.Fatalf("err=%v", err)
+	}
+
+	t.Setenv("GO_SERVER_INDEX_PROVIDER", "fmp")
+	t.Setenv("FMP_API_KEY", "")
+	if err := ServerFromEnv().Validate(); err == nil || !strings.Contains(err.Error(), "FMP_API_KEY") {
+		t.Fatalf("err=%v", err)
+	}
+	t.Setenv("FMP_API_KEY", "secret")
+	if err := ServerFromEnv().Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("GO_SERVER_INDEX_PROVIDER", "massive")
+	t.Setenv("MASSIVE_API_KEY", "")
+	if err := ServerFromEnv().Validate(); err == nil || !strings.Contains(err.Error(), "MASSIVE_API_KEY") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestLongbridgeIndexRequiresCredentialsIndependently(t *testing.T) {
+	t.Setenv("GO_SERVER_INDEX_PROVIDER", "longbridge")
+	t.Setenv("GO_SERVER_LONGBRIDGE_HISTORY_ENABLED", "false")
+	t.Setenv("LONGBRIDGE_APP_KEY", "")
+	if err := ServerFromEnv().Validate(); err == nil || !strings.Contains(err.Error(), "LONGBRIDGE_APP_KEY") {
+		t.Fatalf("err=%v", err)
+	}
+	t.Setenv("LONGBRIDGE_APP_KEY", "app-key")
+	t.Setenv("LONGBRIDGE_APP_SECRET", "app-secret")
+	t.Setenv("LONGBRIDGE_ACCESS_TOKEN", "token")
+	if err := ServerFromEnv().Validate(); err != nil {
+		t.Fatal(err)
 	}
 }
 

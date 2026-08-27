@@ -83,60 +83,75 @@ func (p *Longbridge) Bars(ctx context.Context, spec market.DatasetSpec) ([]marke
 	if normalized.Adjustment == market.ForwardAdjusted {
 		adjust = lbquote.AdjustTypeForward
 	}
-	location := time.FixedZone("Asia/Shanghai", 8*3600)
+	location, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		return nil, err
+	}
 	var bars []market.Bar
 	for _, symbol := range normalized.Symbols {
 		venue, _ := market.VenueOf(symbol)
 		if venue != market.VenueHK && venue != market.VenueSH && venue != market.VenueSZ {
 			return nil, fmt.Errorf("Longbridge historical provider does not route %s", symbol)
 		}
-		cursor := normalized.From.In(location)
-		for cursor.Before(normalized.To.In(location)) {
-			sticks, err := p.Quote.HistoryCandlesticksByOffset(ctx, symbol, period.period, adjust, true, &cursor, 1000, lbquote.CandlestickRequestTradeSession(lbquote.CandlestickTradeSessionNormal))
-			if err != nil {
-				return nil, fmt.Errorf("history %s from %s: %w", symbol, cursor.Format(time.RFC3339), err)
-			}
-			if len(sticks) == 0 {
-				break
-			}
-			sort.Slice(sticks, func(i, j int) bool { return sticks[i].Timestamp < sticks[j].Timestamp })
-			last := time.Unix(sticks[len(sticks)-1].Timestamp, 0).UTC()
-			for _, stick := range sticks {
-				ts := time.Unix(stick.Timestamp, 0).UTC()
-				if ts.Before(normalized.From) || !ts.Before(normalized.To) || stick.Open == nil || stick.High == nil || stick.Low == nil || stick.Close == nil {
-					continue
-				}
-				open, e1 := market.DecimalFromString(stick.Open.String())
-				high, e2 := market.DecimalFromString(stick.High.String())
-				low, e3 := market.DecimalFromString(stick.Low.String())
-				closeValue, e4 := market.DecimalFromString(stick.Close.String())
-				if e1 != nil || e2 != nil || e3 != nil || e4 != nil {
-					return nil, fmt.Errorf("Longbridge returned an invalid decimal for %s", symbol)
-				}
-				bar := market.Bar{Symbol: symbol, Timestamp: ts, Open: open, High: high, Low: low, Close: closeValue, Volume: stick.Volume, Session: market.RegularSession, Source: "longbridge", Completed: true}
-				if stick.Turnover != nil {
-					turnover, parseErr := market.DecimalFromString(stick.Turnover.String())
-					if parseErr == nil {
-						bar.Turnover = &turnover
-					}
-				}
-				bars = append(bars, bar)
-			}
-			next := last.Add(time.Second).In(location)
-			if !next.After(cursor) || last.After(normalized.To) || len(sticks) < 1000 {
-				break
-			}
-			cursor = next
+		part, fetchErr := fetchLongbridgeHistory(ctx, p.Quote, normalized, period, adjust, symbol, symbol, location)
+		if fetchErr != nil {
+			return nil, fetchErr
 		}
+		bars = append(bars, part...)
+	}
+	bars = deduplicateBars(bars)
+	market.SortBars(bars)
+	return bars, nil
+}
+
+func fetchLongbridgeHistory(ctx context.Context, quote LongbridgeHistoryClient, spec market.DatasetSpec, period longbridgePeriod, adjust lbquote.AdjustType, publicSymbol, upstreamSymbol string, location *time.Location) ([]market.Bar, error) {
+	var bars []market.Bar
+	cursor := spec.From.In(location)
+	for cursor.Before(spec.To.In(location)) {
+		sticks, err := quote.HistoryCandlesticksByOffset(ctx, upstreamSymbol, period.period, adjust, true, &cursor, 1000, lbquote.CandlestickRequestTradeSession(lbquote.CandlestickTradeSessionNormal))
+		if err != nil {
+			return nil, fmt.Errorf("history %s from %s: %w", publicSymbol, cursor.Format(time.RFC3339), err)
+		}
+		if len(sticks) == 0 {
+			break
+		}
+		sort.Slice(sticks, func(i, j int) bool { return sticks[i].Timestamp < sticks[j].Timestamp })
+		last := time.Unix(sticks[len(sticks)-1].Timestamp, 0).UTC()
+		for _, stick := range sticks {
+			ts := time.Unix(stick.Timestamp, 0).UTC()
+			if ts.Before(spec.From) || !ts.Before(spec.To) || stick.Open == nil || stick.High == nil || stick.Low == nil || stick.Close == nil {
+				continue
+			}
+			open, e1 := market.DecimalFromString(stick.Open.String())
+			high, e2 := market.DecimalFromString(stick.High.String())
+			low, e3 := market.DecimalFromString(stick.Low.String())
+			closeValue, e4 := market.DecimalFromString(stick.Close.String())
+			if e1 != nil || e2 != nil || e3 != nil || e4 != nil {
+				return nil, fmt.Errorf("Longbridge returned an invalid decimal for %s", publicSymbol)
+			}
+			bar := market.Bar{Symbol: publicSymbol, Timestamp: ts, Open: open, High: high, Low: low, Close: closeValue, Volume: stick.Volume, Session: spec.Session, Source: "longbridge", Completed: true}
+			if stick.Turnover != nil {
+				turnover, parseErr := market.DecimalFromString(stick.Turnover.String())
+				if parseErr == nil {
+					bar.Turnover = &turnover
+				}
+			}
+			bars = append(bars, bar)
+		}
+		next := last.Add(time.Second).In(location)
+		if !next.After(cursor) || last.After(spec.To) || len(sticks) < 1000 {
+			break
+		}
+		cursor = next
 	}
 	bars = deduplicateBars(bars)
 	if period.factor > 1 {
-		bars, err = aggregateBars(bars, normalized.Interval, period.factor, location)
+		var err error
+		bars, err = aggregateBars(bars, spec.Interval, period.factor, location)
 		if err != nil {
 			return nil, err
 		}
 	}
-	market.SortBars(bars)
 	return bars, nil
 }
 

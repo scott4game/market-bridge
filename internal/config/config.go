@@ -13,6 +13,7 @@ type Server struct {
 	DataDir                   string
 	AuthDB                    string
 	Provider                  string
+	IndexProvider             string
 	DataVersion               string
 	BearerToken               string
 	MassiveAPIKey             string
@@ -54,7 +55,7 @@ type Server struct {
 func ServerFromEnv() Server {
 	return Server{
 		Listen: env("GO_SERVER_LISTEN", ":17601"), DataDir: env("GO_SERVER_DATA_DIR", "./data/server"), AuthDB: os.Getenv("GO_SERVER_AUTH_DB"),
-		Provider: env("GO_SERVER_PROVIDER", "mock"), DataVersion: env("GO_SERVER_DATA_VERSION", "market-v1"),
+		Provider: env("GO_SERVER_PROVIDER", "mock"), IndexProvider: strings.ToLower(strings.TrimSpace(env("GO_SERVER_INDEX_PROVIDER", "disabled"))), DataVersion: env("GO_SERVER_DATA_VERSION", "market-v1"),
 		BearerToken: os.Getenv("GO_SERVER_TOKEN"), MassiveAPIKey: os.Getenv("MASSIVE_API_KEY"), MassiveBaseURL: env("MASSIVE_BASE_URL", "https://api.massive.com"),
 		MassivePlanName: env("MASSIVE_PLAN_NAME", "stocks_basic"), MassivePerMinute: integer("MASSIVE_REQUESTS_PER_MINUTE", 5), MassivePerMonth: integer("MASSIVE_REQUESTS_PER_MONTH", 0),
 		NewsProvider: env("GO_SERVER_NEWS_PROVIDER", "disabled"), FMPAPIKey: os.Getenv("FMP_API_KEY"), FMPBaseURL: env("FMP_BASE_URL", "https://financialmodelingprep.com"), FMPNewsPollInterval: duration("FMP_NEWS_POLL_INTERVAL", time.Minute), NewsRetention: duration("GO_SERVER_NEWS_RETENTION", 30*24*time.Hour),
@@ -90,11 +91,19 @@ func (s Server) EffectiveLiveProviders() []string {
 }
 
 func (s Server) Validate() error {
+	switch s.IndexProvider {
+	case "disabled", "longbridge", "fmp", "massive", "mock":
+	default:
+		return fmt.Errorf("unsupported index provider %q", s.IndexProvider)
+	}
 	if s.NewsProvider != "disabled" && s.NewsProvider != "fmp" {
 		return fmt.Errorf("unsupported news provider %q", s.NewsProvider)
 	}
-	if s.NewsProvider == "fmp" && strings.TrimSpace(s.FMPAPIKey) == "" {
-		return fmt.Errorf("FMP_API_KEY is required when GO_SERVER_NEWS_PROVIDER=fmp")
+	if (s.NewsProvider == "fmp" || s.IndexProvider == "fmp") && strings.TrimSpace(s.FMPAPIKey) == "" {
+		return fmt.Errorf("FMP_API_KEY is required when an FMP provider is enabled")
+	}
+	if (s.Provider == "massive" || s.IndexProvider == "massive") && strings.TrimSpace(s.MassiveAPIKey) == "" {
+		return fmt.Errorf("MASSIVE_API_KEY is required when a Massive provider is enabled")
 	}
 	liveProviders := s.EffectiveLiveProviders()
 	for _, name := range liveProviders {
@@ -105,7 +114,7 @@ func (s Server) Validate() error {
 			return fmt.Errorf("mock live provider cannot be combined with real providers")
 		}
 	}
-	if s.LongbridgeHistoryEnabled || containsString(liveProviders, "longbridge") {
+	if s.LongbridgeHistoryEnabled || s.IndexProvider == "longbridge" || containsString(liveProviders, "longbridge") {
 		values := []struct{ name, value string }{
 			{"LONGBRIDGE_APP_KEY", s.LongbridgeAppKey},
 			{"LONGBRIDGE_APP_SECRET", s.LongbridgeAppSecret},
@@ -113,7 +122,7 @@ func (s Server) Validate() error {
 		}
 		for _, item := range values {
 			if strings.TrimSpace(item.value) == "" {
-				return fmt.Errorf("%s is required when Longbridge history or live data is enabled", item.name)
+				return fmt.Errorf("%s is required when Longbridge history, index, or live data is enabled", item.name)
 			}
 		}
 	}

@@ -22,9 +22,11 @@ func TestLogEnabledProviders(t *testing.T) {
 
 	cfg := config.Server{
 		Provider:        "massive",
+		IndexProvider:   "fmp",
 		DataVersion:     "massive-v1",
 		MassivePlanName: "stocks_basic",
 		MassiveAPIKey:   "must-not-be-logged",
+		FMPAPIKey:       "fmp-must-not-be-logged",
 		LiveProvider:    "longbridge",
 	}
 	logEnabledProviders(cfg)
@@ -32,13 +34,14 @@ func TestLogEnabledProviders(t *testing.T) {
 	got := output.String()
 	for _, want := range []string{
 		"Massive historical provider enabled: plan=stocks_basic, data_version=massive-v1",
+		"Index historical provider enabled: provider=fmp, data_version=massive-v1",
 		"Longbridge live provider enabled: subscription_mode=on_demand",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("startup log %q does not contain %q", got, want)
 		}
 	}
-	if strings.Contains(got, "must-not-be-logged") {
+	if strings.Contains(got, "must-not-be-logged") || strings.Contains(got, "fmp-must-not-be-logged") {
 		t.Fatalf("startup log contains a credential: %q", got)
 	}
 }

@@ -7,9 +7,12 @@
 `go-server` 的历史数据与实时行情由两组独立配置控制：
 
 ```dotenv
-# 美股、美国指数和期货历史数据：mock 或 massive
+# 美股和期货历史数据：mock 或 massive
 GO_SERVER_PROVIDER=massive
 MASSIVE_API_KEY=...
+
+# 指数历史数据独立选择；默认 disabled
+GO_SERVER_INDEX_PROVIDER=longbridge
 
 # 可选：FMP 股票新闻和公司公告，独立于历史行情 Provider
 GO_SERVER_NEWS_PROVIDER=fmp
@@ -29,7 +32,7 @@ GO_SERVER_BINANCE_ENABLED=true
 GO_SERVER_LIVE_PROVIDERS=longbridge,binance
 ```
 
-不要把 `GO_SERVER_PROVIDER` 设置为 `longbridge` 或 `binance`。它选择裸代码美股、`I:` 指数和 `F:` 期货的 Massive 历史 Provider；服务会根据代码后缀把 `.HK/.SH/.SZ` 路由到 Longbridge，把 `.BINANCE` 路由到 Binance。旧配置 `GO_SERVER_LIVE_PROVIDER=longbridge` 仍可用；需要多个实时源时使用复数配置。
+不要把 `GO_SERVER_PROVIDER` 设置为 `longbridge` 或 `binance`。它只选择裸代码美股和 `F:` 期货的基础历史 Provider；`I:` 指数由 `GO_SERVER_INDEX_PROVIDER=disabled|longbridge|fmp|massive|mock` 独立选择，默认关闭且不会自动回退。服务根据代码后缀把 `.HK/.SH/.SZ` 路由到 Longbridge，把 `.BINANCE` 路由到 Binance。旧配置 `GO_SERVER_LIVE_PROVIDER=longbridge` 仍可用；需要多个实时源时使用复数配置。
 
 默认不开启 Longbridge 深度订阅，以减少权限和订阅额度要求。如账号已有深度权限，可设置 `GO_SERVER_LONGBRIDGE_DEPTH_ENABLED=true`；Web 页面会在 K 线右侧显示逐笔成交和盘口，并在该开关关闭时明确提示。Longbridge 单次历史接口最多返回 1000 根，服务会自动分页；供应商的频率、市场权限和每月标的额度仍然适用。
 
@@ -39,6 +42,7 @@ GO_SERVER_LIVE_PROVIDERS=longbridge,binance
 | --- | --- | --- | --- |
 | 美股 | `AAPL` 或 `AAPL.US` | `regular` | `forward_adjusted` / `split_adjusted` |
 | 美国指数 | `I:VIX`、`I:NDX` | `regular` | `raw` |
+| 香港指数 | `I:HSI`、`I:HSTECH` | `regular` | `raw` |
 | 美国期货合约 | `F:MNQZ6`、`F:ESZ6` | `continuous` | `raw` |
 | 港股 | `700.HK` | `regular` | `forward_adjusted` |
 | 沪市 | `600519.SH` | `regular` | `forward_adjusted` |
@@ -47,7 +51,9 @@ GO_SERVER_LIVE_PROVIDERS=longbridge,binance
 
 一个 dataset 不能把连续交易品种与 regular-session 品种混在一起。页面对美股显式发送 `forward_adjusted`；API 为兼容已有调用，省略 adjustment 或传 `auto` 时，美股仍解析为 `split_adjusted`。港股/A 股的 `auto` 为 `forward_adjusted`，指数、期货和 Binance 为 `raw`。
 
-Massive 的 Stocks、Indices 和 Futures 是三个独立产品。Stocks Starter 不会自动授予指数或期货权限；需要在同一个 Massive 账号中另行启用 Indices Basic（免费、日终数据）和 Futures Basic（免费、8 小时延迟、近 2 年），或购买对应 Starter。指数沿用 `/v2/aggs`，代码必须带 Massive 的 `I:` 前缀；期货走 `/futures/v1/aggs`，本服务额外使用 `F:` 区分资产类型，且必须填写带到期月份/年份的实际合约代码，例如 `F:MNQZ6`，不能只写产品代码 `MNQ`。
+指数对外统一使用 `I:` 代码，但各 Provider 会转换为自己的原生代码。Longbridge 支持 `I:IXIC/I:DJI/I:HSI/I:HSCEI/I:HSTECH`；FMP 支持 `I:VIX/I:NDX/I:SPX/I:IXIC/I:DJI/I:HSI`，并复用 `FMP_API_KEY/FMP_BASE_URL`。选择 FMP 不要求启用 FMP 新闻，选择 Longbridge 也不要求开启港股/A 股历史。未被所选 Provider 支持的指数会直接报错，不会换源或用 ETF 代替。
+
+Massive 的 Stocks、Indices 和 Futures 是三个独立产品。选择 `GO_SERVER_INDEX_PROVIDER=massive` 时，需要在同一个 Massive 账号中另行启用 Indices Basic 或对应付费套餐。Massive 指数沿用 `/v2/aggs`；期货走 `/futures/v1/aggs`，本服务额外使用 `F:` 区分资产类型，且必须填写带到期月份/年份的实际合约代码，例如 `F:MNQZ6`，不能只写产品代码 `MNQ`。
 
 美股 `regular` 的 `1h/2h/3h/4h` 统一从 Massive 30 分钟母线按纽约时间 `09:30` 锚定聚合，最后不足完整周期的 K 线仍返回。美股 `forward_adjusted` 使用拆股调整行情叠加累计分红因子；Stocks Basic 只支持最近两年，超出范围需升级 Massive 套餐或改用 `split_adjusted`。浏览器不提供起止时间控件，会按周期分块加载并在左拖时补齐至少两年；REST 接口仍要求显式 `from/to`。
 

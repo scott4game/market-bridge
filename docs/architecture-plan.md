@@ -233,7 +233,7 @@ sequenceDiagram
 - `stream_epoch + event_type + symbol + sequence` 构成实时游标。
 - 同一分钟的未完成 Bar 可以重复修订，`completed=true` 后视为最终值。
 
-Longbridge 只负责实时行情。历史数据集由 `GO_SERVER_PROVIDER=massive|mock` 控制，实时数据由 `GO_SERVER_LIVE_PROVIDER=longbridge|mock` 控制。
+基础历史数据集由 `GO_SERVER_PROVIDER=massive|mock` 控制，指数历史由 `GO_SERVER_INDEX_PROVIDER=disabled|longbridge|fmp|massive|mock` 独立控制，实时数据由 `GO_SERVER_LIVE_PROVIDER=longbridge|mock` 控制。
 
 ## 统一数据模型
 

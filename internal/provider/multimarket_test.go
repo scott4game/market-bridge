@@ -148,21 +148,32 @@ func (p *routeProvider) Universe(context.Context) ([]string, error) {
 
 func TestRouterSelectsProviderBySuffix(t *testing.T) {
 	us := &routeProvider{name: "massive", version: "us-v1"}
+	index := &routeProvider{name: "fmp-index", version: "index-v1"}
 	lb := &routeProvider{name: "longbridge", version: "lb-v1"}
-	router := &Router{US: us, Longbridge: lb}
-	spec := market.DatasetSpec{Symbols: []string{"AAPL", "700.HK", "600519.SH"}, Interval: "1d", From: time.Now().Add(-24 * time.Hour), To: time.Now(), Session: market.RegularSession, Adjustment: market.Raw}
+	router := &Router{US: us, Index: index, Longbridge: lb}
+	spec := market.DatasetSpec{Symbols: []string{"AAPL", "I:VIX", "700.HK", "600519.SH"}, Interval: "1d", From: time.Now().Add(-24 * time.Hour), To: time.Now(), Session: market.RegularSession, Adjustment: market.Raw}
 	description, err := router.Describe(spec)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if description.Name != "longbridge+massive" || !strings.Contains(description.DataVersion, "lb-v1") {
+	if description.Name != "fmp-index+longbridge+massive" || !strings.Contains(description.DataVersion, "index-v1") {
 		t.Fatalf("description=%+v", description)
 	}
 	if _, err := router.Bars(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
-	if len(us.calls) != 1 || len(us.calls[0].Symbols) != 1 || len(lb.calls) != 1 || len(lb.calls[0].Symbols) != 2 {
-		t.Fatalf("us=%v lb=%v", us.calls, lb.calls)
+	if len(us.calls) != 1 || len(us.calls[0].Symbols) != 1 || len(index.calls) != 1 || index.calls[0].Symbols[0] != "I:VIX" || len(lb.calls) != 1 || len(lb.calls[0].Symbols) != 2 {
+		t.Fatalf("us=%v index=%v lb=%v", us.calls, index.calls, lb.calls)
+	}
+}
+
+func TestRouterReportsDisabledIndexProvider(t *testing.T) {
+	router := &Router{US: &routeProvider{name: "massive", version: "v1"}}
+	spec := market.DatasetSpec{Symbols: []string{"I:VIX"}, Interval: "1d", From: time.Now().Add(-24 * time.Hour), To: time.Now(), Adjustment: market.Raw}
+	_, err := router.Bars(context.Background(), spec)
+	var disabled *HistoricalProviderDisabledError
+	if !errors.As(err, &disabled) || disabled.Provider != "Index" || disabled.Venue != market.VenueIndex {
+		t.Fatalf("err=%v", err)
 	}
 }
 

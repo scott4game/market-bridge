@@ -273,7 +273,7 @@ docker compose --profile local up --build
 
 ## 供应商
 
-- `GO_SERVER_PROVIDER=massive` 与 `MASSIVE_API_KEY` 启用 Massive 历史 aggregates。它支持股票、`I:VIX`/`I:NDX` 指数和 `F:MNQZ6` 这类实际期货合约；期货自动改走 `/futures/v1/aggs`。Massive 的 Stocks、Indices、Futures 权限相互独立，Stocks Starter 用户还需在账号中启用免费的 Indices Basic / Futures Basic 或购买对应套餐。`split_adjusted` 只表示 Massive 拆股调整；美股 `forward_adjusted` 在此基础上叠加 Massive 分红公司的累计历史调整因子，形成 Futu 风格前复权。
+- `GO_SERVER_PROVIDER=massive` 与 `MASSIVE_API_KEY` 启用 Massive 股票和 `F:MNQZ6` 这类实际期货合约历史数据；期货自动改走 `/futures/v1/aggs`。`GO_SERVER_INDEX_PROVIDER=longbridge|fmp|massive|mock` 单独选择 `I:` 指数历史源，默认 `disabled` 且不会自动回退；FMP 复用 `FMP_API_KEY`。Massive 的 Stocks、Indices、Futures 权限相互独立。`split_adjusted` 只表示 Massive 拆股调整；美股 `forward_adjusted` 在此基础上叠加 Massive 分红公司的累计历史调整因子，形成 Futu 风格前复权。
 - `GO_SERVER_NEWS_PROVIDER=fmp` 与 `FMP_API_KEY` 启用 FMP 股票新闻和公司公告。go-server 默认每 60 秒轮询，发现新文章后通过 REST/SSE/WebSocket 发出；go-client 常驻镜像并默认保留 30 天。网页右栏的“新闻”标签可查看当前股票或全市场最新内容。
 - Massive 调用量会持久化到服务端数据目录的 `usage.db`。免费档使用 `MASSIVE_PLAN_NAME=stocks_basic`、`MASSIVE_REQUESTS_PER_MINUTE=5`；`MASSIVE_REQUESTS_PER_MONTH=0` 表示月度不限额。通过受保护的 `GET /v1/providers/massive/usage` 或本地页面查看最近 60 秒、本月和累计调用量。计数只覆盖本 go-server 发出的请求，不包含同一 API Key 被其他程序使用的次数。
 - 设置 `GO_SERVER_LONGBRIDGE_HISTORY_ENABLED=true` 后，`700.HK`、`600519.SH`、`000001.SZ` 的历史 K 线由 Longbridge 提供；Longbridge 三项凭据仍由服务端统一保存。裸代码和 `.US` 继续走原有美股 Provider。
