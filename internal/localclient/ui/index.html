@@ -18,6 +18,34 @@
     <button>加载</button>
   </form>
   <section class="meta"><span id="source">缓存：—</span><span id="count">Bars：—</span><span id="updated">更新：—</span><span>滚轮缩放 · 拖动平移 · 悬停查看 OHLC</span></section>
+  <section class="market-workspace">
+    <section class="chart-stage" aria-label="股票 K 线">
+      <div class="chart-security-title">
+        <div><small>当前股票</small><h2 id="security-title">正在加载</h2><span id="security-subtitle">—</span></div>
+        <strong id="security-code">AAPL</strong>
+      </div>
+      <div id="chart" role="img" aria-label="交互式 K 线图"></div>
+    </section>
+    <aside id="live-market" aria-label="实时成交与盘口">
+      <nav class="live-tabs" aria-label="右侧信息面板"><button type="button" data-live-tab="depth" aria-pressed="true">盘口</button><button type="button" data-live-tab="trades" aria-pressed="false">成交</button><button type="button" data-live-tab="news" aria-pressed="false">新闻 <em id="news-unread" hidden>0</em></button></nav>
+      <section class="live-tab-view depth-panel" data-live-view="depth">
+        <div class="live-panel-title"><strong>实时盘口</strong><span id="depth-state">等待订阅</span></div>
+        <div class="market-table-head"><span>档位</span><span>价格</span><span>挂单量</span><span>委托笔数</span></div>
+        <div id="depth-rows" class="market-table-body"><p class="live-empty">加载股票后显示盘口</p></div>
+      </section>
+      <section class="live-tab-view trades-panel" data-live-view="trades" hidden>
+        <div class="live-panel-title"><strong>逐笔成交</strong><span id="trades-state">等待订阅</span></div>
+        <div class="trade-counts"><span id="recent-trade-count">最近成交 0 笔</span><span id="live-trade-count">实时新增 0 笔</span></div>
+        <div class="market-table-head trade-head"><span>时间</span><span>价格</span><span>成交量</span><span>类型</span></div>
+        <div id="trade-rows" class="market-table-body"><p class="live-empty">加载股票后显示成交</p></div>
+      </section>
+      <section class="live-tab-view news-panel" data-live-view="news" hidden>
+        <div class="live-panel-title"><strong>最新新闻</strong><span id="news-state">正在连接</span></div>
+        <div class="news-filters"><button type="button" data-news-scope="symbol" aria-pressed="true">当前股票</button><button type="button" data-news-scope="all" aria-pressed="false">全部最新</button><select id="news-kind" aria-label="新闻类型"><option value="">全部</option><option value="stock_news">股票新闻</option><option value="press_release">公司公告</option></select></div>
+        <div id="news-rows" class="news-list"><p class="live-empty">正在加载新闻</p></div>
+      </section>
+    </aside>
+  </section>
   <section class="indicator-toolbar" aria-label="图表显示与公式指标">
     <div><strong>公式指标</strong><span id="indicator-state">正在读取本地配置</span></div>
     <div class="display-controls"><label class="axis-zoom-toggle"><input id="y-axis-zoom" type="checkbox">纵轴缩放</label><button id="reset-futu-view" type="button">恢复 Futu 默认</button><button id="manage-indicators" type="button">管理指标</button></div>
@@ -50,34 +78,6 @@
     <div aria-live="polite"><small>WebSocket 实时</small><strong id="ws-status">未启用</strong><span id="ws-detail">实时推送目前仅支持 1m 周期</span></div>
   </section>
   <section class="watchlist"><label>个人收藏（不自动订阅）<input id="watchlist-symbols" placeholder="AAPL,NVDA"></label><button id="save-watchlist" type="button">保存收藏</button><span id="watchlist-state">实时行情按当前页面/API 连接按需订阅</span></section>
-  <section class="market-workspace">
-    <section class="chart-stage" aria-label="股票 K 线">
-      <div class="chart-security-title">
-        <div><small>当前股票</small><h2 id="security-title">正在加载</h2><span id="security-subtitle">—</span></div>
-        <strong id="security-code">AAPL</strong>
-      </div>
-      <div id="chart" role="img" aria-label="交互式 K 线图"></div>
-    </section>
-    <aside id="live-market" aria-label="实时成交与盘口">
-      <nav class="live-tabs" aria-label="右侧信息面板"><button type="button" data-live-tab="depth" aria-pressed="true">盘口</button><button type="button" data-live-tab="trades" aria-pressed="false">成交</button><button type="button" data-live-tab="news" aria-pressed="false">新闻 <em id="news-unread" hidden>0</em></button></nav>
-      <section class="live-tab-view depth-panel" data-live-view="depth">
-        <div class="live-panel-title"><strong>实时盘口</strong><span id="depth-state">等待订阅</span></div>
-        <div class="market-table-head"><span>档位</span><span>价格</span><span>挂单量</span><span>委托笔数</span></div>
-        <div id="depth-rows" class="market-table-body"><p class="live-empty">加载股票后显示盘口</p></div>
-      </section>
-      <section class="live-tab-view trades-panel" data-live-view="trades" hidden>
-        <div class="live-panel-title"><strong>逐笔成交</strong><span id="trades-state">等待订阅</span></div>
-        <div class="trade-counts"><span id="recent-trade-count">最近成交 0 笔</span><span id="live-trade-count">实时新增 0 笔</span></div>
-        <div class="market-table-head trade-head"><span>时间</span><span>价格</span><span>成交量</span><span>类型</span></div>
-        <div id="trade-rows" class="market-table-body"><p class="live-empty">加载股票后显示成交</p></div>
-      </section>
-      <section class="live-tab-view news-panel" data-live-view="news" hidden>
-        <div class="live-panel-title"><strong>最新新闻</strong><span id="news-state">正在连接</span></div>
-        <div class="news-filters"><button type="button" data-news-scope="symbol" aria-pressed="true">当前股票</button><button type="button" data-news-scope="all" aria-pressed="false">全部最新</button><select id="news-kind" aria-label="新闻类型"><option value="">全部</option><option value="stock_news">股票新闻</option><option value="press_release">公司公告</option></select></div>
-        <div id="news-rows" class="news-list"><p class="live-empty">正在加载新闻</p></div>
-      </section>
-    </aside>
-  </section>
   <pre id="error"></pre>
 </main>
 <script src="/klinecharts.min.js"></script>

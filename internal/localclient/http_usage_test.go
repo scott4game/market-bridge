@@ -66,6 +66,11 @@ func TestKLinePageUsesLazyHistoryWithoutDateControls(t *testing.T) {
 	if strings.Contains(source, `<select id="interval"`) {
 		t.Fatal("period dropdown remains in page")
 	}
+	workspacePosition := strings.Index(source, `<section class="market-workspace">`)
+	indicatorPosition := strings.Index(source, `<section class="indicator-toolbar"`)
+	if workspacePosition < 0 || indicatorPosition < 0 || workspacePosition > indicatorPosition {
+		t.Fatal("market workspace must appear above the indicator toolbar")
+	}
 	for _, interval := range []string{"1m", "3m", "5m", "10m", "15m", "30m", "1h", "2h", "3h", "4h", "1d", "1w", "1mo", "1y"} {
 		if !strings.Contains(source, `data-interval="`+interval+`"`) {
 			t.Fatalf("period button %s is missing", interval)
