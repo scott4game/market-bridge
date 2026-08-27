@@ -40,6 +40,8 @@ const (
 	VenueSH      Venue = "SH"
 	VenueSZ      Venue = "SZ"
 	VenueBinance Venue = "BINANCE"
+	VenueIndex   Venue = "INDEX"
+	VenueFutures Venue = "FUTURES"
 )
 
 func NormalizeSymbol(symbol string) (string, Venue, error) {
@@ -49,6 +51,18 @@ func NormalizeSymbol(symbol string) (string, Venue, error) {
 	}
 	if strings.HasPrefix(symbol, ".") || strings.HasSuffix(symbol, ".") || strings.Contains(symbol, "..") {
 		return "", "", fmt.Errorf("invalid symbol %q", symbol)
+	}
+	if strings.HasPrefix(symbol, "I:") {
+		if len(symbol) == 2 {
+			return "", "", fmt.Errorf("invalid index symbol %q", symbol)
+		}
+		return symbol, VenueIndex, nil
+	}
+	if strings.HasPrefix(symbol, "F:") {
+		if len(symbol) == 2 {
+			return "", "", fmt.Errorf("invalid futures symbol %q", symbol)
+		}
+		return symbol, VenueFutures, nil
 	}
 	for _, venue := range []Venue{VenueUS, VenueHK, VenueSH, VenueSZ, VenueBinance} {
 		suffix := "." + string(venue)
@@ -126,11 +140,12 @@ func (s DatasetSpec) Normalize() (DatasetSpec, error) {
 	sort.Strings(symbols)
 	s.Symbols = symbols
 	_, hasCrypto := venues[VenueBinance]
-	if hasCrypto && len(venues) > 1 {
-		return s, errors.New("crypto and securities cannot be mixed in one dataset")
+	_, hasFutures := venues[VenueFutures]
+	if (hasCrypto || hasFutures) && len(venues) > 1 {
+		return s, errors.New("continuous and regular-session instruments cannot be mixed in one dataset")
 	}
 	if s.Session == "" {
-		if hasCrypto {
+		if hasCrypto || hasFutures {
 			s.Session = ContinuousSession
 		} else {
 			s.Session = RegularSession
@@ -139,11 +154,11 @@ func (s DatasetSpec) Normalize() (DatasetSpec, error) {
 	if s.Session != RegularSession && s.Session != ExtendedSession && s.Session != ContinuousSession {
 		return s, fmt.Errorf("unsupported session %q", s.Session)
 	}
-	if hasCrypto && s.Session != ContinuousSession {
-		return s, errors.New("binance symbols require session continuous")
+	if (hasCrypto || hasFutures) && s.Session != ContinuousSession {
+		return s, errors.New("crypto and futures symbols require session continuous")
 	}
-	if !hasCrypto && s.Session == ContinuousSession {
-		return s, errors.New("continuous session is only valid for crypto symbols")
+	if !hasCrypto && !hasFutures && s.Session == ContinuousSession {
+		return s, errors.New("continuous session is only valid for crypto or futures symbols")
 	}
 	if s.Session == ExtendedSession {
 		for venue := range venues {
@@ -154,13 +169,12 @@ func (s DatasetSpec) Normalize() (DatasetSpec, error) {
 	}
 	if s.Adjustment == "" || s.Adjustment == AutoAdjusted {
 		s.Adjustment = Raw
-		if hasCrypto {
-			s.Adjustment = Raw
-		} else if len(venues) == 1 {
+		if !hasCrypto && !hasFutures && len(venues) == 1 {
 			for venue := range venues {
-				if venue == VenueUS {
+				switch venue {
+				case VenueUS:
 					s.Adjustment = SplitAdjusted
-				} else {
+				case VenueHK, VenueSH, VenueSZ:
 					s.Adjustment = ForwardAdjusted
 				}
 			}
@@ -181,6 +195,10 @@ func (s DatasetSpec) Normalize() (DatasetSpec, error) {
 		case VenueBinance:
 			if s.Adjustment != Raw {
 				return s, errors.New("binance symbols only support raw adjustment")
+			}
+		case VenueIndex, VenueFutures:
+			if s.Adjustment != Raw {
+				return s, errors.New("indices and futures only support raw adjustment")
 			}
 		}
 	}

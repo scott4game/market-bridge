@@ -318,6 +318,8 @@ function periodToInterval(period) {
 
 function marketDefaults(symbol) {
   const upper = symbol.toUpperCase()
+  if (upper.startsWith('F:')) return { session: 'continuous', adjustment: 'raw', market: '美期期货', timezone: 'America/Chicago' }
+  if (upper.startsWith('I:')) return { session: 'regular', adjustment: 'raw', market: '美国指数', timezone: 'America/New_York' }
   if (upper.endsWith('.BINANCE')) return { session: 'continuous', adjustment: 'raw', market: 'Binance Spot', timezone: 'UTC' }
   if (upper.endsWith('.HK')) return { session: 'regular', adjustment: 'forward_adjusted', market: '港股', timezone: 'Asia/Hong_Kong' }
   if (upper.endsWith('.SH') || upper.endsWith('.SZ')) return { session: 'regular', adjustment: 'forward_adjusted', market: 'A 股', timezone: 'Asia/Shanghai' }
@@ -625,6 +627,11 @@ chart.setDataLoader({
     }
   },
   subscribeBar({ symbol, period, callback }) {
+    if (/^(I|F):/.test(symbol.ticker)) {
+      stopLive()
+      setWSState('disabled', { symbol: symbol.ticker, detail: 'Massive 指数/期货当前提供历史或延迟 K 线，尚未接入实时 WebSocket' })
+      return
+    }
     startLive(symbol.ticker, period, callback)
   },
   unsubscribeBar() {
@@ -940,7 +947,7 @@ $('query').addEventListener('submit', event => {
   $('error').textContent = ''
   try {
     const symbol = normalizeSelectedMarketSymbol($('symbol').value)
-    if (!symbol) throw new Error('请输入股票代码')
+    if (!symbol) throw new Error('请输入代码')
     if (!marketHistoryEnabled(symbolMarket(symbol))) throw new Error('服务端未启用 Longbridge 港股/A股历史行情，请设置 GO_SERVER_LONGBRIDGE_HISTORY_ENABLED=true 后重启 go-server')
     $('symbol').value = symbol
     renderSecurityIdentity(symbol)

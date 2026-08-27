@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,6 +97,8 @@ func TestMultiMarketNormalizationDefaults(t *testing.T) {
 		{"600519.sh", "600519.SH", RegularSession, ForwardAdjusted},
 		{"000001.sz", "000001.SZ", RegularSession, ForwardAdjusted},
 		{"btcusdt.binance", "BTCUSDT.BINANCE", ContinuousSession, Raw},
+		{"i:vix", "I:VIX", RegularSession, Raw},
+		{"f:mnqz6", "F:MNQZ6", ContinuousSession, Raw},
 		{"BRK.B", "BRK.B", RegularSession, SplitAdjusted},
 		{"BF.B.US", "BF.B", RegularSession, SplitAdjusted},
 	}
@@ -109,6 +112,17 @@ func TestMultiMarketNormalizationDefaults(t *testing.T) {
 		}
 		if normalized.Symbols[0] != test.wantSymbol || normalized.Session != test.session || normalized.Adjustment != test.adjustment {
 			t.Fatalf("symbol=%s normalized=%+v", test.symbol, normalized)
+		}
+	}
+}
+
+func TestIndicesAndFuturesRejectAdjustedData(t *testing.T) {
+	base := DatasetSpec{Interval: "1m", From: time.Now().Add(-time.Hour), To: time.Now(), Adjustment: SplitAdjusted}
+	for _, symbol := range []string{"I:VIX", "F:MNQZ6"} {
+		spec := base
+		spec.Symbols = []string{symbol}
+		if _, err := spec.Normalize(); err == nil || !strings.Contains(err.Error(), "only support raw") {
+			t.Fatalf("symbol=%s err=%v", symbol, err)
 		}
 	}
 }

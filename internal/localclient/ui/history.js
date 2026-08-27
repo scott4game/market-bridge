@@ -57,7 +57,7 @@
 
   function allowHistoryBeyondTwoYears(symbol, providers) {
     const upper = String(symbol || '').toUpperCase()
-    if (upper.endsWith('.HK') || upper.endsWith('.SH') || upper.endsWith('.SZ') || upper.endsWith('.BINANCE')) return true
+	if (upper.startsWith('I:') || upper.endsWith('.HK') || upper.endsWith('.SH') || upper.endsWith('.SZ') || upper.endsWith('.BINANCE')) return true
 	const massive = providers && providers.massive
 	const plan = String((massive && massive.plan) || '').toLowerCase()
 	return Boolean(massive && massive.state === 'enabled' && plan && plan !== 'stocks_basic')

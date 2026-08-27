@@ -43,6 +43,51 @@ func TestMassiveReportsHTTPStatusBeforeJSONDecode(t *testing.T) {
 	}
 }
 
+func TestMassiveReadsIndexWithNativeTicker(t *testing.T) {
+	from := time.Date(2026, 8, 24, 14, 30, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/v2/aggs/ticker/I:VIX/range/1/minute/") {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		if r.URL.Query().Get("adjusted") != "false" {
+			t.Fatalf("query=%s", r.URL.RawQuery)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "OK", "results": []map[string]any{{"o": 14.1, "h": 14.3, "l": 14.0, "c": 14.2, "t": from.UnixMilli()}}})
+	}))
+	defer server.Close()
+	spec := market.DatasetSpec{Symbols: []string{"I:VIX"}, Interval: "1m", From: from, To: from.Add(time.Minute), Session: market.RegularSession, Adjustment: market.Raw}
+	bars, err := (&Massive{APIKey: "test", BaseURL: server.URL, HTTP: server.Client()}).Bars(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bars) != 1 || bars[0].Symbol != "I:VIX" || bars[0].Close != market.DecimalFromFloat(14.2) || bars[0].Volume != 0 {
+		t.Fatalf("bars=%+v", bars)
+	}
+}
+
+func TestMassiveReadsFuturesFromFuturesEndpoint(t *testing.T) {
+	from := time.Date(2026, 8, 24, 0, 0, 0, 123, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/futures/v1/aggs/MNQZ6" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		query := r.URL.Query()
+		if query.Get("resolution") != "3min" || query.Get("window_start.gte") != fmt.Sprint(from.UnixNano()) || query.Get("window_start.lt") != fmt.Sprint(from.Add(3*time.Minute).UnixNano()) || query.Get("adjusted") != "" {
+			t.Fatalf("query=%s", r.URL.RawQuery)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "OK", "results": []map[string]any{{"open": 23000.25, "high": 23010.5, "low": 22990.0, "close": 23005.75, "volume": 42, "window_start": from.UnixNano()}}})
+	}))
+	defer server.Close()
+	spec := market.DatasetSpec{Symbols: []string{"F:MNQZ6"}, Interval: "3m", From: from, To: from.Add(3 * time.Minute), Session: market.ContinuousSession, Adjustment: market.Raw}
+	bars, err := (&Massive{APIKey: "test", BaseURL: server.URL, HTTP: server.Client()}).Bars(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bars) != 1 || bars[0].Symbol != "F:MNQZ6" || !bars[0].Timestamp.Equal(from) || bars[0].Close != market.DecimalFromFloat(23005.75) || bars[0].Volume != 42 {
+		t.Fatalf("bars=%+v", bars)
+	}
+}
+
 func TestMassiveRejectsPaginationCycle(t *testing.T) {
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

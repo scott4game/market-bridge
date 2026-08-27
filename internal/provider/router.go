@@ -39,7 +39,7 @@ func (r *Router) DataVersion() string { return "router-v1" }
 
 func (r *Router) providerFor(venue market.Venue) (Provider, error) {
 	switch venue {
-	case market.VenueUS:
+	case market.VenueUS, market.VenueIndex, market.VenueFutures:
 		if r.US != nil {
 			return r.US, nil
 		}

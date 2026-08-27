@@ -272,6 +272,14 @@ func (m *Massive) fetchBars(ctx context.Context, spec market.DatasetSpec) ([]mar
 	}
 	var bars []market.Bar
 	for _, symbol := range spec.Symbols {
+		if strings.HasPrefix(symbol, "F:") {
+			part, err := m.fetchFuturesBars(ctx, client, base, baseURL, strings.TrimPrefix(symbol, "F:"), symbol, spec)
+			if err != nil {
+				return nil, err
+			}
+			bars = append(bars, part...)
+			continue
+		}
 		next := fmt.Sprintf("%s/v2/aggs/ticker/%s/range/%d/%s/%d/%d", baseURL, url.PathEscape(symbol), multiplier, span, spec.From.UnixMilli(), spec.To.Add(-time.Millisecond).UnixMilli())
 		visited := map[string]struct{}{}
 		pages := 0
@@ -324,6 +332,9 @@ func (m *Massive) fetchBars(ctx context.Context, spec market.DatasetSpec) ([]mar
 				if failure.Error != "" {
 					message = failure.Error
 				}
+				if strings.HasPrefix(symbol, "I:") && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+					message += "; index access requires a separately enabled Massive Indices plan (Indices Basic is free)"
+				}
 				return nil, fmt.Errorf("massive: status %d: %s", resp.StatusCode, message)
 			}
 			var payload struct {
@@ -346,6 +357,13 @@ func (m *Massive) fetchBars(ctx context.Context, spec market.DatasetSpec) ([]mar
 				return nil, err
 			}
 			finish(resp.StatusCode, nil)
+			if payload.Error != "" {
+				message := payload.Error
+				if strings.HasPrefix(symbol, "I:") {
+					message += "; index access requires a separately enabled Massive Indices plan (Indices Basic is free)"
+				}
+				return nil, fmt.Errorf("massive: %s", message)
+			}
 			for _, x := range payload.Results {
 				ts := time.UnixMilli(x.T).UTC()
 				bars = append(bars, market.Bar{Symbol: symbol, Timestamp: ts, Open: market.DecimalFromFloat(x.O), High: market.DecimalFromFloat(x.H), Low: market.DecimalFromFloat(x.L), Close: market.DecimalFromFloat(x.C), Volume: int64(x.V), Session: spec.Session, Source: "massive", Completed: true})
@@ -354,6 +372,101 @@ func (m *Massive) fetchBars(ctx context.Context, spec market.DatasetSpec) ([]mar
 		}
 	}
 	market.SortBars(bars)
+	return bars, nil
+}
+
+func (m *Massive) fetchFuturesBars(ctx context.Context, client *http.Client, base *url.URL, baseURL, ticker, symbol string, spec market.DatasetSpec) ([]market.Bar, error) {
+	resolution, err := massiveFuturesResolution(spec.Interval)
+	if err != nil {
+		return nil, err
+	}
+	next := fmt.Sprintf("%s/futures/v1/aggs/%s", baseURL, url.PathEscape(ticker))
+	visited := map[string]struct{}{}
+	var bars []market.Bar
+	for pages := 1; next != ""; pages++ {
+		if pages > 10_000 {
+			return nil, fmt.Errorf("massive futures: pagination exceeded 10000 pages")
+		}
+		u, err := url.Parse(next)
+		if err != nil {
+			return nil, err
+		}
+		if u.Scheme != base.Scheme || !strings.EqualFold(u.Host, base.Host) {
+			return nil, fmt.Errorf("massive futures: rejected cross-origin next_url %q", next)
+		}
+		canonical := u.String()
+		if _, ok := visited[canonical]; ok {
+			return nil, fmt.Errorf("massive futures: pagination cycle at %q", canonical)
+		}
+		visited[canonical] = struct{}{}
+		q := u.Query()
+		q.Set("apiKey", m.APIKey)
+		q.Set("resolution", resolution)
+		q.Set("window_start.gte", strconv.FormatInt(spec.From.UnixNano(), 10))
+		q.Set("window_start.lt", strconv.FormatInt(spec.To.UnixNano(), 10))
+		q.Set("sort", "window_start.asc")
+		q.Set("limit", "50000")
+		u.RawQuery = q.Encode()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+		finish := func(int, error) {}
+		if m.Usage != nil {
+			finish = m.Usage.Begin("massive", "futures_aggregates")
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			finish(0, err)
+			return nil, err
+		}
+		if resp.StatusCode/100 != 2 {
+			body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			resp.Body.Close()
+			if readErr != nil {
+				finish(resp.StatusCode, readErr)
+				return nil, readErr
+			}
+			finish(resp.StatusCode, nil)
+			var failure struct {
+				Error string `json:"error"`
+			}
+			_ = json.Unmarshal(body, &failure)
+			message := strings.TrimSpace(string(body))
+			if failure.Error != "" {
+				message = failure.Error
+			}
+			if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+				message += "; futures access requires a separately enabled Massive Futures plan (Futures Basic is free)"
+			}
+			return nil, fmt.Errorf("massive futures: status %d: %s", resp.StatusCode, message)
+		}
+		var payload struct {
+			Status  string `json:"status"`
+			Error   string `json:"error"`
+			NextURL string `json:"next_url"`
+			Results []struct {
+				Open        float64 `json:"open"`
+				High        float64 `json:"high"`
+				Low         float64 `json:"low"`
+				Close       float64 `json:"close"`
+				Volume      int64   `json:"volume"`
+				WindowStart int64   `json:"window_start"`
+			} `json:"results"`
+		}
+		err = json.NewDecoder(resp.Body).Decode(&payload)
+		resp.Body.Close()
+		if err != nil {
+			finish(resp.StatusCode, err)
+			return nil, err
+		}
+		finish(resp.StatusCode, nil)
+		if payload.Error != "" {
+			return nil, fmt.Errorf("massive futures: %s", payload.Error)
+		}
+		for _, x := range payload.Results {
+			ts := time.Unix(0, x.WindowStart).UTC()
+			bars = append(bars, market.Bar{Symbol: symbol, Timestamp: ts, Open: market.DecimalFromFloat(x.Open), High: market.DecimalFromFloat(x.High), Low: market.DecimalFromFloat(x.Low), Close: market.DecimalFromFloat(x.Close), Volume: x.Volume, Session: spec.Session, Source: "massive", Completed: true})
+		}
+		next = payload.NextURL
+	}
 	return bars, nil
 }
 
@@ -529,5 +642,20 @@ func massiveInterval(v string) (int, string, error) {
 		return 1, "year", nil
 	default:
 		return 0, "", fmt.Errorf("unsupported Massive interval %q", v)
+	}
+}
+
+func massiveFuturesResolution(v string) (string, error) {
+	switch v {
+	case "1m", "3m", "5m", "10m", "15m", "30m":
+		return strings.TrimSuffix(v, "m") + "min", nil
+	case "1h", "2h", "3h", "4h":
+		return strings.TrimSuffix(v, "h") + "hour", nil
+	case "1d":
+		return "1session", nil
+	case "1w", "1mo", "1y":
+		return map[string]string{"1w": "1week", "1mo": "1month", "1y": "1year"}[v], nil
+	default:
+		return "", fmt.Errorf("unsupported Massive futures interval %q", v)
 	}
 }
