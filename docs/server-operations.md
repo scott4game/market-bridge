@@ -528,7 +528,7 @@ npx --yes wscat \
 连接成功后，在 `>` 提示符中输入：
 
 ```json
-{"symbols":["AAPL"],"events":["bar","trade","depth"]}
+{"symbols":["AAPL"],"events":["bar","quote","trade","depth"]}
 ```
 
 服务端会按连接中的 `symbols` 动态订阅，单个 member 默认最多 200 个标的。直接把这段 JSON 输入普通 shell 会被 zsh/bash 当作命令，必须在 `wscat` 或 `websocat` 的连接内发送。
@@ -545,7 +545,7 @@ websocat \
 真实 Longbridge 行情应包含：
 
 ```json
-{"cursor":{"stream_epoch":"lb-..."},"bar":{"source":"longbridge"}}
+{"cursor":{"stream_epoch":"lb-..."},"quote":{"last_done":"103.000000","change_percent":"3.000000","source":"longbridge"}}
 ```
 
 如果收到以下字段，说明仍在使用 Mock 实时源：

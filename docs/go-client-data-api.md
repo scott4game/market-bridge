@@ -391,7 +391,7 @@ func main() {
 {
   "action": "subscribe",
   "symbols": ["AAPL", "NVDA"],
-  "events": ["bar"],
+  "events": ["bar", "quote"],
   "status": true
 }
 ```
@@ -427,9 +427,15 @@ K 线事件示例：
 }
 ```
 
-事件类型可能为 `bar`、`trade`、`depth` 或 `gap`。当前本地代理只按
-`symbols` 过滤，客户端请求中的 `events` 过滤条件不会在本地生效，因此机器人必须
-再次检查 `event.type`，不能假定只会收到 `bar`。
+Longbridge 股票的实时涨跌事件示例：
+
+```json
+{"type":"quote","symbol":"AAPL","quote":{"last_done":"103.000000","prev_close":"100.000000","change":"3.000000","change_percent":"3.000000","trade_session":"regular","source":"longbridge"}}
+```
+
+`change_percent` 已由 go-server 按当前交易时段的 `prev_close` 计算；盘前、盘后和夜盘
+分别使用长桥对应时段的参考收盘价。事件类型可能为 `bar`、`quote`、`trade`、`depth`
+或 `gap`，本地代理会同时按 `symbols` 和 `events` 过滤。
 
 同一分钟内会多次收到 `completed=false` 的 K 线快照。策略默认只在
 `completed=true` 时确认信号；若策略明确支持盘中信号，应按 `(symbol, timestamp)`

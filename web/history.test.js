@@ -32,4 +32,11 @@ assert.deepEqual(history.mergeBars(
   { timestamp: 3, close: 3 }
 ])
 
+const activeQuery = { generation: 7, symbol: 'AAPL', interval: '1d' }
+assert.equal(history.isCurrentQuery(activeQuery, 7, 'AAPL', '1d'), true)
+assert.equal(history.isCurrentQuery(activeQuery, 6, 'AAPL', '1d'), false)
+assert.equal(history.isCurrentQuery(activeQuery, 7, 'MSFT', '1d'), false)
+assert.equal(history.isCurrentQuery(activeQuery, 7, 'AAPL', '1h'), false)
+assert.equal(history.isCurrentQuery(null, 7, 'AAPL', '1d'), false)
+
 console.log('history policy tests passed')

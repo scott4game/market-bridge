@@ -17,6 +17,12 @@ assert.deepEqual(depth.asks.map(row => row.position), [10, 9, 8, 7, 6, 5, 4, 3, 
 assert.deepEqual(depth.bids.map(row => row.position), [1, 2])
 assert.equal(depth.bids[0].orderNum, 2)
 
+const quote = live.normalizeQuote({ last_done: '103', prev_close: '100', change: '3', change_percent: '3', trade_session: 'post', source: 'longbridge' })
+assert.deepEqual(quote, { lastDone: 103, prevClose: 100, change: 3, changePercent: 3, tradeSession: 'post', source: 'longbridge' })
+const incompleteQuote = live.normalizeQuote({ last_done: '103', trade_session: 'regular' })
+assert.equal(incompleteQuote.lastDone, 103)
+assert.equal(incompleteQuote.changePercent, null)
+
 const initial = [
   { price: '10', volume: 1, timestamp: 100, trade_type: '', direction: 0, trade_session: 0 },
   { price: '10', volume: 1, timestamp: 100, trade_type: '', direction: 0, trade_session: 0 }

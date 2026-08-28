@@ -332,10 +332,29 @@ type EventType string
 
 const (
 	BarEvent   EventType = "bar"
+	QuoteEvent EventType = "quote"
 	TradeEvent EventType = "trade"
 	DepthEvent EventType = "depth"
 	GapEvent   EventType = "gap"
 )
+
+type QuoteSession string
+
+const (
+	QuoteSessionRegular   QuoteSession = "regular"
+	QuoteSessionPre       QuoteSession = "pre"
+	QuoteSessionPost      QuoteSession = "post"
+	QuoteSessionOvernight QuoteSession = "overnight"
+)
+
+type Quote struct {
+	LastDone      Decimal      `json:"last_done"`
+	PrevClose     *Decimal     `json:"prev_close,omitempty"`
+	Change        *Decimal     `json:"change,omitempty"`
+	ChangePercent *Decimal     `json:"change_percent,omitempty"`
+	TradeSession  QuoteSession `json:"trade_session"`
+	Source        string       `json:"source"`
+}
 
 type LiveCursor struct {
 	StreamEpoch string    `json:"stream_epoch"`
@@ -349,6 +368,7 @@ type LiveEvent struct {
 	Timestamp time.Time       `json:"timestamp"`
 	Cursor    LiveCursor      `json:"cursor"`
 	Bar       *Bar            `json:"bar,omitempty"`
+	Quote     *Quote          `json:"quote,omitempty"`
 	Trade     json.RawMessage `json:"trade,omitempty"`
 	Depth     json.RawMessage `json:"depth,omitempty"`
 	Reason    string          `json:"reason,omitempty"`

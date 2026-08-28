@@ -55,6 +55,15 @@
     return [...byTimestamp.values()].sort((a, b) => a.timestamp - b.timestamp)
   }
 
+  function isCurrentQuery(query, generation, symbol, interval) {
+    return Boolean(
+      query &&
+      query.generation === generation &&
+      query.symbol === symbol &&
+      query.interval === interval
+    )
+  }
+
   function allowHistoryBeyondTwoYears(symbol, providers) {
     const upper = String(symbol || '').toUpperCase()
 	if (upper.startsWith('I:') || upper.endsWith('.HK') || upper.endsWith('.SH') || upper.endsWith('.SZ') || upper.endsWith('.BINANCE')) return true
@@ -71,6 +80,7 @@
     olderRange,
     canRequestOlder,
     mergeBars,
+    isCurrentQuery,
     allowHistoryBeyondTwoYears
   }
 })

@@ -46,6 +46,21 @@
     return { asks, bids }
   }
 
+  function normalizeQuote(value) {
+    const lastDone = Number(field(value, 'last_done', 'LastDone'))
+    const prevClose = Number(field(value, 'prev_close', 'PrevClose'))
+    const change = Number(field(value, 'change', 'Change'))
+    const changePercent = Number(field(value, 'change_percent', 'ChangePercent'))
+    return {
+      lastDone: Number.isFinite(lastDone) ? lastDone : null,
+      prevClose: Number.isFinite(prevClose) ? prevClose : null,
+      change: Number.isFinite(change) ? change : null,
+      changePercent: Number.isFinite(changePercent) ? changePercent : null,
+      tradeSession: String(field(value, 'trade_session', 'TradeSession') || 'regular'),
+      source: String(field(value, 'source', 'Source') || '')
+    }
+  }
+
   function tradeKey(row) {
     return [row.timestamp, row.price, row.volume, row.tradeType, row.direction, row.tradeSession].join('|')
   }
@@ -68,5 +83,5 @@
     return snapshot.concat(additions).sort((a, b) => b.timestamp - a.timestamp).slice(0, limit)
   }
 
-  return { normalizeTrade, normalizeTrades, normalizeDepth, tradeKey, mergeInitialAndBuffered }
+  return { normalizeTrade, normalizeTrades, normalizeDepth, normalizeQuote, tradeKey, mergeInitialAndBuffered }
 })

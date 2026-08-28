@@ -17,6 +17,7 @@ import (
 
 type liveSubscriber struct {
 	symbols map[string]struct{}
+	events  map[market.EventType]struct{}
 	queue   chan []byte
 	status  bool
 }
@@ -52,15 +53,19 @@ func (p *LiveProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		Symbols []string `json:"symbols"`
-		Status  bool     `json:"status"`
+		Symbols []string           `json:"symbols"`
+		Events  []market.EventType `json:"events"`
+		Status  bool               `json:"status"`
 	}
 	if json.Unmarshal(raw, &request) != nil || len(request.Symbols) == 0 {
 		_ = c.Close(websocket.StatusPolicyViolation, "symbols required")
 		return
 	}
 	connectionCtx := c.CloseRead(r.Context())
-	s := &liveSubscriber{symbols: map[string]struct{}{}, queue: make(chan []byte, 128), status: request.Status}
+	if len(request.Events) == 0 {
+		request.Events = []market.EventType{market.BarEvent}
+	}
+	s := &liveSubscriber{symbols: map[string]struct{}{}, events: map[market.EventType]struct{}{}, queue: make(chan []byte, 128), status: request.Status}
 	for _, symbol := range request.Symbols {
 		normalized, _, err := market.NormalizeSymbol(symbol)
 		if err != nil {
@@ -68,6 +73,9 @@ func (p *LiveProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.symbols[normalized] = struct{}{}
+	}
+	for _, event := range request.Events {
+		s.events[event] = struct{}{}
 	}
 	if len(s.symbols) > 200 {
 		_ = c.Close(websocket.StatusPolicyViolation, "live quota exceeded")
@@ -130,7 +138,7 @@ func (p *LiveProxy) Run(ctx context.Context) {
 			backoff = nextLiveBackoff(backoff)
 			continue
 		}
-		payload, _ := json.Marshal(map[string]any{"action": "subscribe", "symbols": symbols, "events": []string{"bar", "trade", "depth"}})
+		payload, _ := json.Marshal(map[string]any{"action": "subscribe", "symbols": symbols, "events": p.events()})
 		if err = conn.Write(ctx, websocket.MessageText, payload); err != nil {
 			conn.CloseNow()
 			p.broadcastStatus("reconnecting", symbols, "上游订阅失败，正在重试")
@@ -245,6 +253,9 @@ func (p *LiveProxy) handleEvent(ctx context.Context, msg []byte) {
 	event.Symbol = symbol
 	if p.sink != nil && p.hasSubscriber(symbol) {
 		persist := true
+		if event.Type == market.QuoteEvent {
+			persist = false
+		}
 		if p.cfg.ClickHouseCompletedBarsOnly {
 			persist = event.Type == market.BarEvent && event.Bar != nil && event.Bar.Completed
 		}
@@ -254,7 +265,7 @@ func (p *LiveProxy) handleEvent(ctx context.Context, msg []byte) {
 			}
 		}
 	}
-	p.broadcastSymbol(symbol, msg)
+	p.broadcastSymbol(symbol, event.Type, msg)
 }
 
 func (p *LiveProxy) hasSubscriber(symbol string) bool {
@@ -266,6 +277,23 @@ func (p *LiveProxy) hasSubscriber(symbol string) bool {
 		}
 	}
 	return false
+}
+
+func (p *LiveProxy) events() []market.EventType {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	set := map[market.EventType]struct{}{}
+	for subscriber := range p.subs {
+		for event := range subscriber.events {
+			set[event] = struct{}{}
+		}
+	}
+	result := make([]market.EventType, 0, len(set))
+	for event := range set {
+		result = append(result, event)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
+	return result
 }
 
 func (p *LiveProxy) sendStatus(s *liveSubscriber, state, detail string) {
@@ -304,12 +332,17 @@ func (p *LiveProxy) signal() {
 	default:
 	}
 }
-func (p *LiveProxy) broadcastSymbol(symbol string, msg []byte) {
+func (p *LiveProxy) broadcastSymbol(symbol string, event market.EventType, msg []byte) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	for s := range p.subs {
 		if _, ok := s.symbols[symbol]; !ok {
 			continue
+		}
+		if event != market.GapEvent {
+			if _, ok := s.events[event]; !ok {
+				continue
+			}
 		}
 		copyMsg := append([]byte(nil), msg...)
 		select {

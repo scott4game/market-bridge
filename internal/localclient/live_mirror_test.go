@@ -26,7 +26,7 @@ func (s *recordingLiveSink) Write(_ context.Context, event market.LiveEvent) err
 func TestLiveProxyPersistsOnlyActiveOnDemandSymbols(t *testing.T) {
 	sink := &recordingLiveSink{}
 	proxy := NewLiveProxy(config.Client{ClickHouseCompletedBarsOnly: true}, sink)
-	subscriber := &liveSubscriber{symbols: map[string]struct{}{"NVDA": {}}, queue: make(chan []byte, 1)}
+	subscriber := &liveSubscriber{symbols: map[string]struct{}{"NVDA": {}}, events: map[market.EventType]struct{}{market.BarEvent: {}}, queue: make(chan []byte, 1)}
 	proxy.subs[subscriber] = struct{}{}
 
 	if got := proxy.symbols(); !reflect.DeepEqual(got, []string{"NVDA"}) {
@@ -59,6 +59,38 @@ func TestLiveProxyPersistsOnlyActiveOnDemandSymbols(t *testing.T) {
 	proxy.handleEvent(context.Background(), raw)
 	if len(sink.events) != 1 {
 		t.Fatalf("inactive symbol should not be persisted: %#v", sink.events)
+	}
+}
+
+func TestLiveProxyFiltersQuoteEventsAndDoesNotPersistThem(t *testing.T) {
+	sink := &recordingLiveSink{}
+	proxy := NewLiveProxy(config.Client{}, sink)
+	barSubscriber := &liveSubscriber{symbols: map[string]struct{}{"AAPL": {}}, events: map[market.EventType]struct{}{market.BarEvent: {}}, queue: make(chan []byte, 1)}
+	quoteSubscriber := &liveSubscriber{symbols: map[string]struct{}{"AAPL": {}}, events: map[market.EventType]struct{}{market.QuoteEvent: {}}, queue: make(chan []byte, 1)}
+	proxy.subs[barSubscriber] = struct{}{}
+	proxy.subs[quoteSubscriber] = struct{}{}
+	price := market.DecimalFromFloat(103)
+	event := market.LiveEvent{Type: market.QuoteEvent, Symbol: "AAPL", Timestamp: time.Now().UTC(), Quote: &market.Quote{LastDone: price, TradeSession: market.QuoteSessionRegular, Source: "longbridge"}}
+	raw, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy.handleEvent(context.Background(), raw)
+	if len(sink.events) != 0 {
+		t.Fatalf("quote event was persisted: %#v", sink.events)
+	}
+	select {
+	case <-quoteSubscriber.queue:
+	default:
+		t.Fatal("quote subscriber did not receive quote")
+	}
+	select {
+	case message := <-barSubscriber.queue:
+		t.Fatalf("bar-only subscriber received quote: %s", message)
+	default:
+	}
+	if got := proxy.events(); !reflect.DeepEqual(got, []market.EventType{market.BarEvent, market.QuoteEvent}) {
+		t.Fatalf("events=%v", got)
 	}
 }
 

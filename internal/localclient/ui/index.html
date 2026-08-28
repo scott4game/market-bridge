@@ -21,10 +21,13 @@
   <section class="market-workspace">
     <section class="chart-stage" aria-label="股票 K 线">
       <div class="chart-security-title">
-        <div><small>当前股票</small><h2 id="security-title">正在加载</h2><span id="security-subtitle">—</span></div>
-        <strong id="security-code">AAPL</strong>
+        <div class="security-identity"><small>当前股票</small><h2 id="security-title">正在加载</h2><span id="security-subtitle">—</span></div>
+        <div id="security-quote" class="security-quote neutral"><strong id="security-code">AAPL</strong><span id="security-last">—</span><span id="security-change">等待实时行情</span><small id="security-session">—</small></div>
       </div>
-      <div id="chart" role="img" aria-label="交互式 K 线图"></div>
+      <div class="chart-body">
+        <div id="chart" role="img" aria-label="交互式 K 线图"></div>
+        <div id="chart-empty" class="chart-empty" role="status" aria-live="polite" hidden></div>
+      </div>
     </section>
     <aside id="live-market" aria-label="实时成交与盘口">
       <nav class="live-tabs" aria-label="右侧信息面板"><button type="button" data-live-tab="depth" aria-pressed="true">盘口</button><button type="button" data-live-tab="trades" aria-pressed="false">成交</button><button type="button" data-live-tab="news" aria-pressed="false">新闻 <em id="news-unread" hidden>0</em></button></nav>

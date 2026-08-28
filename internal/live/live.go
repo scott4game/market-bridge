@@ -16,6 +16,7 @@ import (
 	lbquote "github.com/longbridge/openapi-go/quote"
 	"github.com/scott4game/market-bridge/internal/access"
 	"github.com/scott4game/market-bridge/internal/market"
+	shopdecimal "github.com/shopspring/decimal"
 )
 
 type Source interface {
@@ -54,9 +55,26 @@ func (MockSource) Run(ctx context.Context, symbols []string, emit func(market.Li
 }
 
 type LongbridgeSource struct {
-	Quote        *lbquote.QuoteContext
-	DepthEnabled bool
-	OnConnected  func()
+	Quote                LongbridgeLiveClient
+	DepthEnabled         bool
+	QuoteRefreshInterval time.Duration
+	OnConnected          func()
+}
+
+type LongbridgeLiveClient interface {
+	OnQuote(func(*lbquote.PushQuote))
+	OnTrade(func(*lbquote.PushTrade))
+	OnDepth(func(*lbquote.PushDepth))
+	Subscribe(context.Context, []string, []lbquote.SubType, bool) error
+	Unsubscribe(context.Context, bool, []string, []lbquote.SubType) error
+	Quote(context.Context, []string) ([]*lbquote.SecurityQuote, error)
+	Close() error
+}
+
+type longbridgeQuoteState struct {
+	last      *shopdecimal.Decimal
+	prevClose *shopdecimal.Decimal
+	timestamp int64
 }
 
 func (s *LongbridgeSource) SetOnConnected(fn func()) { s.OnConnected = fn }
@@ -81,6 +99,77 @@ func (s *LongbridgeSource) Run(ctx context.Context, symbols []string, emit func(
 	epoch := fmt.Sprintf("lb-%d", time.Now().UnixMilli())
 	var barMu sync.Mutex
 	bars := map[string]*market.Bar{}
+	var quoteMu sync.Mutex
+	quotes := map[string]map[market.QuoteSession]*longbridgeQuoteState{}
+	emitQuote := func(symbol string, session market.QuoteSession, sequence int64) {
+		quoteMu.Lock()
+		state := quotes[symbol][session]
+		if state == nil || state.last == nil {
+			quoteMu.Unlock()
+			return
+		}
+		event, ok := longbridgeQuoteEvent(epoch, symbol, session, sequence, state)
+		quoteMu.Unlock()
+		if ok {
+			emit(event)
+		}
+	}
+	mergeQuoteSnapshot := func(rows []*lbquote.SecurityQuote) []struct {
+		symbol  string
+		session market.QuoteSession
+	} {
+		quoteMu.Lock()
+		defer quoteMu.Unlock()
+		latest := make([]struct {
+			symbol  string
+			session market.QuoteSession
+		}, 0, len(rows))
+		for _, row := range rows {
+			if row == nil {
+				continue
+			}
+			symbol := normalizeSymbol(row.Symbol)
+			mergeLongbridgeQuoteState(quotes, symbol, market.QuoteSessionRegular, row.LastDone, row.PrevClose, row.Timestamp)
+			if row.PreMarketQuote != nil {
+				mergeLongbridgeQuoteState(quotes, symbol, market.QuoteSessionPre, row.PreMarketQuote.LastDone, row.PreMarketQuote.PrevClose, row.PreMarketQuote.Timestamp)
+			}
+			if row.PostMarketQuote != nil {
+				mergeLongbridgeQuoteState(quotes, symbol, market.QuoteSessionPost, row.PostMarketQuote.LastDone, row.PostMarketQuote.PrevClose, row.PostMarketQuote.Timestamp)
+			}
+			if row.OverNightQuote != nil {
+				mergeLongbridgeQuoteState(quotes, symbol, market.QuoteSessionOvernight, row.OverNightQuote.LastDone, row.OverNightQuote.PrevClose, row.OverNightQuote.Timestamp)
+			}
+			session, ok := latestLongbridgeQuoteSession(quotes[symbol])
+			if ok {
+				latest = append(latest, struct {
+					symbol  string
+					session market.QuoteSession
+				}{symbol: symbol, session: session})
+			}
+		}
+		return latest
+	}
+	refreshQuotes := func() {
+		rows, err := q.Quote(ctx, lbSymbolsFor(symbols))
+		if err != nil {
+			log.Printf("Longbridge quote snapshot refresh failed: affected=live_change_percent; detail=%v", err)
+			return
+		}
+		for _, item := range mergeQuoteSnapshot(rows) {
+			emitQuote(item.symbol, item.session, 0)
+		}
+	}
+	q.OnQuote(func(x *lbquote.PushQuote) {
+		if x == nil || x.LastDone == nil {
+			return
+		}
+		symbol := normalizeSymbol(x.Symbol)
+		session := longbridgeQuoteSession(x.TradeSession)
+		quoteMu.Lock()
+		mergeLongbridgeQuoteState(quotes, symbol, session, x.LastDone, nil, x.Timestamp)
+		quoteMu.Unlock()
+		emitQuote(symbol, session, x.Sequence)
+	})
 	q.OnTrade(func(x *lbquote.PushTrade) {
 		symbol := normalizeSymbol(x.Symbol)
 		raw, _ := json.Marshal(x.Trade)
@@ -127,17 +216,7 @@ func (s *LongbridgeSource) Run(ctx context.Context, symbols []string, emit func(
 		raw, _ := json.Marshal(map[string]any{"ask": x.Ask, "bid": x.Bid})
 		emit(market.LiveEvent{Type: market.DepthEvent, Symbol: symbol, Timestamp: time.Now().UTC(), Cursor: market.LiveCursor{StreamEpoch: epoch, EventType: market.DepthEvent, Symbol: symbol, Sequence: x.Sequence}, Depth: raw})
 	})
-	lbSymbols := make([]string, 0, len(symbols))
-	for _, symbol := range symbols {
-		normalized, venue, err := market.NormalizeSymbol(symbol)
-		if err != nil || venue == market.VenueBinance {
-			continue
-		}
-		if venue == market.VenueUS {
-			normalized += ".US"
-		}
-		lbSymbols = append(lbSymbols, normalized)
-	}
+	lbSymbols := lbSymbolsFor(symbols)
 	if len(lbSymbols) == 0 {
 		<-ctx.Done()
 		return ctx.Err()
@@ -159,8 +238,111 @@ func (s *LongbridgeSource) Run(ctx context.Context, symbols []string, emit func(
 	if s.OnConnected != nil {
 		s.OnConnected()
 	}
-	<-ctx.Done()
-	return ctx.Err()
+	refreshQuotes()
+	refreshInterval := s.QuoteRefreshInterval
+	if refreshInterval <= 0 {
+		refreshInterval = time.Minute
+	}
+	refreshTicker := time.NewTicker(refreshInterval)
+	defer refreshTicker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-refreshTicker.C:
+			refreshQuotes()
+		}
+	}
+}
+
+func lbSymbolsFor(symbols []string) []string {
+	result := make([]string, 0, len(symbols))
+	for _, symbol := range symbols {
+		normalized, venue, err := market.NormalizeSymbol(symbol)
+		if err != nil || venue == market.VenueBinance {
+			continue
+		}
+		if venue == market.VenueUS {
+			normalized += ".US"
+		}
+		result = append(result, normalized)
+	}
+	return result
+}
+
+func longbridgeQuoteSession(session lbquote.TradeSessionType) market.QuoteSession {
+	switch int32(session) {
+	case int32(lbquote.TradeSessionPreTrade):
+		return market.QuoteSessionPre
+	case int32(lbquote.TradeSessionPostTrade):
+		return market.QuoteSessionPost
+	case int32(lbquote.TradeSessionOvernight):
+		return market.QuoteSessionOvernight
+	default:
+		return market.QuoteSessionRegular
+	}
+}
+
+func mergeLongbridgeQuoteState(states map[string]map[market.QuoteSession]*longbridgeQuoteState, symbol string, session market.QuoteSession, last, prevClose *shopdecimal.Decimal, timestamp int64) {
+	bySession := states[symbol]
+	if bySession == nil {
+		bySession = map[market.QuoteSession]*longbridgeQuoteState{}
+		states[symbol] = bySession
+	}
+	state := bySession[session]
+	if state == nil {
+		state = &longbridgeQuoteState{}
+		bySession[session] = state
+	}
+	if prevClose != nil {
+		value := *prevClose
+		state.prevClose = &value
+	}
+	if last != nil && (state.last == nil || timestamp >= state.timestamp) {
+		value := *last
+		state.last = &value
+		state.timestamp = timestamp
+	}
+}
+
+func latestLongbridgeQuoteSession(states map[market.QuoteSession]*longbridgeQuoteState) (market.QuoteSession, bool) {
+	var latest market.QuoteSession
+	var timestamp int64
+	found := false
+	for session, state := range states {
+		if state != nil && state.last != nil && (!found || state.timestamp > timestamp) {
+			latest, timestamp, found = session, state.timestamp, true
+		}
+	}
+	return latest, found
+}
+
+func longbridgeQuoteEvent(epoch, symbol string, session market.QuoteSession, sequence int64, state *longbridgeQuoteState) (market.LiveEvent, bool) {
+	last, err := market.DecimalFromString(state.last.String())
+	if err != nil {
+		return market.LiveEvent{}, false
+	}
+	quote := &market.Quote{LastDone: last, TradeSession: session, Source: "longbridge"}
+	if state.prevClose != nil {
+		prev, prevErr := market.DecimalFromString(state.prevClose.String())
+		if prevErr == nil {
+			quote.PrevClose = &prev
+			if !state.prevClose.IsZero() {
+				changeValue := state.last.Sub(*state.prevClose)
+				percentValue := changeValue.Div(*state.prevClose).Mul(shopdecimal.NewFromInt(100))
+				change, changeErr := market.DecimalFromString(changeValue.String())
+				percent, percentErr := market.DecimalFromString(percentValue.String())
+				if changeErr == nil && percentErr == nil {
+					quote.Change, quote.ChangePercent = &change, &percent
+				}
+			}
+		}
+	}
+	timestamp := time.Now().UTC()
+	if state.timestamp > 0 {
+		timestamp = time.Unix(state.timestamp, 0).UTC()
+	}
+	return market.LiveEvent{Type: market.QuoteEvent, Symbol: symbol, Timestamp: timestamp, Cursor: market.LiveCursor{StreamEpoch: epoch, EventType: market.QuoteEvent, Symbol: symbol, Sequence: sequence}, Quote: quote}, true
 }
 
 type subscriber struct {

@@ -274,7 +274,7 @@ curl -fsS 'http://127.0.0.1:17600/v1/live/trades/AAPL?limit=100'
 {
   "action": "subscribe",
   "symbols": ["SNDK", "AAPL"],
-  "events": ["bar", "trade", "depth"],
+  "events": ["bar", "quote", "trade", "depth"],
   "status": true
 }
 ```
@@ -296,7 +296,7 @@ async def main():
         await ws.send(json.dumps({
             "action": "subscribe",
             "symbols": ["SNDK"],
-            "events": ["bar", "trade", "depth"],
+            "events": ["bar", "quote", "trade", "depth"],
             "status": True,
         }))
         async for raw in ws:
@@ -352,7 +352,13 @@ Bar 事件示例：
 }
 ```
 
-行情事件类型包括 `bar`、`trade`、`depth` 和 `gap`。`gap` 示例：
+Longbridge 股票还会返回服务端已计算的实时涨跌：
+
+```json
+{"type":"quote","symbol":"SNDK","quote":{"last_done":"46.510000","prev_close":"45.160000","change":"1.350000","change_percent":"2.989371","trade_session":"regular","source":"longbridge"}}
+```
+
+行情事件类型包括 `bar`、`quote`、`trade`、`depth` 和 `gap`。`gap` 示例：
 
 ```json
 {"type":"gap","symbol":"SNDK","reason":"slow_consumer"}

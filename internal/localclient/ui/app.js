@@ -9,7 +9,7 @@ const RED = '#ff4d5a'
 const GREEN = '#2ac99a'
 let socket = null
 let liveGeneration = 0
-const liveFeed = { symbol: '', trades: [], bufferedTrades: [], initializing: false, recentCount: 0, liveCount: 0, depth: null, recoverOnConnect: false }
+const liveFeed = { symbol: '', trades: [], bufferedTrades: [], initializing: false, recentCount: 0, liveCount: 0, depth: null, quote: null, recoverOnConnect: false }
 let universeSecurities = []
 const wsMonitor = { state: 'disabled', symbol: '', interval: '', count: 0, connectedAt: 0, lastMessageAt: 0, lastType: '', detail: '实时推送目前仅支持 1m 周期' }
 let activeQuery = null
@@ -337,6 +337,12 @@ function periodToInterval(period) {
   return `${period.span}${suffixes[period.type] || 'd'}`
 }
 
+function setChartEmptyState(message = '') {
+  const empty = $('chart-empty')
+  empty.textContent = message
+  empty.hidden = !message
+}
+
 function marketDefaults(symbol) {
   const upper = symbol.toUpperCase()
   if (upper.startsWith('F:')) return { session: 'continuous', adjustment: 'raw', market: '美期期货', timezone: 'America/Chicago' }
@@ -474,9 +480,44 @@ function renderDepth(depth = liveFeed.depth) {
   $('depth-rows').replaceChildren(fragment)
 }
 
+function formatQuoteNumber(value, digits = 6) {
+  if (!Number.isFinite(value)) return '—'
+  return value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: digits })
+}
+
+function renderQuote(quote = liveFeed.quote) {
+  const container = $('security-quote')
+  if (!quote || !Number.isFinite(quote.lastDone)) {
+    container.className = 'security-quote neutral'
+    $('security-last').textContent = '—'
+    $('security-change').textContent = '等待实时行情'
+    $('security-session').textContent = '—'
+    return
+  }
+  $('security-last').textContent = formatQuoteNumber(quote.lastDone)
+  const sessionLabels = { regular: '正常交易', pre: '盘前', post: '盘后', overnight: '夜盘' }
+  $('security-session').textContent = sessionLabels[quote.tradeSession] || quote.tradeSession
+  if (!Number.isFinite(quote.change) || !Number.isFinite(quote.changePercent)) {
+    container.className = 'security-quote neutral'
+    $('security-change').textContent = '涨跌暂不可用'
+    return
+  }
+  const direction = quote.change > 0 ? 'up' : quote.change < 0 ? 'down' : 'neutral'
+  const sign = quote.change > 0 ? '+' : ''
+  const percentSign = quote.changePercent > 0 ? '+' : ''
+  container.className = `security-quote ${direction}`
+  $('security-change').textContent = `${sign}${formatQuoteNumber(quote.change)} (${percentSign}${quote.changePercent.toFixed(2)}%)`
+}
+
+function consumeQuote(value) {
+  liveFeed.quote = window.liveMarketUtils.normalizeQuote(value)
+  renderQuote()
+}
+
 function resetLivePanel(symbol) {
-  Object.assign(liveFeed, { symbol, trades: [], bufferedTrades: [], initializing: true, recentCount: 0, liveCount: 0, depth: null, recoverOnConnect: false })
+  Object.assign(liveFeed, { symbol, trades: [], bufferedTrades: [], initializing: true, recentCount: 0, liveCount: 0, depth: null, quote: null, recoverOnConnect: false })
   setLivePanelState('trades-state', '正在加载', 'warn')
+  renderQuote()
   renderTrades()
   renderDepth()
 }
@@ -533,7 +574,7 @@ function startLive(symbol, period, callback) {
   setWSState('connecting', { ...monitorBase, detail: `正在连接并订阅 ${symbol}` })
   ws.onopen = () => {
     if (socket !== ws) return
-    ws.send(JSON.stringify({ action: 'subscribe', symbols: [symbol], events: ['bar', 'trade', 'depth'], status: true }))
+    ws.send(JSON.stringify({ action: 'subscribe', symbols: [symbol], events: ['bar', 'quote', 'trade', 'depth'], status: true }))
     setWSState('connecting', { detail: `本地 WebSocket 已连接，正在按需订阅 ${symbol}` })
   }
   ws.onmessage = event => {
@@ -575,6 +616,7 @@ function startLive(symbol, period, callback) {
     }
     setWSState('connected', { count: wsMonitor.count + 1, lastMessageAt: now, lastType: payload.type || 'message' })
     if (payload.type === 'bar' && payload.bar && interval === '1m') callback(normalizeBar(payload.bar))
+    if (payload.type === 'quote' && payload.quote) consumeQuote(payload.quote)
     if (payload.type === 'trade' && payload.trade) consumeLiveTrades(payload.trade)
     if (payload.type === 'depth' && payload.depth) {
       liveFeed.depth = window.liveMarketUtils.normalizeDepth(payload.depth, 10)
@@ -606,6 +648,11 @@ chart.setDataLoader({
     }
     const generation = activeQuery.generation
     const interval = periodToInterval(period)
+    const ticker = symbol.ticker
+    if (!window.marketHistory.isCurrentQuery(activeQuery, generation, ticker, interval)) {
+      callback([], { forward: false, backward: false })
+      return
+    }
     let range
     if (type === 'init') {
       range = window.marketHistory.initialRange(activeQuery.to, interval)
@@ -627,9 +674,9 @@ chart.setDataLoader({
         session: activeQuery.session,
         adjustment: activeQuery.adjustment
       })
-      const data = await getJSON(`/v1/bars/${encodeURIComponent(symbol.ticker)}?${query}`)
-      if (!activeQuery || activeQuery.generation !== generation) {
-        callback([], false)
+      const data = await getJSON(`/v1/bars/${encodeURIComponent(ticker)}?${query}`)
+      if (!window.marketHistory.isCurrentQuery(activeQuery, generation, ticker, interval)) {
+        callback([], { forward: false, backward: false })
         return
       }
       const bars = (Array.isArray(data.bars) ? data.bars : []).map(normalizeBar).sort((a, b) => a.timestamp - b.timestamp)
@@ -640,12 +687,21 @@ chart.setDataLoader({
       $('source').textContent = `缓存：${data.source}`
       $('count').textContent = `Bars：${lastBars.length}`
       $('updated').textContent = `更新：${new Date().toLocaleTimeString()}`
-      if (type === 'init' && bars.length) setTimeout(() => chart.scrollToRealTime(), 0)
+      if (type === 'init') {
+        setChartEmptyState(bars.length ? '' : '暂无 K 线数据')
+        if (bars.length) setTimeout(() => chart.scrollToRealTime(), 0)
+      }
     } catch (error) {
-      callback([], false)
-      if (!activeQuery || activeQuery.generation !== generation) return
+      callback([], { forward: false, backward: false })
+      if (!window.marketHistory.isCurrentQuery(activeQuery, generation, ticker, interval)) return
       $('error').textContent = error.message
       $('source').textContent = '缓存：加载失败'
+      if (type === 'init') {
+        lastBars = []
+        $('count').textContent = 'Bars：0'
+        $('updated').textContent = '更新：—'
+        setChartEmptyState('K 线加载失败，请重试')
+      }
     }
   },
   subscribeBar({ symbol, period, callback }) {
@@ -979,6 +1035,7 @@ $('query').addEventListener('submit', event => {
     const to = Date.now()
     const initial = window.marketHistory.initialRange(to, interval)
     activeQuery = {
+      symbol,
       to,
       floor: initial.floor,
       loadedFrom: to,
@@ -990,10 +1047,13 @@ $('query').addEventListener('submit', event => {
     }
     lastBars = []
     $('source').textContent = `市场：${defaults.market} · ${defaults.timezone} · 加载中`
+    $('count').textContent = 'Bars：0'
+    $('updated').textContent = '更新：—'
+    setChartEmptyState('正在加载 K 线')
     chart.setTimezone(defaults.timezone)
-    chart.setPeriod(intervalToPeriod(interval))
     const crypto = symbol.endsWith('.BINANCE')
     chart.setSymbol({ ticker: symbol, pricePrecision: crypto ? 8 : 4, volumePrecision: crypto ? 8 : 0 })
+    chart.setPeriod(intervalToPeriod(interval))
     chart.resetData()
   } catch (error) {
     $('error').textContent = error.message

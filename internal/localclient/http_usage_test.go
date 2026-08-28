@@ -94,7 +94,8 @@ func TestEmbeddedUIUsesProviderCapabilitiesAndSignedHistogramColors(t *testing.T
 		"/v1/me/indicators/reset-display",
 		"upColor: RED, downColor: GREEN",
 		"$('query').requestSubmit()",
-		"events: ['bar', 'trade', 'depth']",
+		"events: ['bar', 'quote', 'trade', 'depth']",
+		"consumeQuote(payload.quote)",
 		"/v1/live/trades/",
 		"fmp-news-status",
 	} {
