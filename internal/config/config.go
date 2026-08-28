@@ -61,6 +61,9 @@ type Server struct {
 	DatasetQueueSize          int
 	DatasetBuildTimeout       time.Duration
 	EmptyCoverageTTL          time.Duration
+	SecurityProfileTTL        time.Duration
+	SecurityProfileMaxStale   time.Duration
+	SecurityProfileWorkers    int
 }
 
 func ServerFromEnv() Server {
@@ -84,6 +87,7 @@ func ServerFromEnv() Server {
 		MarketHistorySyncEnabled: boolean("GO_SERVER_MARKET_HISTORY_SYNC_ENABLED", false), MarketHistorySyncInterval: duration("GO_SERVER_MARKET_HISTORY_SYNC_INTERVAL", 24*time.Hour),
 		DatasetTTL: duration("GO_SERVER_DATASET_TTL", 24*time.Hour), DatasetWorkers: integer("GO_SERVER_DATASET_WORKERS", 2), DatasetQueueSize: integer("GO_SERVER_DATASET_QUEUE_SIZE", 100),
 		DatasetBuildTimeout: duration("GO_SERVER_DATASET_BUILD_TIMEOUT", 10*time.Minute), EmptyCoverageTTL: duration("GO_SERVER_EMPTY_COVERAGE_TTL", 15*time.Minute),
+		SecurityProfileTTL: duration("GO_SERVER_SECURITY_PROFILE_TTL", 24*time.Hour), SecurityProfileMaxStale: duration("GO_SERVER_SECURITY_PROFILE_MAX_STALE", 30*24*time.Hour), SecurityProfileWorkers: integer("GO_SERVER_SECURITY_PROFILE_WORKERS", 16),
 	}
 }
 
@@ -174,6 +178,15 @@ func (s Server) Validate() error {
 				return fmt.Errorf("%s is required when GO_SERVER_CLICKHOUSE_ENABLED=true", item.name)
 			}
 		}
+	}
+	if s.SecurityProfileTTL <= 0 {
+		return fmt.Errorf("GO_SERVER_SECURITY_PROFILE_TTL must be greater than zero")
+	}
+	if s.SecurityProfileMaxStale < s.SecurityProfileTTL {
+		return fmt.Errorf("GO_SERVER_SECURITY_PROFILE_MAX_STALE must be at least GO_SERVER_SECURITY_PROFILE_TTL")
+	}
+	if s.SecurityProfileWorkers < 1 || s.SecurityProfileWorkers > 128 {
+		return fmt.Errorf("GO_SERVER_SECURITY_PROFILE_WORKERS must be between 1 and 128")
 	}
 	return nil
 }

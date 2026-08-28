@@ -329,6 +329,21 @@ func (s *Store) Securities(ctx context.Context) ([]provider.Security, error) {
 	return securities, nil
 }
 
+func (s *Store) SecurityProfile(ctx context.Context, symbol string) (provider.SecurityProfile, error) {
+	profiler, ok := s.provider.(provider.SecurityProfiler)
+	if !ok {
+		return provider.SecurityProfile{}, errors.New("configured provider does not expose security profiles")
+	}
+	return profiler.SecurityProfile(ctx, symbol)
+}
+
+func (s *Store) SecurityProfileUniverse(ctx context.Context) ([]provider.Security, error) {
+	if lister, ok := s.provider.(provider.SecurityProfileUniverseLister); ok {
+		return lister.SecurityProfileUniverse(ctx)
+	}
+	return s.Securities(ctx)
+}
+
 func (s *Store) SyncRecentUniverse(ctx context.Context, writer HistoricalBarWriter, catalog *HistoryCatalog, dataVersion string, days int, emptyCoverageTTL time.Duration) error {
 	symbols, err := s.Universe(ctx)
 	if err != nil {

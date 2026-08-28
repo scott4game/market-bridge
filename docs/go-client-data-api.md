@@ -611,6 +611,7 @@ curl -fsS -X POST \
 | `POST /v1/datasets/{id}/refresh` | 删除指定本地数据集 |
 | `POST /v1/cache/prune?expired=true` | 清理过期缓存 |
 | `GET /v1/providers/status` | 查看行情提供者状态 |
+| `GET /v1/market-history/security-profiles` | 获取活跃美股普通股的公司资料、SIC和市值 |
 | `GET /v1/providers/massive/usage` | 查看 Massive 调用量 |
 | `GET /v1/me` | 查看当前远端账号 |
 | `GET /v1/me/usage` | 查看配额和用量 |

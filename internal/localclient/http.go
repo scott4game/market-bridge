@@ -38,6 +38,7 @@ func (h *HTTP) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/providers/status", h.proxyServerJSON)
 	mux.HandleFunc("GET /v1/live/trades/{symbol}", h.proxyServerJSON)
 	mux.HandleFunc("GET /v1/market-history/universe", h.proxyServerJSON)
+	mux.HandleFunc("GET /v1/market-history/security-profiles", h.proxyServerJSON)
 	mux.HandleFunc("GET /v1/market-history/adjustments/{symbol}", h.proxyServerJSON)
 	mux.HandleFunc("GET /v1/storage/status", func(w http.ResponseWriter, r *http.Request) { jsonResponse(w, 200, h.Cache.StorageStatus(r.Context())) })
 	mux.HandleFunc("GET /v1/me", h.proxyServerJSON)

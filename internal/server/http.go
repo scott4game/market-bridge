@@ -59,6 +59,7 @@ type HTTP struct {
 	HistoryRetention  time.Duration
 	RecentTrades      RecentTradesReader
 	News              *news.Service
+	SecurityProfiles  *SecurityProfileCatalog
 }
 
 func (h *HTTP) Handler() http.Handler {
@@ -78,12 +79,26 @@ func (h *HTTP) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/storage/capabilities", h.auth("profile:read", h.storageCapabilities))
 	mux.HandleFunc("POST /v1/history/bars", h.auth("history:read", h.historyBars))
 	mux.HandleFunc("GET /v1/market-history/universe", h.auth("history:read", h.historyUniverse))
+	mux.HandleFunc("GET /v1/market-history/security-profiles", h.auth("history:read", h.historySecurityProfiles))
 	mux.HandleFunc("GET /v1/market-history/adjustments/{symbol}", h.auth("history:read", h.historyAdjustments))
 	mux.HandleFunc("GET /v1/me", h.auth("profile:read", h.me))
 	mux.HandleFunc("GET /v1/me/usage", h.auth("profile:read", h.myUsage))
 	mux.HandleFunc("GET /v1/me/watchlist", h.auth("profile:read", h.getWatchlist))
 	mux.HandleFunc("PUT /v1/me/watchlist", h.auth("profile:read", h.putWatchlist))
 	return mux
+}
+
+func (h *HTTP) historySecurityProfiles(w http.ResponseWriter, r *http.Request) {
+	if h.SecurityProfiles == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "security profiles are unavailable"})
+		return
+	}
+	response, err := h.SecurityProfiles.Ensure(r.Context())
+	if err != nil {
+		writeProviderError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (h *HTTP) newsList(w http.ResponseWriter, r *http.Request) {

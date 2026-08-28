@@ -272,6 +272,29 @@ func TestUniverseProxyForwardsServerToken(t *testing.T) {
 	}
 }
 
+func TestSecurityProfilesProxyForwardsServerToken(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/market-history/security-profiles" || r.Header.Get("Authorization") != "Bearer secret" {
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"complete":true,"profiles":[{"symbol":"MRNA"}]}`))
+	}))
+	defer upstream.Close()
+
+	cache, err := NewCache(config.Client{CacheDir: t.TempDir(), ServerURL: upstream.URL, ServerToken: "secret", RedisEnabled: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cache.Close()
+	recorder := httptest.NewRecorder()
+	(&HTTP{Cache: cache}).Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/market-history/security-profiles", nil))
+	if recorder.Code != http.StatusOK || recorder.Body.String() != `{"complete":true,"profiles":[{"symbol":"MRNA"}]}` {
+		t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestIndicatorsAreStoredLocallyWithoutCallingServer(t *testing.T) {
 	upstreamCalls := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

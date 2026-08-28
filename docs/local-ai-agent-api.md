@@ -48,6 +48,7 @@ Content-Type: application/json
 | GET | `/v1/providers/status` | 查看历史/实时行情供应商状态 |
 | GET | `/v1/storage/status` | 查看当前 ClickHouse、本地缓存模式 |
 | GET | `/v1/market-history/universe` | 获取可搜索的全部标的代码 |
+| GET | `/v1/market-history/security-profiles` | 获取活跃美股普通股的通用公司资料、SIC和市值 |
 | GET | `/v1/market-history/adjustments/{symbol}` | 获取美股前复权累计因子及版本 |
 | GET | `/v1/bars/{symbol}` | 查询单标的历史 K 线 |
 | GET | `/v1/live/trades/{symbol}?limit=100` | 查询 Longbridge 最近逐笔成交，最多 1000 笔 |
@@ -88,6 +89,18 @@ curl -fsS 'http://127.0.0.1:17600/v1/market-history/universe'
 按市场筛选时使用后缀：`.HK` 为港股，`.SH/.SZ` 为 A 股，`.BINANCE` 为币圈；没有
 这些后缀的代码为美股。目录可能包含数千个代码，Agent 应在本地做前缀或子串筛选，
 不要为每个候选代码发一次网络请求。
+
+需要行业分类或市值时读取：
+
+```bash
+curl -fsS 'http://127.0.0.1:17600/v1/market-history/security-profiles'
+```
+
+go-server 通过 Massive Reference Data 刷新活跃美股普通股资料，并持久缓存在
+`security-profiles.db`。响应包含 `source`、`updated_at`、`complete`、`profiles` 和可选的
+逐代码 `errors`；资料字段包括 `symbol/name/cik/type/active/locale/market/market_cap`、
+`sic_code/sic_description/primary_exchange/provider/fetched_at/stale`。默认24小时刷新，刷新
+失败时最多保留30天旧资料并标记 `stale=true`。该接口只提供通用资料，不直接判定行业龙头。
 
 Python 搜索示例：
 

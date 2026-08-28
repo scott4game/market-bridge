@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -182,6 +183,36 @@ func TestUniverseEndpointReturnsNamesAndLegacySymbols(t *testing.T) {
 	}
 	if len(response.Symbols) != 1 || response.Symbols[0] != "AAPL" || len(response.Securities) != 1 || response.Securities[0].NameCN != "苹果" {
 		t.Fatalf("response=%+v", response)
+	}
+}
+
+func TestSecurityProfilesEndpointIsProtected(t *testing.T) {
+	p := &profileCatalogProvider{
+		securities: []provider.Security{{Symbol: "MRNA"}},
+		profiles:   map[string]provider.SecurityProfile{"MRNA": validTestProfile("MRNA", "0002", 50)},
+		calls:      map[string]int{},
+	}
+	store, err := NewStore(t.TempDir(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := OpenSecurityProfileCatalog(filepath.Join(t.TempDir(), "profiles.db"), store, time.Hour, 30*24*time.Hour, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+	handler := (&HTTP{Token: "secret", SecurityProfiles: catalog}).Handler()
+	unauthorized := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/v1/market-history/security-profiles", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status=%d", unauthorized.Code)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/market-history/security-profiles", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK || strings.Contains(recorder.Body.String(), "secret") || !strings.Contains(recorder.Body.String(), `"symbol":"MRNA"`) {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
