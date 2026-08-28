@@ -226,8 +226,21 @@ func IsUSForwardAdjusted(spec DatasetSpec) bool {
 // corporate-action factors are refreshed daily. Other adjustment modes retain
 // their stable cache identity.
 func SemanticDataVersion(spec DatasetSpec, base string, now time.Time, factorVersions ...string) string {
-	if !IsUSForwardAdjusted(spec) {
+	if spec.Adjustment != ForwardAdjusted || len(spec.Symbols) == 0 {
 		return base
+	}
+	if !IsUSForwardAdjusted(spec) {
+		for _, symbol := range spec.Symbols {
+			venue, err := VenueOf(symbol)
+			if err != nil || (venue != VenueHK && venue != VenueSH && venue != VenueSZ) {
+				return base
+			}
+		}
+		location, err := time.LoadLocation("Asia/Shanghai")
+		if err != nil {
+			location = time.FixedZone("Asia/Shanghai", 8*60*60)
+		}
+		return base + ":asia-qfq-v1:" + now.In(location).Format("2006-01-02")
 	}
 	location, err := time.LoadLocation("America/New_York")
 	if err != nil {

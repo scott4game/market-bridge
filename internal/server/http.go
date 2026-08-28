@@ -29,7 +29,7 @@ type UsageReader interface {
 type HistoricalClickHouse interface {
 	Healthy(context.Context) error
 	QueryBars(context.Context, market.DatasetSpec) ([]market.Bar, error)
-	WriteBars(context.Context, market.AdjustmentMode, []market.Bar, uint64) error
+	WriteBars(context.Context, string, market.AdjustmentMode, []market.Bar, uint64) error
 }
 
 type RemoteRedis interface {
@@ -255,10 +255,10 @@ func (h *HTTP) historyBars(w http.ResponseWriter, r *http.Request) {
 	}
 	retention := h.HistoryRetention
 	if retention <= 0 {
-		retention = 730 * 24 * time.Hour
+		retention = 1825 * 24 * time.Hour
 	}
 	recent := !spec.From.Before(time.Now().UTC().Add(-retention))
-	canonical := recent && spec.Interval == "1m" && h.ClickHouseEnabled && h.ClickHouse != nil
+	canonical := recent && h.ClickHouseEnabled && h.ClickHouse != nil
 	if body.ProviderOnly || !canonical || h.HistoryCatalog == nil {
 		bars, cached, err := h.Store.ProviderBarsCached(r.Context(), spec)
 		if err != nil {
@@ -278,6 +278,11 @@ func (h *HTTP) historyBars(w http.ResponseWriter, r *http.Request) {
 		storageSpec.Adjustment = market.SplitAdjusted
 	}
 	revision, _, _ := h.HistoryCatalog.Current(r.Context())
+	coverageVersion, _, err := h.Store.SemanticDataVersion(r.Context(), spec, h.DataVersion)
+	if err != nil {
+		writeProviderError(w, err)
+		return
+	}
 	cacheVersion, curves, err := h.Store.SemanticDataVersion(r.Context(), spec, fmt.Sprintf("clickhouse:%s:%d", h.DataVersion, revision))
 	if err != nil {
 		writeProviderError(w, err)
@@ -295,7 +300,7 @@ func (h *HTTP) historyBars(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	missing, err := h.HistoryCatalog.Missing(r.Context(), storageSpec, h.DataVersion)
+	missing, err := h.HistoryCatalog.Missing(r.Context(), storageSpec, coverageVersion)
 	if err != nil {
 		writeJSON(w, 503, map[string]string{"error": err.Error()})
 		return
@@ -307,7 +312,7 @@ func (h *HTTP) historyBars(w http.ResponseWriter, r *http.Request) {
 			writeProviderError(w, err)
 			return
 		}
-		if err := h.persistHistory(r.Context(), gap, bars); err != nil {
+		if err := h.persistHistory(r.Context(), gap, bars, coverageVersion); err != nil {
 			writeJSON(w, 503, map[string]string{"error": err.Error()})
 			return
 		}
@@ -376,9 +381,9 @@ func applyForwardFactorCurves(spec market.DatasetSpec, bars []market.Bar, curves
 	return market.ApplyForwardFactors(bars, curves, location)
 }
 
-func (h *HTTP) persistHistory(ctx context.Context, spec market.DatasetSpec, bars []market.Bar) error {
+func (h *HTTP) persistHistory(ctx context.Context, spec market.DatasetSpec, bars []market.Bar, coverageVersion string) error {
 	if len(bars) > 0 {
-		if err := h.ClickHouse.WriteBars(ctx, spec.Adjustment, bars, uint64(time.Now().UnixMilli())); err != nil {
+		if err := h.ClickHouse.WriteBars(ctx, spec.Interval, spec.Adjustment, bars, uint64(time.Now().UnixMilli())); err != nil {
 			return err
 		}
 	}
@@ -387,7 +392,7 @@ func (h *HTTP) persistHistory(ctx context.Context, spec market.DatasetSpec, bars
 		if ttl <= 0 {
 			ttl = 15 * time.Minute
 		}
-		if err := h.HistoryCatalog.RecordCoverage(ctx, spec, h.DataVersion, bars, ttl); err != nil {
+		if err := h.HistoryCatalog.RecordCoverage(ctx, spec, coverageVersion, bars, ttl); err != nil {
 			return err
 		}
 		if len(bars) > 0 {

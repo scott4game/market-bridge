@@ -9,7 +9,7 @@ KLineChart / Go Strategy
           ↓
       go-client
           ↓
- Redis 热缓存 → 当前唯一启用的 ClickHouse（近 730 天）
+ Redis 热缓存 → 当前唯一启用的 ClickHouse（近 1825 天）
           ↓
       go-server
           ↓
@@ -20,8 +20,8 @@ KLineChart / Go Strategy
 
 - **go-server**：连接行情供应商，统一处理历史数据、实时行情、数据版本和访问认证。
 - **go-client**：运行在本地分析环境中，为图表和策略提供统一 API，并管理 Redis 与 Parquet 缓存。
-- **Redis**：保存高频访问和超过 730 天的按月历史缓存，可在数据丢失后自动重建。
-- **ClickHouse**：保存最近 730 天的全市场已完成 1 分钟 K 线；服务端启用时客户端本地实例自动停用，服务端关闭时由客户端实例承担存储。
+- **Redis**：保存高频访问和超过 1825 天的按月历史缓存，可在数据丢失后自动重建。
+- **ClickHouse**：保存最近 1825 天的全市场已完成规范 K 线；服务端启用时客户端本地实例自动停用，服务端关闭时由客户端实例承担存储。
 - **Parquet**：保留兼容的数据集缓存，支持离线分析和回测。
 
 项目默认提供 Mock Provider，无需配置第三方行情密钥即可运行并验证完整链路。go-client 可以部署在个人工作站，go-server 则可部署在靠近行情供应商的云服务器。
@@ -298,6 +298,7 @@ docker compose --profile local up --build
 ## 供应商
 
 - `GO_SERVER_PROVIDER=massive` 与 `MASSIVE_API_KEY` 启用 Massive 股票和 `F:MNQZ6` 这类实际期货合约历史数据；期货自动改走 `/futures/v1/aggs`。`GO_SERVER_INDEX_PROVIDER=longbridge|fmp|massive|mock` 单独选择 `I:` 指数历史源，默认 `disabled` 且不会自动回退；FMP 复用 `FMP_API_KEY`。Massive 的 Stocks、Indices、Futures 权限相互独立。`split_adjusted` 只表示 Massive 拆股调整；美股 `forward_adjusted` 在此基础上叠加 Massive 分红公司的累计历史调整因子，形成 Futu 风格前复权。
+- `GO_SERVER_A_SHARE_PROVIDER=tushare` 与 `TUSHARE_TOKEN` 将沪深 A 股日、周、月、年历史 K 线切换到 Tushare；`GO_SERVER_HK_PROVIDER=longbridge` 让港股历史继续使用 Longbridge。A 股默认前复权，分钟和小时历史不由 Tushare A 股 Provider 提供。
 - `GO_SERVER_NEWS_PROVIDER=fmp` 与 `FMP_API_KEY` 启用 FMP 股票新闻和公司公告。go-server 默认每 60 秒轮询，发现新文章后通过 REST/SSE/WebSocket 发出；go-client 常驻镜像并默认保留 30 天。网页右栏的“新闻”标签可查看当前股票或全市场最新内容。
 - Massive 调用量会持久化到服务端数据目录的 `usage.db`。免费档使用 `MASSIVE_PLAN_NAME=stocks_basic`、`MASSIVE_REQUESTS_PER_MINUTE=5`；`MASSIVE_REQUESTS_PER_MONTH=0` 表示月度不限额。通过受保护的 `GET /v1/providers/massive/usage` 或本地页面查看最近 60 秒、本月和累计调用量。计数只覆盖本 go-server 发出的请求，不包含同一 API Key 被其他程序使用的次数。
 - 设置 `GO_SERVER_LONGBRIDGE_HISTORY_ENABLED=true` 后，`700.HK`、`600519.SH`、`000001.SZ` 的历史 K 线由 Longbridge 提供；Longbridge 三项凭据仍由服务端统一保存。裸代码和 `.US` 继续走原有美股 Provider。
@@ -305,7 +306,7 @@ docker compose --profile local up --build
 - `GO_SERVER_LIVE_PROVIDERS=longbridge,binance` 可同时采集证券和币圈实时行情；兼容旧的单值 `GO_SERVER_LIVE_PROVIDER`。代码由活跃 WebSocket 连接按需订阅，无需服务端代码池。
 - 标准代码格式为 `AAPL`/`AAPL.US`、`I:VIX`、`F:MNQZ6`、`700.HK`、`600519.SH`、`000001.SZ` 和 `BTCUSDT.BINANCE`。指数默认 `regular + raw`，期货默认 `continuous + raw`；期货必须使用带到期月/年的实际合约代码。页面中的美股、港股和 A 股默认前复权，币圈固定原始价格。美股 `1h/2h/3h/4h` 按 Futu 风格从美东 `09:30` 锚定。
 - 服务端 ClickHouse 默认关闭且不随服务端部署。资源受限的 `go-server` 可以一直保持 `GO_SERVER_CLICKHOUSE_ENABLED=false`。
-- 客户端可设置 `GO_CLIENT_CLICKHOUSE_ENABLED=true`。go-client 会自动探测服务端：服务端 CH 开启时只使用远端 CH，并将本地 CH 逻辑关闭；服务端明确未开启 CH 时才写本地 CH。两者不会自动双写。最近730天进入唯一启用的 CH，超过730天的数据绕过 CH、按需从 Provider 拉取并缓存到客户端 Redis。详细配置见 [go-client 本地数据接口与策略验证指南](docs/go-client-data-api.md#2-客户端-clickhouse-实时镜像)。
+- 客户端可设置 `GO_CLIENT_CLICKHOUSE_ENABLED=true`。go-client 会自动探测服务端：服务端 CH 开启时只使用远端 CH，并将本地 CH 逻辑关闭；服务端明确未开启 CH 时才写本地 CH。两者不会自动双写。最近1825天进入唯一启用的 CH，超过1825天的数据绕过 CH、按需从 Provider 拉取并缓存到客户端 Redis。详细配置见 [go-client 本地数据接口与策略验证指南](docs/go-client-data-api.md#2-客户端-clickhouse-实时镜像)。
 
 ## 发布
 

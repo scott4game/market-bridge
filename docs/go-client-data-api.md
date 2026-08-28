@@ -95,10 +95,10 @@ GO_CLIENT_REDIS_ENABLED=false
 GO_CLIENT_CLICKHOUSE_ENABLED=false
 ```
 
-最近730天的一分钟数据进入当前唯一启用的 ClickHouse；清理器每720小时删除超过730天
-的完整日分区。早于730天的查询始终绕过两侧 ClickHouse，经 go-server 直接访问
+最近1825天的规范 K 线进入当前唯一启用的 ClickHouse；清理器每720小时删除超过1825天
+的完整日分区。早于1825天的查询始终绕过两侧 ClickHouse，经 go-server 直接访问
 Massive/Longbridge，并按股票、周期和自然月缓存在当前唯一启用的 Redis，默认 TTL 为24小时。
-跨越730天边界的请求会合并 CH 近期数据与 Provider 历史数据后去重排序。
+跨越1825天边界的请求会合并 CH 近期数据与 Provider 历史数据后去重排序。
 
 可查看实际存储模式：
 
@@ -140,7 +140,7 @@ ORDER BY symbol, ts;
 首次回填最近一年的全市场 1 分钟数据（美股来自 Massive，A/H 股来自 Longbridge）：
 
 ```bash
-docker compose run --rm go-client market-history --days 730 --workers 2
+docker compose run --rm go-client market-history --days 1825 --workers 2
 ```
 
 回填中途失败后可安全重跑，ClickHouse 使用版本列替换重复行；同一精确查询区间登记完整后

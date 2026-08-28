@@ -120,11 +120,11 @@ func displayUser(user string) string {
 
 func marketHistoryCommand(ctx context.Context, cache *localclient.Cache) {
 	set := flag.NewFlagSet("market-history", flag.ExitOnError)
-	days := set.Int("days", 730, "rolling number of days to backfill")
+	days := set.Int("days", 1825, "rolling number of days to backfill")
 	workers := set.Int("workers", 2, "concurrent symbols")
 	_ = set.Parse(os.Args[2:])
-	if *days < 1 || *days > 730 || *workers < 1 || *workers > 16 {
-		log.Fatal("days must be 1..730 and workers must be 1..16")
+	if *days < 1 || *days > 1825 || *workers < 1 || *workers > 16 {
+		log.Fatal("days must be 1..1825 and workers must be 1..16")
 	}
 	status := cache.StorageStatus(ctx)
 	if status["mode"] == "provider_only" || status["mode"] == "unknown" {

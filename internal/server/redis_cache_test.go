@@ -55,7 +55,7 @@ func (c *redisTestClickHouse) QueryBars(_ context.Context, _ market.DatasetSpec)
 	c.reads++
 	return append([]market.Bar(nil), c.bars...), nil
 }
-func (c *redisTestClickHouse) WriteBars(context.Context, market.AdjustmentMode, []market.Bar, uint64) error {
+func (c *redisTestClickHouse) WriteBars(context.Context, string, market.AdjustmentMode, []market.Bar, uint64) error {
 	return nil
 }
 

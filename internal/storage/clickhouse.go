@@ -86,7 +86,7 @@ func (s *ClickHouseSink) insert(ctx context.Context, events []market.LiveEvent) 
 				}
 			}
 			if len(bars) > 0 {
-				if err := s.WriteBars(ctx, market.Raw, bars, uint64(time.Now().UnixMilli())); err != nil {
+				if err := s.WriteBars(ctx, "1m", market.Raw, bars, uint64(time.Now().UnixMilli())); err != nil {
 					return err
 				}
 			}
@@ -126,11 +126,14 @@ func (s *ClickHouseSink) insert(ctx context.Context, events []market.LiveEvent) 
 	return nil
 }
 
-// WriteBars writes completed one-minute bars in batches. The supplied version
+// WriteBars writes completed canonical bars in batches. The supplied version
 // makes corrected rows replace older rows with the same logical key.
-func (s *ClickHouseSink) WriteBars(ctx context.Context, adjustment market.AdjustmentMode, bars []market.Bar, version uint64) error {
+func (s *ClickHouseSink) WriteBars(ctx context.Context, interval string, adjustment market.AdjustmentMode, bars []market.Bar, version uint64) error {
 	if len(bars) == 0 {
 		return nil
+	}
+	if market.IntervalDuration(interval) <= 0 {
+		return fmt.Errorf("invalid canonical bar interval %q", interval)
 	}
 	if adjustment == "" || adjustment == market.AutoAdjusted {
 		adjustment = market.Raw
@@ -152,7 +155,7 @@ func (s *ClickHouseSink) WriteBars(ctx context.Context, adjustment market.Adjust
 				return err
 			}
 			row := map[string]any{
-				"market": string(venue), "symbol": bar.Symbol, "interval": "1m",
+				"market": string(venue), "symbol": bar.Symbol, "interval": interval,
 				"adjustment": string(adjustment), "session": string(bar.Session),
 				"timestamp": bar.Timestamp.UTC().Format("2006-01-02 15:04:05.000"),
 				"open":      bar.Open.String(), "high": bar.High.String(), "low": bar.Low.String(), "close": bar.Close.String(),
@@ -175,18 +178,15 @@ func (s *ClickHouseSink) QueryBars(ctx context.Context, spec market.DatasetSpec)
 	if err != nil {
 		return nil, err
 	}
-	if normalized.Interval != "1m" {
-		return nil, fmt.Errorf("ClickHouse canonical store only accepts interval 1m, got %s", normalized.Interval)
-	}
 	symbols := make([]string, 0, len(normalized.Symbols))
 	for _, symbol := range normalized.Symbols {
 		symbols = append(symbols, sqlString(symbol))
 	}
 	query := fmt.Sprintf(`SELECT symbol, timestamp, open, high, low, close, volume, volume_decimal, turnover, session, source, completed
 FROM %s.kline_1m FINAL
-WHERE symbol IN (%s) AND interval='1m' AND adjustment=%s AND session=%s
+	WHERE symbol IN (%s) AND interval=%s AND adjustment=%s AND session=%s
   AND timestamp >= fromUnixTimestamp64Milli(%d) AND timestamp < fromUnixTimestamp64Milli(%d)
-ORDER BY timestamp, symbol FORMAT JSONEachRow`, s.database, strings.Join(symbols, ","), sqlString(string(normalized.Adjustment)), sqlString(string(normalized.Session)), normalized.From.UnixMilli(), normalized.To.UnixMilli())
+ORDER BY timestamp, symbol FORMAT JSONEachRow`, s.database, strings.Join(symbols, ","), sqlString(normalized.Interval), sqlString(string(normalized.Adjustment)), sqlString(string(normalized.Session)), normalized.From.UnixMilli(), normalized.To.UnixMilli())
 	resp, err := s.query(ctx, query)
 	if err != nil {
 		return nil, err
@@ -323,7 +323,7 @@ func schema(db string) []string {
 		`ALTER TABLE ` + db + `.bars ADD COLUMN IF NOT EXISTS volume_decimal String DEFAULT '' AFTER volume`,
 		`CREATE TABLE IF NOT EXISTS ` + db + `.kline_1m (market LowCardinality(String), symbol LowCardinality(String), interval LowCardinality(String), adjustment LowCardinality(String), session LowCardinality(String), timestamp DateTime64(3, 'UTC'), open Decimal64(6), high Decimal64(6), low Decimal64(6), close Decimal64(6), volume Int64, volume_decimal String DEFAULT '', turnover Nullable(Decimal64(6)), completed Bool, source LowCardinality(String), version UInt64) ENGINE = ReplacingMergeTree(version) PARTITION BY (market, toDate(timestamp)) ORDER BY (market, interval, adjustment, session, symbol, timestamp)`,
 		`CREATE TABLE IF NOT EXISTS ` + db + `.schema_migrations (version UInt32, applied_at DateTime('UTC')) ENGINE = TinyLog`,
-		`INSERT INTO ` + db + `.kline_1m SELECT multiIf(endsWith(symbol,'.HK'),'HK',endsWith(symbol,'.SH'),'SH',endsWith(symbol,'.SZ'),'SZ',endsWith(symbol,'.BINANCE'),'BINANCE','US'), symbol, '1m', 'raw', 'regular', timestamp, open, high, low, close, volume, volume_decimal, turnover, completed, source, toUInt64(greatest(sequence,0)) FROM ` + db + `.bars WHERE completed AND timestamp >= now() - INTERVAL 730 DAY AND NOT EXISTS (SELECT 1 FROM ` + db + `.schema_migrations WHERE version=2)`,
+		`INSERT INTO ` + db + `.kline_1m SELECT multiIf(endsWith(symbol,'.HK'),'HK',endsWith(symbol,'.SH'),'SH',endsWith(symbol,'.SZ'),'SZ',endsWith(symbol,'.BINANCE'),'BINANCE','US'), symbol, '1m', 'raw', 'regular', timestamp, open, high, low, close, volume, volume_decimal, turnover, completed, source, toUInt64(greatest(sequence,0)) FROM ` + db + `.bars WHERE completed AND timestamp >= now() - INTERVAL 1825 DAY AND NOT EXISTS (SELECT 1 FROM ` + db + `.schema_migrations WHERE version=2)`,
 		`INSERT INTO ` + db + `.schema_migrations SELECT 2, now() WHERE NOT EXISTS (SELECT 1 FROM ` + db + `.schema_migrations WHERE version=2)`,
 		`CREATE TABLE IF NOT EXISTS ` + db + `.trades (symbol LowCardinality(String), timestamp DateTime64(3, 'UTC'), sequence Int64, stream_epoch String, payload String) ENGINE = MergeTree ORDER BY (symbol, timestamp, stream_epoch, sequence) TTL timestamp + INTERVAL 7 DAY DELETE`,
 		`CREATE TABLE IF NOT EXISTS ` + db + `.depth (symbol LowCardinality(String), timestamp DateTime64(3, 'UTC'), sequence Int64, stream_epoch String, payload String) ENGINE = MergeTree ORDER BY (symbol, timestamp, stream_epoch, sequence) TTL timestamp + INTERVAL 7 DAY DELETE`,

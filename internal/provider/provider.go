@@ -24,6 +24,17 @@ type Provider interface {
 	Bars(context.Context, market.DatasetSpec) ([]market.Bar, error)
 }
 
+type IntervalSupporter interface {
+	Supports(market.DatasetSpec) bool
+}
+
+func Supports(p Provider, spec market.DatasetSpec) bool {
+	if supporter, ok := p.(IntervalSupporter); ok {
+		return supporter.Supports(spec)
+	}
+	return true
+}
+
 type Description struct {
 	Name        string
 	DataVersion string

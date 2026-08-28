@@ -193,7 +193,7 @@ func TestDisabledHistoricalProviderReturnsServiceUnavailable(t *testing.T) {
 	body := `{"spec":{"symbols":["700.HK"],"interval":"1d","from":"2026-08-01T00:00:00Z","to":"2026-08-02T00:00:00Z","session":"regular","adjustment":"forward_adjusted"}}`
 	recorder := httptest.NewRecorder()
 	(&HTTP{Store: store}).historyBars(recorder, httptest.NewRequest(http.MethodPost, "/v1/history/bars", strings.NewReader(body)))
-	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "GO_SERVER_LONGBRIDGE_HISTORY_ENABLED=true") {
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "GO_SERVER_HK_PROVIDER=longbridge") {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }

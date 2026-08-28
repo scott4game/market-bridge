@@ -36,7 +36,7 @@ func (f *fakeHistoricalCH) QueryBars(_ context.Context, spec market.DatasetSpec)
 	}
 	return out, nil
 }
-func (f *fakeHistoricalCH) WriteBars(_ context.Context, _ market.AdjustmentMode, bars []market.Bar, _ uint64) error {
+func (f *fakeHistoricalCH) WriteBars(_ context.Context, _ string, _ market.AdjustmentMode, bars []market.Bar, _ uint64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.writes++
@@ -100,7 +100,7 @@ func TestArchiveBypassesBothClickHouses(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cache.Close()
-	from := time.Now().UTC().AddDate(-3, 0, 0).Truncate(24 * time.Hour)
+	from := time.Now().UTC().AddDate(-6, 0, 0).Truncate(24 * time.Hour)
 	spec := market.DatasetSpec{Symbols: []string{"AAPL"}, Interval: "3m", From: from, To: from.Add(time.Hour), Session: market.RegularSession, Adjustment: market.SplitAdjusted}
 	if _, source, err := cache.Bars(context.Background(), spec); err != nil || source != "provider" {
 		t.Fatalf("source=%s err=%v", source, err)

@@ -39,12 +39,21 @@ func TestClickHouseSchemaAndBarInsert(t *testing.T) {
 	if _, err := sink.QueryBars(ctx, market.DatasetSpec{Symbols: []string{"AAPL"}, Interval: "1m", From: event.Bar.Timestamp, To: event.Bar.Timestamp.Add(time.Minute), Session: market.RegularSession, Adjustment: market.Raw}); err != nil {
 		t.Fatal(err)
 	}
+	daily := *event.Bar
+	daily.Symbol = "600519.SH"
+	daily.Source = "tushare"
+	if err := sink.WriteBars(ctx, "1d", market.ForwardAdjusted, []market.Bar{daily}, 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sink.QueryBars(ctx, market.DatasetSpec{Symbols: []string{"600519.SH"}, Interval: "1d", From: daily.Timestamp, To: daily.Timestamp.Add(24 * time.Hour), Session: market.RegularSession, Adjustment: market.ForwardAdjusted}); err != nil {
+		t.Fatal(err)
+	}
 	cancel()
 	time.Sleep(20 * time.Millisecond)
 	mu.Lock()
 	joined := strings.Join(queries, "\n")
 	mu.Unlock()
-	if !strings.Contains(joined, "TTL timestamp + INTERVAL 1 YEAR") || !strings.Contains(joined, "CREATE TABLE IF NOT EXISTS market.kline_1m") || !strings.Contains(joined, "PARTITION BY (market, toDate(timestamp))") || !strings.Contains(joined, "INSERT INTO market.bars") || !strings.Contains(joined, "123.450000") || !strings.Contains(joined, `"adjustment":"raw"`) || !strings.Contains(joined, "adjustment='raw'") {
+	if !strings.Contains(joined, "TTL timestamp + INTERVAL 1 YEAR") || !strings.Contains(joined, "CREATE TABLE IF NOT EXISTS market.kline_1m") || !strings.Contains(joined, "PARTITION BY (market, toDate(timestamp))") || !strings.Contains(joined, "INSERT INTO market.bars") || !strings.Contains(joined, "123.450000") || !strings.Contains(joined, `"adjustment":"raw"`) || !strings.Contains(joined, `"interval":"1d"`) || !strings.Contains(joined, "interval='1d'") {
 		t.Fatalf("missing schema or insert: %s", joined)
 	}
 }

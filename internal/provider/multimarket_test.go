@@ -150,7 +150,7 @@ func TestRouterSelectsProviderBySuffix(t *testing.T) {
 	us := &routeProvider{name: "massive", version: "us-v1"}
 	index := &routeProvider{name: "fmp-index", version: "index-v1"}
 	lb := &routeProvider{name: "longbridge", version: "lb-v1"}
-	router := &Router{US: us, Index: index, Longbridge: lb}
+	router := &Router{US: us, Index: index, AShare: lb, HK: lb}
 	spec := market.DatasetSpec{Symbols: []string{"AAPL", "I:VIX", "700.HK", "600519.SH"}, Interval: "1d", From: time.Now().Add(-24 * time.Hour), To: time.Now(), Session: market.RegularSession, Adjustment: market.Raw}
 	description, err := router.Describe(spec)
 	if err != nil {
@@ -164,6 +164,20 @@ func TestRouterSelectsProviderBySuffix(t *testing.T) {
 	}
 	if len(us.calls) != 1 || len(us.calls[0].Symbols) != 1 || len(index.calls) != 1 || index.calls[0].Symbols[0] != "I:VIX" || len(lb.calls) != 1 || len(lb.calls[0].Symbols) != 2 {
 		t.Fatalf("us=%v index=%v lb=%v", us.calls, index.calls, lb.calls)
+	}
+}
+
+func TestRouterSplitsAShareAndHKProviders(t *testing.T) {
+	ashare := &routeProvider{name: "tushare-ashare", version: "cn-v1"}
+	hk := &routeProvider{name: "longbridge", version: "hk-v1"}
+	router := &Router{AShare: ashare, HK: hk}
+	now := time.Now()
+	spec := market.DatasetSpec{Symbols: []string{"600519.SH", "000001.SZ", "700.HK"}, Interval: "1d", From: now.Add(-24 * time.Hour), To: now, Session: market.RegularSession, Adjustment: market.Raw}
+	if _, err := router.Bars(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if len(ashare.calls) != 1 || len(ashare.calls[0].Symbols) != 2 || len(hk.calls) != 1 || len(hk.calls[0].Symbols) != 1 || hk.calls[0].Symbols[0] != "700.HK" {
+		t.Fatalf("ashare=%+v hk=%+v", ashare.calls, hk.calls)
 	}
 }
 
@@ -193,7 +207,7 @@ func TestRouterCanListMarketsWithoutEnablingTheirHistoryRoute(t *testing.T) {
 		t.Fatalf("unexpected history route error: %v", err)
 	} else {
 		var disabled *HistoricalProviderDisabledError
-		if !errors.As(err, &disabled) || disabled.Provider != "Longbridge" || disabled.Venue != market.VenueHK {
+		if !errors.As(err, &disabled) || disabled.Provider != "HK" || disabled.Venue != market.VenueHK {
 			t.Fatalf("history route error is not typed: %v", err)
 		}
 	}

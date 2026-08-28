@@ -37,7 +37,7 @@ func TestServerFromEnv(t *testing.T) {
 	if got.ClickHouseEnabled {
 		t.Fatal("ClickHouse must remain disabled unless explicitly enabled")
 	}
-	if got.ClickHouseRetention != 730*24*time.Hour {
+	if got.ClickHouseRetention != 1825*24*time.Hour {
 		t.Fatalf("unexpected server ClickHouse retention: %v", got.ClickHouseRetention)
 	}
 	if err := got.Validate(); err != nil {
@@ -68,6 +68,36 @@ func TestIndexProviderValidation(t *testing.T) {
 	t.Setenv("MASSIVE_API_KEY", "")
 	if err := ServerFromEnv().Validate(); err == nil || !strings.Contains(err.Error(), "MASSIVE_API_KEY") {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestHistoricalMarketProviderConfiguration(t *testing.T) {
+	t.Setenv("GO_SERVER_A_SHARE_PROVIDER", "tushare")
+	t.Setenv("GO_SERVER_HK_PROVIDER", "longbridge")
+	t.Setenv("TUSHARE_TOKEN", "")
+	if err := ServerFromEnv().Validate(); err == nil || !strings.Contains(err.Error(), "TUSHARE_TOKEN") {
+		t.Fatalf("err=%v", err)
+	}
+	t.Setenv("TUSHARE_TOKEN", "secret")
+	t.Setenv("LONGBRIDGE_APP_KEY", "app-key")
+	t.Setenv("LONGBRIDGE_APP_SECRET", "app-secret")
+	t.Setenv("LONGBRIDGE_ACCESS_TOKEN", "access-token")
+	cfg := ServerFromEnv()
+	if cfg.AShareProvider != "tushare" || cfg.HKProvider != "longbridge" || cfg.TushareBaseURL != "https://api.tushare.pro" || cfg.TusharePerMinute != 200 {
+		t.Fatalf("cfg=%+v", cfg)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLegacyLongbridgeHistoryConfiguresBothMarkets(t *testing.T) {
+	t.Setenv("GO_SERVER_A_SHARE_PROVIDER", "")
+	t.Setenv("GO_SERVER_HK_PROVIDER", "")
+	t.Setenv("GO_SERVER_LONGBRIDGE_HISTORY_ENABLED", "true")
+	cfg := ServerFromEnv()
+	if cfg.AShareProvider != "longbridge" || cfg.HKProvider != "longbridge" {
+		t.Fatalf("legacy mapping failed: %+v", cfg)
 	}
 }
 
@@ -196,7 +226,7 @@ func TestClientFromEnv(t *testing.T) {
 	if !got.ClickHouseEnabled || got.ClickHouseCompletedBarsOnly {
 		t.Fatalf("unexpected client ClickHouse settings: %+v", got)
 	}
-	if got.ClickHouseRetention != 730*24*time.Hour {
+	if got.ClickHouseRetention != 1825*24*time.Hour {
 		t.Fatalf("unexpected client ClickHouse retention: %v", got.ClickHouseRetention)
 	}
 	if err := got.Validate(); err != nil {

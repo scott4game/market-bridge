@@ -19,6 +19,19 @@ func TestUSForwardAdjustmentIsAcceptedAndVersionedDaily(t *testing.T) {
 	}
 }
 
+func TestAsiaForwardAdjustmentIsVersionedDaily(t *testing.T) {
+	from := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	spec, err := (DatasetSpec{Symbols: []string{"600519.SH"}, Interval: "1d", From: from, To: from.Add(24 * time.Hour), Session: RegularSession, Adjustment: ForwardAdjusted}).Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := SemanticDataVersion(spec, "v1", time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC))
+	second := SemanticDataVersion(spec, "v1", time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC))
+	if first == second || !strings.Contains(first, "asia-qfq-v1") {
+		t.Fatalf("first=%q second=%q", first, second)
+	}
+}
+
 func TestForwardAdjustmentAccumulatesEventsAndPreservesNonPriceFields(t *testing.T) {
 	curve, err := AccumulateForwardFactors(ForwardFactors{Symbol: "SNDK", Mode: ForwardAdjusted, Factors: []ForwardFactor{
 		{EffectiveDate: "2026-08-20", Factor: DecimalFromFloat(0.8)},

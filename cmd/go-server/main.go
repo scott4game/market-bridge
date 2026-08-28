@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -55,7 +56,7 @@ func main() {
 		usProvider = &provider.Mock{Version: cfg.DataVersion}
 	}
 	liveProviders := cfg.EffectiveLiveProviders()
-	longbridgeNeeded := cfg.LongbridgeHistoryEnabled || cfg.IndexProvider == "longbridge" || contains(liveProviders, "longbridge")
+	longbridgeNeeded := cfg.AShareProvider == "longbridge" || cfg.HKProvider == "longbridge" || cfg.IndexProvider == "longbridge" || contains(liveProviders, "longbridge")
 	var longbridgeQuote *lbquote.QuoteContext
 	if longbridgeNeeded {
 		longbridgeConfig, err := lbconfig.New()
@@ -70,8 +71,19 @@ func main() {
 		defer longbridgeQuote.Close()
 	}
 	var longbridgeHistory provider.Provider
-	if cfg.LongbridgeHistoryEnabled {
+	if cfg.AShareProvider == "longbridge" || cfg.HKProvider == "longbridge" {
 		longbridgeHistory = &provider.Longbridge{Quote: longbridgeQuote, Version: "longbridge-v1-" + cfg.DataVersion}
+	}
+	var aShareHistory provider.Provider
+	switch cfg.AShareProvider {
+	case "tushare":
+		aShareHistory = &provider.TushareAShare{Token: cfg.TushareToken, BaseURL: cfg.TushareBaseURL, Version: "tushare-ashare-v1-" + cfg.DataVersion, RequestsPerMinute: cfg.TusharePerMinute}
+	case "longbridge":
+		aShareHistory = longbridgeHistory
+	}
+	var hkHistory provider.Provider
+	if cfg.HKProvider == "longbridge" {
+		hkHistory = longbridgeHistory
 	}
 	var universeProviders []provider.Provider
 	if contains(liveProviders, "longbridge") && longbridgeHistory == nil {
@@ -92,7 +104,8 @@ func main() {
 	case "mock":
 		indexProvider = &provider.Mock{Version: "mock-index-v1-" + cfg.DataVersion}
 	}
-	var p provider.Provider = &provider.Router{US: usProvider, Index: indexProvider, Longbridge: longbridgeHistory, Binance: binanceHistory, UniverseProviders: universeProviders}
+	var p provider.Provider = &provider.Router{US: usProvider, Index: indexProvider, AShare: aShareHistory, HK: hkHistory, Binance: binanceHistory, UniverseProviders: universeProviders}
+	historyDataVersion := fmt.Sprintf("%s:ashare=%s:hk=%s", cfg.DataVersion, cfg.AShareProvider, cfg.HKProvider)
 	if err := os.MkdirAll(filepath.Dir(cfg.AuthDB), 0o755); err != nil {
 		log.Fatal(err)
 	}
@@ -197,7 +210,7 @@ func main() {
 		if cfg.MarketHistorySyncEnabled {
 			go func() {
 				for {
-					if err := store.SyncRecentUniverse(ctx, ch, historyCatalog, cfg.DataVersion, 2, cfg.EmptyCoverageTTL); err != nil && ctx.Err() == nil {
+					if err := store.SyncRecentUniverse(ctx, ch, historyCatalog, historyDataVersion, 2, cfg.EmptyCoverageTTL); err != nil && ctx.Err() == nil {
 						log.Printf("market-history sync: %v", err)
 					}
 					select {
@@ -224,12 +237,12 @@ func main() {
 		}
 		if !contains(liveProviders, "longbridge") {
 			state := "disabled"
-			if cfg.LongbridgeHistoryEnabled {
+			if cfg.AShareProvider == "longbridge" || cfg.HKProvider == "longbridge" {
 				state = "history_only"
 			}
-			status["longbridge"] = map[string]any{"state": state, "history_enabled": cfg.LongbridgeHistoryEnabled, "depth_enabled": cfg.LongbridgeDepthEnabled, "subscribed_symbols": 0, "reconnects": 0}
+			status["longbridge"] = map[string]any{"state": state, "history_enabled": cfg.AShareProvider == "longbridge" || cfg.HKProvider == "longbridge", "depth_enabled": cfg.LongbridgeDepthEnabled, "subscribed_symbols": 0, "reconnects": 0}
 		} else if value, ok := status["longbridge"].(map[string]any); ok {
-			value["history_enabled"] = cfg.LongbridgeHistoryEnabled
+			value["history_enabled"] = cfg.AShareProvider == "longbridge" || cfg.HKProvider == "longbridge"
 			value["depth_enabled"] = cfg.LongbridgeDepthEnabled
 		}
 		if !contains(liveProviders, "binance") {
@@ -242,6 +255,10 @@ func main() {
 			value["history_enabled"] = cfg.BinanceEnabled
 		}
 		status["index"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[cfg.IndexProvider != "disabled"], "provider": cfg.IndexProvider, "history_enabled": cfg.IndexProvider != "disabled"}
+		aShareEnabled := cfg.AShareProvider != "" && cfg.AShareProvider != "disabled"
+		hkEnabled := cfg.HKProvider != "" && cfg.HKProvider != "disabled"
+		status["ashare"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[aShareEnabled], "provider": cfg.AShareProvider, "history_enabled": aShareEnabled}
+		status["hk"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[hkEnabled], "provider": cfg.HKProvider, "history_enabled": hkEnabled}
 		status["massive"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[cfg.Provider == "massive" || cfg.IndexProvider == "massive"], "plan": cfg.MassivePlanName}
 		if newsService != nil {
 			status["fmp_news"] = newsService.Status()
@@ -260,7 +277,7 @@ func main() {
 	}
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           (&marketserver.HTTP{Store: store, Token: cfg.BearerToken, Access: auth, Limiter: limiter, Live: hub, Usage: usage, ProviderStatus: providerStatus, ClickHouseEnabled: cfg.ClickHouseEnabled, ClickHouse: historicalClickHouse, RedisEnabled: cfg.RedisEnabled, Redis: redisCache, HistoryCatalog: historyCatalog, DataVersion: cfg.DataVersion, EmptyCoverageTTL: cfg.EmptyCoverageTTL, HistoryRetention: cfg.ClickHouseRetention, RecentTrades: recentTrades, News: newsService}).Handler(),
+		Handler:           (&marketserver.HTTP{Store: store, Token: cfg.BearerToken, Access: auth, Limiter: limiter, Live: hub, Usage: usage, ProviderStatus: providerStatus, ClickHouseEnabled: cfg.ClickHouseEnabled, ClickHouse: historicalClickHouse, RedisEnabled: cfg.RedisEnabled, Redis: redisCache, HistoryCatalog: historyCatalog, DataVersion: historyDataVersion, EmptyCoverageTTL: cfg.EmptyCoverageTTL, HistoryRetention: cfg.ClickHouseRetention, RecentTrades: recentTrades, News: newsService}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    1 << 20,
@@ -288,8 +305,11 @@ func logEnabledProviders(cfg config.Server) {
 	if cfg.IndexProvider != "" && cfg.IndexProvider != "disabled" && cfg.IndexProvider != "mock" {
 		log.Printf("Index historical provider enabled: provider=%s, data_version=%s", cfg.IndexProvider, cfg.DataVersion)
 	}
-	if cfg.LongbridgeHistoryEnabled {
-		log.Printf("Longbridge historical provider enabled: markets=HK,SH,SZ, data_version=%s", cfg.DataVersion)
+	if cfg.AShareProvider != "" && cfg.AShareProvider != "disabled" {
+		log.Printf("A-share historical provider enabled: provider=%s, markets=SH,SZ, data_version=%s", cfg.AShareProvider, cfg.DataVersion)
+	}
+	if cfg.HKProvider != "" && cfg.HKProvider != "disabled" {
+		log.Printf("HK historical provider enabled: provider=%s, data_version=%s", cfg.HKProvider, cfg.DataVersion)
 	}
 	if contains(cfg.EffectiveLiveProviders(), "longbridge") {
 		log.Printf("Longbridge live provider enabled: subscription_mode=on_demand, depth=%t", cfg.LongbridgeDepthEnabled)

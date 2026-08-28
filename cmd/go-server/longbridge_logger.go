@@ -31,7 +31,7 @@ func newLongbridgeLogger(affected string) *longbridgeLogger {
 
 func longbridgeAffectedFeatures(cfg config.Server, liveProviders []string) string {
 	features := []string{"recent_trades", "security_directory"}
-	if cfg.LongbridgeHistoryEnabled {
+	if cfg.LongbridgeHistoryEnabled || cfg.AShareProvider == "longbridge" || cfg.HKProvider == "longbridge" {
 		features = append(features, "HK_CN_history_klines")
 	}
 	if cfg.IndexProvider == "longbridge" {

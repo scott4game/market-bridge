@@ -41,7 +41,7 @@ type BarCache interface {
 }
 
 type HistoricalBarWriter interface {
-	WriteBars(context.Context, market.AdjustmentMode, []market.Bar, uint64) error
+	WriteBars(context.Context, string, market.AdjustmentMode, []market.Bar, uint64) error
 }
 
 type buildJob struct {
@@ -251,6 +251,7 @@ func (s *Store) describeDataset(ctx context.Context, spec market.DatasetSpec) (d
 		return datasetDescription{}, err
 	}
 	if !market.IsUSForwardAdjusted(spec) {
+		description.DataVersion = market.SemanticDataVersion(spec, description.DataVersion, time.Now())
 		return datasetDescription{Description: description}, nil
 	}
 	versions := make([]string, 0, len(spec.Symbols))
@@ -269,7 +270,7 @@ func (s *Store) describeDataset(ctx context.Context, spec market.DatasetSpec) (d
 
 func (s *Store) SemanticDataVersion(ctx context.Context, spec market.DatasetSpec, base string) (string, map[string]market.ForwardFactors, error) {
 	if !market.IsUSForwardAdjusted(spec) {
-		return base, nil, nil
+		return market.SemanticDataVersion(spec, base, time.Now()), nil, nil
 	}
 	versions := make([]string, 0, len(spec.Symbols))
 	curves := make(map[string]market.ForwardFactors, len(spec.Symbols))
@@ -291,7 +292,7 @@ func (s *Store) barCacheTTL(spec market.DatasetSpec, bars []market.Bar) time.Dur
 	}
 	retention := s.retention
 	if retention <= 0 {
-		retention = 730 * 24 * time.Hour
+		retention = 1825 * 24 * time.Hour
 	}
 	limit := s.emptyTTL
 	if spec.From.Before(time.Now().UTC().Add(-retention)) {
@@ -357,6 +358,9 @@ func (s *Store) SyncRecentUniverse(ctx context.Context, writer HistoricalBarWrit
 			adjustment = market.SplitAdjusted
 		}
 		spec := market.DatasetSpec{Symbols: []string{symbol}, Interval: "1m", From: from, To: to, Session: market.RegularSession, Adjustment: adjustment}
+		if !provider.Supports(s.provider, spec) {
+			continue
+		}
 		bars, err := s.ProviderBars(ctx, spec)
 		if err != nil {
 			failed++
@@ -366,7 +370,7 @@ func (s *Store) SyncRecentUniverse(ctx context.Context, writer HistoricalBarWrit
 			continue
 		}
 		if len(bars) > 0 {
-			if err := writer.WriteBars(ctx, adjustment, bars, uint64(time.Now().UnixMilli())+uint64(index)); err != nil {
+			if err := writer.WriteBars(ctx, "1m", adjustment, bars, uint64(time.Now().UnixMilli())+uint64(index)); err != nil {
 				failed++
 				if firstFailure == nil {
 					firstFailure = fmt.Errorf("write %s: %w", symbol, err)

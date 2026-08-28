@@ -21,7 +21,7 @@ func (emptyUniverseProvider) Bars(context.Context, market.DatasetSpec) ([]market
 
 type noopHistoryWriter struct{}
 
-func (noopHistoryWriter) WriteBars(context.Context, market.AdjustmentMode, []market.Bar, uint64) error {
+func (noopHistoryWriter) WriteBars(context.Context, string, market.AdjustmentMode, []market.Bar, uint64) error {
 	return nil
 }
 

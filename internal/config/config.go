@@ -21,6 +21,11 @@ type Server struct {
 	MassivePlanName           string
 	MassivePerMinute          int
 	MassivePerMonth           int
+	AShareProvider            string
+	HKProvider                string
+	TushareToken              string
+	TushareBaseURL            string
+	TusharePerMinute          int
 	NewsProvider              string
 	FMPAPIKey                 string
 	FMPBaseURL                string
@@ -59,19 +64,22 @@ type Server struct {
 }
 
 func ServerFromEnv() Server {
+	legacyLongbridgeHistory := boolean("GO_SERVER_LONGBRIDGE_HISTORY_ENABLED", false)
 	return Server{
 		Listen: env("GO_SERVER_LISTEN", ":17601"), DataDir: env("GO_SERVER_DATA_DIR", "./data/server"), AuthDB: os.Getenv("GO_SERVER_AUTH_DB"),
 		Provider: env("GO_SERVER_PROVIDER", "mock"), IndexProvider: strings.ToLower(strings.TrimSpace(env("GO_SERVER_INDEX_PROVIDER", "disabled"))), DataVersion: env("GO_SERVER_DATA_VERSION", "market-v1"),
 		BearerToken: os.Getenv("GO_SERVER_TOKEN"), MassiveAPIKey: os.Getenv("MASSIVE_API_KEY"), MassiveBaseURL: env("MASSIVE_BASE_URL", "https://api.massive.com"),
 		MassivePlanName: env("MASSIVE_PLAN_NAME", "stocks_basic"), MassivePerMinute: integer("MASSIVE_REQUESTS_PER_MINUTE", 5), MassivePerMonth: integer("MASSIVE_REQUESTS_PER_MONTH", 0),
+		AShareProvider: historyProvider("GO_SERVER_A_SHARE_PROVIDER", legacyLongbridgeHistory), HKProvider: historyProvider("GO_SERVER_HK_PROVIDER", legacyLongbridgeHistory),
+		TushareToken: os.Getenv("TUSHARE_TOKEN"), TushareBaseURL: env("TUSHARE_BASE_URL", "https://api.tushare.pro"), TusharePerMinute: integer("TUSHARE_REQUESTS_PER_MINUTE", 200),
 		NewsProvider: env("GO_SERVER_NEWS_PROVIDER", "disabled"), FMPAPIKey: os.Getenv("FMP_API_KEY"), FMPBaseURL: env("FMP_BASE_URL", "https://financialmodelingprep.com"), FMPNewsPollInterval: duration("FMP_NEWS_POLL_INTERVAL", time.Minute), NewsRetention: duration("GO_SERVER_NEWS_RETENTION", 30*24*time.Hour),
 		LiveProvider: env("GO_SERVER_LIVE_PROVIDER", "mock"), LiveProviders: split(os.Getenv("GO_SERVER_LIVE_PROVIDERS")),
-		LongbridgeHistoryEnabled: boolean("GO_SERVER_LONGBRIDGE_HISTORY_ENABLED", false), LongbridgeDepthEnabled: boolean("GO_SERVER_LONGBRIDGE_DEPTH_ENABLED", false),
+		LongbridgeHistoryEnabled: legacyLongbridgeHistory, LongbridgeDepthEnabled: boolean("GO_SERVER_LONGBRIDGE_DEPTH_ENABLED", false),
 		LongbridgeAppKey: os.Getenv("LONGBRIDGE_APP_KEY"), LongbridgeAppSecret: os.Getenv("LONGBRIDGE_APP_SECRET"), LongbridgeAccessToken: os.Getenv("LONGBRIDGE_ACCESS_TOKEN"),
 		BinanceEnabled: boolean("GO_SERVER_BINANCE_ENABLED", false), BinanceRESTURL: env("BINANCE_REST_BASE_URL", "https://data-api.binance.vision"), BinanceWSURL: env("BINANCE_WS_URL", "wss://data-stream.binance.vision"),
 		ClickHouseEnabled: boolean("GO_SERVER_CLICKHOUSE_ENABLED", false),
 		ClickHouseURL:     os.Getenv("CLICKHOUSE_URL"), ClickHouseDatabase: env("CLICKHOUSE_DATABASE", "market"), ClickHouseUser: env("CLICKHOUSE_USER", "market"), ClickHousePassword: os.Getenv("CLICKHOUSE_PASSWORD"),
-		ClickHouseRetention: duration("GO_SERVER_CLICKHOUSE_RETENTION", 730*24*time.Hour), ClickHouseCleanupInterval: duration("GO_SERVER_CLICKHOUSE_CLEANUP_INTERVAL", 720*time.Hour),
+		ClickHouseRetention: duration("GO_SERVER_CLICKHOUSE_RETENTION", 1825*24*time.Hour), ClickHouseCleanupInterval: duration("GO_SERVER_CLICKHOUSE_CLEANUP_INTERVAL", 720*time.Hour),
 		RedisEnabled: boolean("GO_SERVER_REDIS_ENABLED", false), RedisAddress: os.Getenv("GO_SERVER_REDIS_ADDRESS"), RedisUsername: os.Getenv("GO_SERVER_REDIS_USERNAME"), RedisPassword: os.Getenv("GO_SERVER_REDIS_PASSWORD"), RedisDB: integer("GO_SERVER_REDIS_DB", 0), RedisTTL: duration("GO_SERVER_REDIS_TTL", 24*time.Hour),
 		MarketHistorySyncEnabled: boolean("GO_SERVER_MARKET_HISTORY_SYNC_ENABLED", false), MarketHistorySyncInterval: duration("GO_SERVER_MARKET_HISTORY_SYNC_INTERVAL", 24*time.Hour),
 		DatasetTTL: duration("GO_SERVER_DATASET_TTL", 24*time.Hour), DatasetWorkers: integer("GO_SERVER_DATASET_WORKERS", 2), DatasetQueueSize: integer("GO_SERVER_DATASET_QUEUE_SIZE", 100),
@@ -98,6 +106,18 @@ func (s Server) EffectiveLiveProviders() []string {
 }
 
 func (s Server) Validate() error {
+	if s.AShareProvider != "" && s.AShareProvider != "disabled" && s.AShareProvider != "longbridge" && s.AShareProvider != "tushare" {
+		return fmt.Errorf("unsupported A-share provider %q", s.AShareProvider)
+	}
+	if s.HKProvider != "" && s.HKProvider != "disabled" && s.HKProvider != "longbridge" {
+		return fmt.Errorf("unsupported HK provider %q", s.HKProvider)
+	}
+	if s.AShareProvider == "tushare" && strings.TrimSpace(s.TushareToken) == "" {
+		return fmt.Errorf("TUSHARE_TOKEN is required when GO_SERVER_A_SHARE_PROVIDER=tushare")
+	}
+	if s.TusharePerMinute < 0 {
+		return fmt.Errorf("TUSHARE_REQUESTS_PER_MINUTE must be non-negative")
+	}
 	switch s.IndexProvider {
 	case "disabled", "longbridge", "fmp", "massive", "mock":
 	default:
@@ -121,7 +141,7 @@ func (s Server) Validate() error {
 			return fmt.Errorf("mock live provider cannot be combined with real providers")
 		}
 	}
-	if s.LongbridgeHistoryEnabled || s.IndexProvider == "longbridge" || containsString(liveProviders, "longbridge") {
+	if s.AShareProvider == "longbridge" || s.HKProvider == "longbridge" || s.IndexProvider == "longbridge" || containsString(liveProviders, "longbridge") {
 		values := []struct{ name, value string }{
 			{"LONGBRIDGE_APP_KEY", s.LongbridgeAppKey},
 			{"LONGBRIDGE_APP_SECRET", s.LongbridgeAppSecret},
@@ -156,6 +176,16 @@ func (s Server) Validate() error {
 		}
 	}
 	return nil
+}
+
+func historyProvider(name string, legacyLongbridge bool) string {
+	if value := strings.ToLower(strings.TrimSpace(os.Getenv(name))); value != "" {
+		return value
+	}
+	if legacyLongbridge {
+		return "longbridge"
+	}
+	return "disabled"
 }
 
 func containsString(values []string, want string) bool {
@@ -213,7 +243,7 @@ func ClientFromEnv() Client {
 		RedisEnabled: boolean("GO_CLIENT_REDIS_ENABLED", true), RedisAddress: env("GO_CLIENT_REDIS_ADDRESS", "127.0.0.1:6379"), RedisUsername: os.Getenv("GO_CLIENT_REDIS_USERNAME"), RedisPassword: os.Getenv("GO_CLIENT_REDIS_PASSWORD"), RedisDB: integer("GO_CLIENT_REDIS_DB", 0), RedisTTL: duration("GO_CLIENT_REDIS_TTL", 24*time.Hour),
 		ClickHouseEnabled: boolean("GO_CLIENT_CLICKHOUSE_ENABLED", false), ClickHouseURL: firstEnv("GO_CLIENT_CLICKHOUSE_URL", "CLICKHOUSE_URL"), ClickHouseDatabase: env("CLICKHOUSE_DATABASE", "market"), ClickHouseUser: env("CLICKHOUSE_USER", "market"), ClickHousePassword: os.Getenv("CLICKHOUSE_PASSWORD"),
 		ClickHouseCompletedBarsOnly: boolean("GO_CLIENT_CLICKHOUSE_COMPLETED_BARS_ONLY", true),
-		ClickHouseRetention:         duration("GO_CLIENT_CLICKHOUSE_RETENTION", 730*24*time.Hour), ClickHouseCleanupInterval: duration("GO_CLIENT_CLICKHOUSE_CLEANUP_INTERVAL", 720*time.Hour), StorageCapabilityInterval: duration("GO_CLIENT_STORAGE_CAPABILITY_INTERVAL", 5*time.Minute),
+		ClickHouseRetention:         duration("GO_CLIENT_CLICKHOUSE_RETENTION", 1825*24*time.Hour), ClickHouseCleanupInterval: duration("GO_CLIENT_CLICKHOUSE_CLEANUP_INTERVAL", 720*time.Hour), StorageCapabilityInterval: duration("GO_CLIENT_STORAGE_CAPABILITY_INTERVAL", 5*time.Minute),
 		MarketHistorySyncEnabled: boolean("GO_CLIENT_MARKET_HISTORY_SYNC_ENABLED", false), MarketHistorySyncInterval: duration("GO_CLIENT_MARKET_HISTORY_SYNC_INTERVAL", 24*time.Hour),
 		EmptyCoverageTTL: duration("GO_CLIENT_EMPTY_COVERAGE_TTL", 15*time.Minute),
 		NewsRetention:    duration("GO_CLIENT_NEWS_RETENTION", 30*24*time.Hour),

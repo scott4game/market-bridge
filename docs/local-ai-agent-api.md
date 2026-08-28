@@ -196,7 +196,7 @@ curl -fsS -X POST 'http://127.0.0.1:17600/v1/datasets/ensure' \
 ```
 
 实际 `bars` 字段与单标的格式相同，按 `timestamp`、`symbol` 排序。首次查询两年范围
-可能触发上游下载，Agent 应使用分钟级 HTTP 超时。默认 ClickHouse 保留最近 730 天。
+可能触发上游下载，Agent 应使用分钟级 HTTP 超时。默认 ClickHouse 保留最近 1825 天。
 浏览器页面会自动分块加载至少两年并在左拖时继续追溯，但这是 UI 策略；Agent API
 不会猜时间范围，仍必须显式传 `from/to`。
 

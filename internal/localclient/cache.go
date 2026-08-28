@@ -52,7 +52,7 @@ type cachedForwardFactors struct {
 
 type HistoricalClickHouse interface {
 	QueryBars(context.Context, market.DatasetSpec) ([]market.Bar, error)
-	WriteBars(context.Context, market.AdjustmentMode, []market.Bar, uint64) error
+	WriteBars(context.Context, string, market.AdjustmentMode, []market.Bar, uint64) error
 	Write(context.Context, market.LiveEvent) error
 	CleanupBefore(context.Context, time.Time) (int, error)
 }
@@ -315,26 +315,6 @@ func (c *Cache) routedBars(ctx context.Context, spec market.DatasetSpec, capabil
 
 func (c *Cache) recentBars(ctx context.Context, spec market.DatasetSpec, capability StorageCapability) ([]market.Bar, string, error) {
 	allowLocalRedis := !capability.Redis.Enabled
-	if spec.Interval != "1m" {
-		version, err := c.semanticCacheVersion(ctx, spec, "provider-recent:"+capability.DataVersion)
-		if err != nil {
-			return nil, "", err
-		}
-		key, _ := spec.Hash(market.SchemaVersion, version)
-		if allowLocalRedis {
-			if bars, ok := c.redisBars(ctx, "recent:"+key); ok {
-				return bars, "redis", nil
-			}
-		}
-		bars, source, err := c.remoteHistoryBars(ctx, spec, true)
-		if err != nil {
-			return nil, "", err
-		}
-		if allowLocalRedis {
-			c.setRedisBars(ctx, "recent:"+key, bars, c.recentRedisTTL(bars))
-		}
-		return bars, source, nil
-	}
 	mode := "local-clickhouse"
 	version := capability.DataVersion
 	if capability.ClickHouse.Enabled {
@@ -346,6 +326,10 @@ func (c *Cache) recentBars(ctx context.Context, spec market.DatasetSpec, capabil
 		return nil, "", err
 	}
 	key, _ := spec.Hash(market.SchemaVersion, cacheVersion)
+	coverageVersion, err := c.semanticCacheVersion(ctx, spec, version)
+	if err != nil {
+		return nil, "", err
+	}
 	if allowLocalRedis {
 		if bars, ok := c.redisBars(ctx, "recent:"+key); ok {
 			return bars, "redis", nil
@@ -379,7 +363,7 @@ func (c *Cache) recentBars(ctx context.Context, spec market.DatasetSpec, capabil
 	if applyForward {
 		storageSpec.Adjustment = market.SplitAdjusted
 	}
-	missing, err := c.coverage.Missing(ctx, storageSpec, version)
+	missing, err := c.coverage.Missing(ctx, storageSpec, coverageVersion)
 	if err != nil {
 		return nil, "", err
 	}
@@ -390,7 +374,7 @@ func (c *Cache) recentBars(ctx context.Context, spec market.DatasetSpec, capabil
 			return nil, "", err
 		}
 		if len(part) > 0 {
-			if err := c.clickhouse.WriteBars(ctx, gap.Adjustment, part, uint64(time.Now().UnixMilli())); err != nil {
+			if err := c.clickhouse.WriteBars(ctx, gap.Interval, gap.Adjustment, part, uint64(time.Now().UnixMilli())); err != nil {
 				return nil, "", err
 			}
 		}
@@ -398,7 +382,7 @@ func (c *Cache) recentBars(ctx context.Context, spec market.DatasetSpec, capabil
 		if ttl <= 0 {
 			ttl = 15 * time.Minute
 		}
-		if err := c.coverage.Record(ctx, gap, version, part, ttl); err != nil {
+		if err := c.coverage.Record(ctx, gap, coverageVersion, part, ttl); err != nil {
 			return nil, "", err
 		}
 		fetched = true
@@ -1188,5 +1172,5 @@ func (c *Cache) clickhouseRetention() time.Duration {
 	if c.cfg.ClickHouseRetention > 0 {
 		return c.cfg.ClickHouseRetention
 	}
-	return 730 * 24 * time.Hour
+	return 1825 * 24 * time.Hour
 }

@@ -124,7 +124,7 @@ func (p *Longbridge) Universe(ctx context.Context) ([]string, error) {
 
 func (r *Router) Securities(ctx context.Context) ([]Security, error) {
 	var securities []Security
-	candidates := append([]Provider{r.US, r.Longbridge}, r.UniverseProviders...)
+	candidates := append([]Provider{r.US, r.AShare, r.HK}, r.UniverseProviders...)
 	for _, candidate := range candidates {
 		if candidate == nil {
 			continue

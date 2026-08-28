@@ -22,6 +22,12 @@ func (e *HistoricalProviderDisabledError) Error() string {
 	if e.Provider == "Longbridge" {
 		return fmt.Sprintf("Longbridge historical provider is not enabled for %s; set GO_SERVER_LONGBRIDGE_HISTORY_ENABLED=true and restart go-server", e.Venue)
 	}
+	if e.Provider == "A-share" {
+		return fmt.Sprintf("A-share historical provider is not enabled for %s; set GO_SERVER_A_SHARE_PROVIDER=tushare or longbridge and restart go-server", e.Venue)
+	}
+	if e.Provider == "HK" {
+		return "HK historical provider is not enabled; set GO_SERVER_HK_PROVIDER=longbridge and restart go-server"
+	}
 	return fmt.Sprintf("%s historical provider is not enabled for %s", e.Provider, e.Venue)
 }
 
@@ -33,7 +39,8 @@ func IsHistoricalProviderDisabled(err error) bool {
 type Router struct {
 	US                Provider
 	Index             Provider
-	Longbridge        Provider
+	AShare            Provider
+	HK                Provider
 	Binance           Provider
 	UniverseProviders []Provider
 }
@@ -52,11 +59,16 @@ func (r *Router) providerFor(venue market.Venue) (Provider, error) {
 			return r.Index, nil
 		}
 		return nil, &HistoricalProviderDisabledError{Provider: "Index", Venue: venue}
-	case market.VenueHK, market.VenueSH, market.VenueSZ:
-		if r.Longbridge != nil {
-			return r.Longbridge, nil
+	case market.VenueSH, market.VenueSZ:
+		if r.AShare != nil {
+			return r.AShare, nil
 		}
-		return nil, &HistoricalProviderDisabledError{Provider: "Longbridge", Venue: venue}
+		return nil, &HistoricalProviderDisabledError{Provider: "A-share", Venue: venue}
+	case market.VenueHK:
+		if r.HK != nil {
+			return r.HK, nil
+		}
+		return nil, &HistoricalProviderDisabledError{Provider: "HK", Venue: venue}
 	case market.VenueBinance:
 		if r.Binance != nil {
 			return r.Binance, nil
@@ -124,6 +136,19 @@ func (r *Router) Describe(spec market.DatasetSpec) (Description, error) {
 
 func (r *Router) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar, error) {
 	return r.BarsWithForwardFactors(ctx, spec, nil)
+}
+
+func (r *Router) Supports(spec market.DatasetSpec) bool {
+	routes, err := r.route(spec)
+	if err != nil {
+		return false
+	}
+	for _, route := range routes {
+		if !Supports(route.provider, route.spec) {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *Router) BarsWithForwardFactors(ctx context.Context, spec market.DatasetSpec, curves map[string]market.ForwardFactors) ([]market.Bar, error) {

@@ -54,7 +54,7 @@ func (c *HistoryCatalog) Close() error { return c.db.Close() }
 
 func (c *HistoryCatalog) RunCleanup(ctx context.Context, retention time.Duration) {
 	if retention <= 0 {
-		retention = 730 * 24 * time.Hour
+		retention = 1825 * 24 * time.Hour
 	}
 	cleanup := func() {
 		_ = c.coverage.Cleanup(ctx, time.Now().UTC().Add(-retention))
