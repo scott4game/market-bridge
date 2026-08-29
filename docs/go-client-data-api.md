@@ -95,10 +95,14 @@ GO_CLIENT_REDIS_ENABLED=false
 GO_CLIENT_CLICKHOUSE_ENABLED=false
 ```
 
-最近1825天的规范 K 线进入当前唯一启用的 ClickHouse；清理器每720小时删除超过1825天
-的完整日分区。早于1825天的查询始终绕过两侧 ClickHouse，经 go-server 直接访问
-Massive/Longbridge，并按股票、周期和自然月缓存在当前唯一启用的 Redis，默认 TTL 为24小时。
+最近1825天的规范 K 线进入当前唯一启用的 ClickHouse；K 线表按市场和月份分区，清理器
+每720小时删除完全早于保留期限的月分区。早于1825天的查询始终绕过两侧 ClickHouse，经 go-server 直接访问
+对应 Provider，并按股票、周期和自然月缓存在当前唯一启用的 Redis，默认 TTL 为24小时。
 跨越1825天边界的请求会合并 CH 近期数据与 Provider 历史数据后去重排序。
+
+从旧的按日分区版本升级时，应先停止所有写入同一 ClickHouse 的 go-server/go-client，
+再执行 `DROP TABLE IF EXISTS market.kline_1m SYNC`。更新后的服务启动时会创建空的月分区表；
+内部存储布局版本会自动废弃旧覆盖记录和 Redis 查询缓存，后续查询将重新访问 Provider。
 
 可查看实际存储模式：
 

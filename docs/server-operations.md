@@ -165,6 +165,26 @@ docker inspect "$(docker compose ps -q go-server)" \
   grep '^GO_SERVER_LONGBRIDGE_HISTORY_ENABLED='
 ```
 
+#### 2.4.1 从 ClickHouse 日分区表升级
+
+旧版 `market.kline_1m` 按日期分区，一次回填多年历史数据可能触发 ClickHouse
+`TOO_MANY_PARTS`。更新镜像后，先停止所有写入同一 ClickHouse 的服务，再删除旧 K 线表：
+
+```sql
+DROP TABLE IF EXISTS market.kline_1m SYNC;
+```
+
+随后启动更新后的 go-server：
+
+```bash
+docker compose up -d --force-recreate go-server
+docker compose logs --tail=100 go-server
+```
+
+服务会自动创建按市场和月份分区的空表。旧 K 线不可恢复，但内部存储布局版本会自动
+废弃旧覆盖记录和 Redis 查询缓存，首次查询将从 Provider 重新拉取。不要只提高
+`max_partitions_per_insert_block`，这不会解决按日过度分区造成的长期性能问题。
+
 ### 2.5 团队成员与个人 API Key
 
 多账号模式有两类凭据：

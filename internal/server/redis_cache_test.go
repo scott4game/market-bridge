@@ -133,7 +133,7 @@ func TestServerRedisCachesCanonicalClickHouseResponse(t *testing.T) {
 	spec := market.DatasetSpec{Symbols: []string{"AAPL"}, Interval: "1m", From: from, To: from.Add(time.Minute), Session: market.RegularSession, Adjustment: market.SplitAdjusted}
 	price := market.DecimalFromFloat(10)
 	bars := []market.Bar{{Symbol: "AAPL", Timestamp: from, Open: price, High: price, Low: price, Close: price, Completed: true}}
-	if err := catalog.RecordCoverage(context.Background(), spec, "v1", bars, 15*time.Minute); err != nil {
+	if err := catalog.RecordCoverage(context.Background(), spec, "v1:"+market.KlineStorageVersion, bars, 15*time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	clickhouse := &redisTestClickHouse{bars: bars}
@@ -163,5 +163,36 @@ func TestServerRedisCachesCanonicalClickHouseResponse(t *testing.T) {
 	clickhouse.mu.Unlock()
 	if reads != 1 {
 		t.Fatalf("ClickHouse reads=%d, want 1", reads)
+	}
+}
+
+func TestClickHouseLayoutVersionInvalidatesOldCoverage(t *testing.T) {
+	provider := &redisCountingProvider{}
+	store, err := NewStore(t.TempDir(), provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := OpenHistoryCatalog(t.TempDir() + "/history.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+	from := time.Now().UTC().Add(-time.Hour).Truncate(time.Minute)
+	spec := market.DatasetSpec{Symbols: []string{"AAPL"}, Interval: "1m", From: from, To: from.Add(time.Minute), Session: market.RegularSession, Adjustment: market.SplitAdjusted}
+	if err := catalog.RecordCoverage(context.Background(), spec, "v1", []market.Bar{{Symbol: "AAPL", Timestamp: from, Completed: true}}, 15*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	handler := (&HTTP{Store: store, ClickHouseEnabled: true, ClickHouse: &redisTestClickHouse{}, HistoryCatalog: catalog, DataVersion: "v1"}).Handler()
+	body, _ := json.Marshal(map[string]any{"spec": spec})
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/history/bars", bytes.NewReader(body)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	provider.mu.Lock()
+	calls := provider.calls
+	provider.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("provider calls=%d, want 1", calls)
 	}
 }

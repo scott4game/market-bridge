@@ -151,7 +151,7 @@ func TestRemoteClickHouseLogicallyDisablesLocalWrites(t *testing.T) {
 	catalog, _ := marketserver.OpenHistoryCatalog(t.TempDir() + "/history.db")
 	defer catalog.Close()
 	spec := market.DatasetSpec{Symbols: []string{"AAPL"}, Interval: "1m", From: from, To: to, Session: market.RegularSession, Adjustment: market.SplitAdjusted}
-	if err := catalog.RecordCoverage(context.Background(), spec, "remote-v1", serverCH.bars, 15*time.Minute); err != nil {
+	if err := catalog.RecordCoverage(context.Background(), spec, "remote-v1:"+market.KlineStorageVersion, serverCH.bars, 15*time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	upstream := httptest.NewServer((&marketserver.HTTP{Store: store, DataVersion: "remote-v1", ClickHouseEnabled: true, ClickHouse: serverCH, HistoryCatalog: catalog}).Handler())

@@ -2,7 +2,10 @@ package market
 
 import "time"
 
-const SchemaVersion = "2"
+const (
+	SchemaVersion       = "2"
+	KlineStorageVersion = "clickhouse-monthly-v1"
+)
 
 type Partition struct {
 	Name      string    `json:"name"`

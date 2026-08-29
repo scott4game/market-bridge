@@ -293,12 +293,13 @@ func (h *HTTP) historyBars(w http.ResponseWriter, r *http.Request) {
 		storageSpec.Adjustment = market.SplitAdjusted
 	}
 	revision, _, _ := h.HistoryCatalog.Current(r.Context())
-	coverageVersion, _, err := h.Store.SemanticDataVersion(r.Context(), spec, h.DataVersion)
+	clickHouseDataVersion := h.DataVersion + ":" + market.KlineStorageVersion
+	coverageVersion, _, err := h.Store.SemanticDataVersion(r.Context(), spec, clickHouseDataVersion)
 	if err != nil {
 		writeProviderError(w, err)
 		return
 	}
-	cacheVersion, curves, err := h.Store.SemanticDataVersion(r.Context(), spec, fmt.Sprintf("clickhouse:%s:%d", h.DataVersion, revision))
+	cacheVersion, curves, err := h.Store.SemanticDataVersion(r.Context(), spec, fmt.Sprintf("clickhouse:%s:%d", clickHouseDataVersion, revision))
 	if err != nil {
 		writeProviderError(w, err)
 		return
@@ -351,7 +352,7 @@ func (h *HTTP) historyBars(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.RedisEnabled && h.Redis != nil {
 		currentRevision, _, _ := h.HistoryCatalog.Current(r.Context())
-		currentVersion, _, versionErr := h.Store.SemanticDataVersion(r.Context(), spec, fmt.Sprintf("clickhouse:%s:%d", h.DataVersion, currentRevision))
+		currentVersion, _, versionErr := h.Store.SemanticDataVersion(r.Context(), spec, fmt.Sprintf("clickhouse:%s:%d", clickHouseDataVersion, currentRevision))
 		if versionErr == nil {
 			if currentKey, keyErr := spec.Hash(market.SchemaVersion, currentVersion); keyErr == nil {
 				_ = h.Redis.Set(r.Context(), "clickhouse:"+currentKey, bars, h.Store.barCacheTTL(spec, bars))

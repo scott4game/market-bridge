@@ -316,10 +316,10 @@ func (c *Cache) routedBars(ctx context.Context, spec market.DatasetSpec, capabil
 func (c *Cache) recentBars(ctx context.Context, spec market.DatasetSpec, capability StorageCapability) ([]market.Bar, string, error) {
 	allowLocalRedis := !capability.Redis.Enabled
 	mode := "local-clickhouse"
-	version := capability.DataVersion
+	version := capability.DataVersion + ":" + market.KlineStorageVersion
 	if capability.ClickHouse.Enabled {
 		mode = "server-clickhouse"
-		version = fmt.Sprintf("%s:%d", capability.DataVersion, capability.HistoryRevision)
+		version = fmt.Sprintf("%s:%s:%d", capability.DataVersion, market.KlineStorageVersion, capability.HistoryRevision)
 	}
 	cacheVersion, err := c.semanticCacheVersion(ctx, spec, mode+":"+version)
 	if err != nil {
