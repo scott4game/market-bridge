@@ -104,7 +104,8 @@ function selectedMarketSecurities() {
 
 function marketHistoryEnabled(market) {
   if (market === 'us') return true
-  if (market === 'hk' || market === 'cn') return providerStatus?.longbridge?.history_enabled === true
+  if (market === 'hk') return providerStatus?.hk?.history_enabled === true
+  if (market === 'cn') return providerStatus?.ashare?.history_enabled === true
   return false
 }
 
@@ -655,7 +656,7 @@ chart.setDataLoader({
     }
     let range
     if (type === 'init') {
-      range = window.marketHistory.initialRange(activeQuery.to, interval)
+      range = window.marketHistory.initialRange(activeQuery.to, interval, activeQuery.maxHistoryYears)
     } else {
       const upper = Math.min(Number(timestamp) || activeQuery.loadedFrom, activeQuery.loadedFrom)
       range = window.marketHistory.olderRange(upper, interval, activeQuery.floor, activeQuery.allowBeyondFloor)
@@ -682,7 +683,7 @@ chart.setDataLoader({
       const bars = (Array.isArray(data.bars) ? data.bars : []).map(normalizeBar).sort((a, b) => a.timestamp - b.timestamp)
       activeQuery.loadedFrom = Math.min(activeQuery.loadedFrom, range.from)
       lastBars = window.marketHistory.mergeBars(lastBars, bars)
-      const hasOlder = window.marketHistory.canRequestOlder(range.from, activeQuery.floor, activeQuery.allowBeyondFloor, bars.length)
+      const hasOlder = window.marketHistory.canRequestOlder(range.from, activeQuery.floor, false, bars.length)
       callback(bars, { forward: hasOlder, backward: false })
       $('source').textContent = `缓存：${data.source}`
       $('count').textContent = `Bars：${lastBars.length}`
@@ -1028,19 +1029,21 @@ $('query').addEventListener('submit', event => {
   try {
     const symbol = normalizeSelectedMarketSymbol($('symbol').value)
     if (!symbol) throw new Error('请输入代码')
-    if (!marketHistoryEnabled(symbolMarket(symbol))) throw new Error('服务端未启用 Longbridge 港股/A股历史行情，请设置 GO_SERVER_LONGBRIDGE_HISTORY_ENABLED=true 后重启 go-server')
+    if (!marketHistoryEnabled(symbolMarket(symbol))) throw new Error('服务端未启用该市场的历史行情 Provider，请检查对应历史渠道配置后重启 go-server')
     $('symbol').value = symbol
     renderSecurityIdentity(symbol)
     const interval = $('interval').value
     const defaults = marketDefaults(symbol)
     const to = Date.now()
-    const initial = window.marketHistory.initialRange(to, interval)
+    const maxHistoryYears = window.marketHistory.historyYearsFor(symbol, providerStatus)
+    const initial = window.marketHistory.initialRange(to, interval, maxHistoryYears)
     activeQuery = {
       symbol,
       to,
       floor: initial.floor,
       loadedFrom: to,
-      allowBeyondFloor: window.marketHistory.allowHistoryBeyondTwoYears(symbol, providerStatus),
+      allowBeyondFloor: false,
+      maxHistoryYears,
       interval,
       session: defaults.session,
       adjustment: defaults.adjustment,

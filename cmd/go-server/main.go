@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -120,7 +121,7 @@ func main() {
 	case "mock":
 		indexProvider = &provider.Mock{Version: "mock-index-v1-" + cfg.DataVersion}
 	}
-	var p provider.Provider = &provider.Router{US: usProvider, Index: indexProvider, AShare: aShareHistory, HK: hkHistory, Binance: binanceHistory, UniverseProviders: universeProviders}
+	var p provider.Provider = &provider.Router{US: usProvider, Index: indexProvider, AShare: aShareHistory, HK: hkHistory, Binance: binanceHistory, UniverseProviders: universeProviders, HistoryMaxYears: cfg.HistoryMaxYears(), HistoryCooldown: 10 * time.Minute}
 	historyDataVersion := fmt.Sprintf("%s:ashare=%s:hk=%s", cfg.DataVersion, cfg.AShareProvider, cfg.HKProvider)
 	if err := os.MkdirAll(filepath.Dir(cfg.AuthDB), 0o755); err != nil {
 		log.Fatal(err)
@@ -285,6 +286,17 @@ func main() {
 		status["hk"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[hkEnabled], "provider": cfg.HKProvider, "history_enabled": hkEnabled}
 		status["massive"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[cfg.Provider == "massive" || cfg.IndexProvider == "massive"], "plan": cfg.MassivePlanName}
 		status["options"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[cfg.OptionsProvider == "massive"], "provider": cfg.OptionsProvider, "plan": cfg.MassiveOptionsPlanName, "history_enabled": cfg.OptionsProvider == "massive"}
+		status["history_policy"] = map[string]any{
+			"cooldown_seconds": 600,
+			"providers":        cfg.HistoryMaxYears(),
+			"routes": map[string]any{
+				"us":      map[string]any{"provider": cfg.Provider, "max_years": historyYears(cfg, cfg.Provider)},
+				"index":   map[string]any{"provider": cfg.IndexProvider, "max_years": historyYears(cfg, cfg.IndexProvider)},
+				"ashare":  map[string]any{"provider": cfg.AShareProvider, "max_years": historyYears(cfg, cfg.AShareProvider)},
+				"hk":      map[string]any{"provider": cfg.HKProvider, "max_years": historyYears(cfg, cfg.HKProvider)},
+				"binance": map[string]any{"provider": "binance", "max_years": cfg.BinanceHistoryMaxYears},
+			},
+		}
 		if newsService != nil {
 			status["fmp_news"] = newsService.Status()
 		} else {
@@ -318,6 +330,14 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+}
+
+func historyYears(cfg config.Server, name string) int {
+	name = strings.Split(strings.ToLower(strings.TrimSpace(name)), "-")[0]
+	if years := cfg.HistoryMaxYears()[name]; years > 0 {
+		return years
+	}
+	return 5
 }
 
 func logEnabledProviders(cfg config.Server) {

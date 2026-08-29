@@ -38,6 +38,9 @@ func TestTushareAShareForwardAdjustedAndCalendarAggregation(t *testing.T) {
 	location, _ := time.LoadLocation("Asia/Shanghai")
 	from := time.Date(2026, 8, 24, 0, 0, 0, 0, location)
 	p := &TushareAShare{Token: "secret", BaseURL: server.URL}
+	if p.Supports(market.DatasetSpec{Interval: "1y"}) {
+		t.Fatal("Tushare yearly history must remain unsupported")
+	}
 	spec := market.DatasetSpec{Symbols: []string{"600519.SH"}, Interval: "1w", From: from.UTC(), To: from.AddDate(0, 0, 7).UTC(), Session: market.RegularSession, Adjustment: market.ForwardAdjusted}
 	bars, err := p.Bars(context.Background(), spec)
 	if err != nil {

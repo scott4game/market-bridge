@@ -46,6 +46,32 @@ func TestServerFromEnv(t *testing.T) {
 	if got.MassivePlanName != "stocks_developer" || got.MassivePerMinute != 0 || got.MassivePerMonth != 10000 {
 		t.Fatalf("unexpected Massive usage settings: %+v", got)
 	}
+	for provider, years := range got.HistoryMaxYears() {
+		if years != 5 {
+			t.Fatalf("default %s history years=%d", provider, years)
+		}
+	}
+}
+
+func TestProviderHistoryYearConfiguration(t *testing.T) {
+	t.Setenv("MASSIVE_HISTORY_MAX_YEARS", "7")
+	t.Setenv("LONGBRIDGE_HISTORY_MAX_YEARS", "3")
+	t.Setenv("TUSHARE_HISTORY_MAX_YEARS", "2")
+	t.Setenv("FMP_HISTORY_MAX_YEARS", "9")
+	t.Setenv("BINANCE_HISTORY_MAX_YEARS", "4")
+	t.Setenv("MOCK_HISTORY_MAX_YEARS", "1")
+	cfg := ServerFromEnv()
+	want := map[string]int{"massive": 7, "longbridge": 3, "tushare": 2, "fmp": 9, "binance": 4, "mock": 1}
+	if !reflect.DeepEqual(cfg.HistoryMaxYears(), want) {
+		t.Fatalf("years=%v", cfg.HistoryMaxYears())
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MASSIVE_HISTORY_MAX_YEARS", "0")
+	if err := ServerFromEnv().Validate(); err == nil || !strings.Contains(err.Error(), "MASSIVE_HISTORY_MAX_YEARS") {
+		t.Fatalf("err=%v", err)
+	}
 }
 
 func TestIndexProviderValidation(t *testing.T) {

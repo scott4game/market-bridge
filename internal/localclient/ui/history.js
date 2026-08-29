@@ -22,18 +22,25 @@
     '1y': 366 * 24 * 60 * 60 * 1000
   }
 
-  function twoYearFloor(timestamp) {
+  function historyFloor(timestamp, years) {
     const date = new Date(timestamp)
-    date.setUTCFullYear(date.getUTCFullYear() - 2)
+    date.setUTCFullYear(date.getUTCFullYear() - Math.max(1, Number(years) || 5))
     return date.getTime()
   }
+
+  function twoYearFloor(timestamp) { return historyFloor(timestamp, 2) }
 
   function chunkSpan(interval) {
     return Math.min((INTERVAL_MS[interval] || INTERVAL_MS['1d']) * MAX_BARS_PER_REQUEST, MAX_HISTORY_REQUEST_MS)
   }
 
-  function initialRange(to, interval) {
-    const floor = twoYearFloor(to)
+  function automaticHistoryInterval(interval) {
+    return ['1h', '2h', '3h', '4h', '1d', '1w', '1mo', '1y'].includes(interval)
+  }
+
+  function initialRange(to, interval, maxYears = 5) {
+    const floor = historyFloor(to, maxYears)
+    if (automaticHistoryInterval(interval)) return { from: floor, to, floor }
     return { from: Math.max(floor, to - chunkSpan(interval)), to, floor }
   }
 
@@ -65,22 +72,30 @@
     )
   }
 
-  function allowHistoryBeyondTwoYears(symbol, providers) {
-    // Always let the cache layer look farther back. It can return locally
-    // retained bars even when the upstream plan no longer permits refetching.
-    return true
+  function historyYearsFor(symbol, providers) {
+    const upper = String(symbol || '').toUpperCase()
+    const routes = providers?.history_policy?.routes || {}
+    let route = 'us'
+    if (upper.endsWith('.BINANCE')) route = 'binance'
+    else if (upper.endsWith('.HK')) route = 'hk'
+    else if (upper.endsWith('.SH') || upper.endsWith('.SZ')) route = 'ashare'
+    else if (upper.startsWith('I:')) route = 'index'
+    const years = Number(routes[route]?.max_years)
+    return Number.isInteger(years) && years > 0 ? years : 5
   }
 
   return {
     MAX_BARS_PER_REQUEST,
     MAX_HISTORY_REQUEST_MS,
+    historyFloor,
     twoYearFloor,
+    automaticHistoryInterval,
     chunkSpan,
     initialRange,
     olderRange,
     canRequestOlder,
     mergeBars,
     isCurrentQuery,
-    allowHistoryBeyondTwoYears
+    historyYearsFor
   }
 })

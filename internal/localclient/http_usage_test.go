@@ -85,8 +85,9 @@ func TestEmbeddedUIUsesProviderCapabilitiesAndSignedHistogramColors(t *testing.T
 	}
 	source := string(raw)
 	for _, want := range []string{
-		"providerStatus?.longbridge?.history_enabled === true",
-		"GO_SERVER_LONGBRIDGE_HISTORY_ENABLED=true",
+		"providerStatus?.hk?.history_enabled === true",
+		"providerStatus?.ashare?.history_enabled === true",
+		"服务端未启用该市场的历史行情 Provider",
 		"slice(0, 18)",
 		"Number(row[`o_${output.name}`]) >= 0 ? RED : GREEN",
 		"Y_AXIS_ZOOM_STORAGE_KEY",

@@ -25,15 +25,18 @@ type Server struct {
 	MassiveOptionsPlanName    string
 	MassiveOptionsPerMinute   int
 	MassiveOptionsPerMonth    int
+	MassiveHistoryMaxYears    int
 	AShareProvider            string
 	HKProvider                string
 	TushareToken              string
 	TushareBaseURL            string
 	TusharePerMinute          int
+	TushareHistoryMaxYears    int
 	NewsProvider              string
 	FMPAPIKey                 string
 	FMPBaseURL                string
 	FMPNewsPollInterval       time.Duration
+	FMPHistoryMaxYears        int
 	NewsRetention             time.Duration
 	LiveProvider              string
 	LiveProviders             []string
@@ -42,9 +45,12 @@ type Server struct {
 	LongbridgeAppKey          string
 	LongbridgeAppSecret       string
 	LongbridgeAccessToken     string
+	LongbridgeHistoryMaxYears int
 	BinanceEnabled            bool
 	BinanceRESTURL            string
 	BinanceWSURL              string
+	BinanceHistoryMaxYears    int
+	MockHistoryMaxYears       int
 	ClickHouseEnabled         bool
 	ClickHouseURL             string
 	ClickHouseDatabase        string
@@ -76,15 +82,15 @@ func ServerFromEnv() Server {
 		Listen: env("GO_SERVER_LISTEN", ":17601"), DataDir: env("GO_SERVER_DATA_DIR", "./data/server"), AuthDB: os.Getenv("GO_SERVER_AUTH_DB"),
 		Provider: env("GO_SERVER_PROVIDER", "mock"), IndexProvider: strings.ToLower(strings.TrimSpace(env("GO_SERVER_INDEX_PROVIDER", "disabled"))), DataVersion: env("GO_SERVER_DATA_VERSION", "market-v1"),
 		BearerToken: os.Getenv("GO_SERVER_TOKEN"), MassiveAPIKey: os.Getenv("MASSIVE_API_KEY"), MassiveBaseURL: env("MASSIVE_BASE_URL", "https://api.massive.com"),
-		MassivePlanName: env("MASSIVE_PLAN_NAME", "stocks_basic"), MassivePerMinute: integer("MASSIVE_REQUESTS_PER_MINUTE", 5), MassivePerMonth: integer("MASSIVE_REQUESTS_PER_MONTH", 0),
+		MassivePlanName: env("MASSIVE_PLAN_NAME", "stocks_basic"), MassivePerMinute: integer("MASSIVE_REQUESTS_PER_MINUTE", 5), MassivePerMonth: integer("MASSIVE_REQUESTS_PER_MONTH", 0), MassiveHistoryMaxYears: integer("MASSIVE_HISTORY_MAX_YEARS", 5),
 		OptionsProvider: env("GO_SERVER_OPTIONS_PROVIDER", "disabled"), MassiveOptionsPlanName: env("MASSIVE_OPTIONS_PLAN_NAME", "options_basic"), MassiveOptionsPerMinute: integer("MASSIVE_OPTIONS_REQUESTS_PER_MINUTE", 5), MassiveOptionsPerMonth: integer("MASSIVE_OPTIONS_REQUESTS_PER_MONTH", 0),
 		AShareProvider: historyProvider("GO_SERVER_A_SHARE_PROVIDER", legacyLongbridgeHistory), HKProvider: historyProvider("GO_SERVER_HK_PROVIDER", legacyLongbridgeHistory),
-		TushareToken: os.Getenv("TUSHARE_TOKEN"), TushareBaseURL: env("TUSHARE_BASE_URL", "https://api.tushare.pro"), TusharePerMinute: integer("TUSHARE_REQUESTS_PER_MINUTE", 200),
-		NewsProvider: env("GO_SERVER_NEWS_PROVIDER", "disabled"), FMPAPIKey: os.Getenv("FMP_API_KEY"), FMPBaseURL: env("FMP_BASE_URL", "https://financialmodelingprep.com"), FMPNewsPollInterval: duration("FMP_NEWS_POLL_INTERVAL", time.Minute), NewsRetention: duration("GO_SERVER_NEWS_RETENTION", 30*24*time.Hour),
+		TushareToken: os.Getenv("TUSHARE_TOKEN"), TushareBaseURL: env("TUSHARE_BASE_URL", "https://api.tushare.pro"), TusharePerMinute: integer("TUSHARE_REQUESTS_PER_MINUTE", 200), TushareHistoryMaxYears: integer("TUSHARE_HISTORY_MAX_YEARS", 5),
+		NewsProvider: env("GO_SERVER_NEWS_PROVIDER", "disabled"), FMPAPIKey: os.Getenv("FMP_API_KEY"), FMPBaseURL: env("FMP_BASE_URL", "https://financialmodelingprep.com"), FMPNewsPollInterval: duration("FMP_NEWS_POLL_INTERVAL", time.Minute), FMPHistoryMaxYears: integer("FMP_HISTORY_MAX_YEARS", 5), NewsRetention: duration("GO_SERVER_NEWS_RETENTION", 30*24*time.Hour),
 		LiveProvider: env("GO_SERVER_LIVE_PROVIDER", "mock"), LiveProviders: split(os.Getenv("GO_SERVER_LIVE_PROVIDERS")),
 		LongbridgeHistoryEnabled: legacyLongbridgeHistory, LongbridgeDepthEnabled: boolean("GO_SERVER_LONGBRIDGE_DEPTH_ENABLED", false),
-		LongbridgeAppKey: os.Getenv("LONGBRIDGE_APP_KEY"), LongbridgeAppSecret: os.Getenv("LONGBRIDGE_APP_SECRET"), LongbridgeAccessToken: os.Getenv("LONGBRIDGE_ACCESS_TOKEN"),
-		BinanceEnabled: boolean("GO_SERVER_BINANCE_ENABLED", false), BinanceRESTURL: env("BINANCE_REST_BASE_URL", "https://data-api.binance.vision"), BinanceWSURL: env("BINANCE_WS_URL", "wss://data-stream.binance.vision"),
+		LongbridgeAppKey: os.Getenv("LONGBRIDGE_APP_KEY"), LongbridgeAppSecret: os.Getenv("LONGBRIDGE_APP_SECRET"), LongbridgeAccessToken: os.Getenv("LONGBRIDGE_ACCESS_TOKEN"), LongbridgeHistoryMaxYears: integer("LONGBRIDGE_HISTORY_MAX_YEARS", 5),
+		BinanceEnabled: boolean("GO_SERVER_BINANCE_ENABLED", false), BinanceRESTURL: env("BINANCE_REST_BASE_URL", "https://data-api.binance.vision"), BinanceWSURL: env("BINANCE_WS_URL", "wss://data-stream.binance.vision"), BinanceHistoryMaxYears: integer("BINANCE_HISTORY_MAX_YEARS", 5), MockHistoryMaxYears: integer("MOCK_HISTORY_MAX_YEARS", 5),
 		ClickHouseEnabled: boolean("GO_SERVER_CLICKHOUSE_ENABLED", false),
 		ClickHouseURL:     os.Getenv("CLICKHOUSE_URL"), ClickHouseDatabase: env("CLICKHOUSE_DATABASE", "market"), ClickHouseUser: env("CLICKHOUSE_USER", "market"), ClickHousePassword: os.Getenv("CLICKHOUSE_PASSWORD"),
 		ClickHouseRetention: duration("GO_SERVER_CLICKHOUSE_RETENTION", 1825*24*time.Hour), ClickHouseCleanupInterval: duration("GO_SERVER_CLICKHOUSE_CLEANUP_INTERVAL", 720*time.Hour),
@@ -115,6 +121,11 @@ func (s Server) EffectiveLiveProviders() []string {
 }
 
 func (s Server) Validate() error {
+	for name, years := range s.HistoryMaxYears() {
+		if years < 1 || years > 50 {
+			return fmt.Errorf("%s_HISTORY_MAX_YEARS must be between 1 and 50", strings.ToUpper(name))
+		}
+	}
 	if s.AShareProvider != "" && s.AShareProvider != "disabled" && s.AShareProvider != "longbridge" && s.AShareProvider != "tushare" {
 		return fmt.Errorf("unsupported A-share provider %q", s.AShareProvider)
 	}
@@ -203,6 +214,14 @@ func (s Server) Validate() error {
 		return fmt.Errorf("GO_SERVER_SECURITY_PROFILE_WORKERS must be between 1 and 128")
 	}
 	return nil
+}
+
+func (s Server) HistoryMaxYears() map[string]int {
+	return map[string]int{
+		"massive": s.MassiveHistoryMaxYears, "longbridge": s.LongbridgeHistoryMaxYears,
+		"tushare": s.TushareHistoryMaxYears, "fmp": s.FMPHistoryMaxYears,
+		"binance": s.BinanceHistoryMaxYears, "mock": s.MockHistoryMaxYears,
+	}
 }
 
 func historyProvider(name string, legacyLongbridge bool) string {

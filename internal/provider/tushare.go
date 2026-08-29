@@ -36,7 +36,7 @@ func (p *TushareAShare) DataVersion() string {
 }
 
 func (p *TushareAShare) Supports(spec market.DatasetSpec) bool {
-	return spec.Interval == "1d" || spec.Interval == "1w" || spec.Interval == "1mo" || spec.Interval == "1y"
+	return spec.Interval == "1d" || spec.Interval == "1w" || spec.Interval == "1mo"
 }
 
 type tushareResponse struct {
@@ -126,8 +126,8 @@ func (p *TushareAShare) Bars(ctx context.Context, spec market.DatasetSpec) ([]ma
 			return nil, fmt.Errorf("Tushare A-share provider does not support %s", symbol)
 		}
 	}
-	if normalized.Interval != "1d" && normalized.Interval != "1w" && normalized.Interval != "1mo" && normalized.Interval != "1y" {
-		return nil, fmt.Errorf("Tushare A-share history supports 1d, 1w, 1mo, and 1y, got %s", normalized.Interval)
+	if !p.Supports(normalized) {
+		return nil, fmt.Errorf("Tushare A-share history supports 1d, 1w, and 1mo, got %s", normalized.Interval)
 	}
 	if normalized.Adjustment != market.Raw && normalized.Adjustment != market.ForwardAdjusted {
 		return nil, fmt.Errorf("Tushare A-share history supports raw and forward_adjusted, got %s", normalized.Adjustment)
