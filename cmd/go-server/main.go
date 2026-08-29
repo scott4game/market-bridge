@@ -38,6 +38,8 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	var usage *provider.UsageTracker
+	var optionsUsage *provider.UsageTracker
+	var optionsCatalog *marketserver.OptionCatalog
 	var massiveProvider *provider.Massive
 	if cfg.Provider == "massive" || cfg.IndexProvider == "massive" {
 		var err error
@@ -47,6 +49,20 @@ func main() {
 		}
 		defer usage.Close()
 		massiveProvider = &provider.Massive{APIKey: cfg.MassiveAPIKey, BaseURL: cfg.MassiveBaseURL, Version: cfg.DataVersion, PlanName: cfg.MassivePlanName, Usage: usage}
+	}
+	if cfg.OptionsProvider == "massive" {
+		var err error
+		optionsUsage, err = provider.NewUsageTracker(filepath.Join(cfg.DataDir, "options-usage.db"), cfg.MassiveOptionsPlanName, cfg.MassiveOptionsPerMinute, cfg.MassiveOptionsPerMonth, time.Local)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer optionsUsage.Close()
+		optionsSource := &provider.MassiveOptions{APIKey: cfg.MassiveAPIKey, BaseURL: cfg.MassiveBaseURL, Usage: optionsUsage, RequestsPerMinute: cfg.MassiveOptionsPerMinute}
+		optionsCatalog, err = marketserver.OpenOptionCatalog(filepath.Join(cfg.DataDir, "options-cache.db"), optionsSource)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer optionsCatalog.Close()
 	}
 	var usProvider provider.Provider
 	switch cfg.Provider {
@@ -117,6 +133,9 @@ func main() {
 	go auth.RunCleanup(ctx)
 	if usage != nil {
 		go usage.RunCleanup(ctx)
+	}
+	if optionsUsage != nil {
+		go optionsUsage.RunCleanup(ctx)
 	}
 	if !auth.HasCredential(context.Background()) {
 		log.Fatal("no active API key: set GO_SERVER_TOKEN or create a user key with go-server admin")
@@ -265,6 +284,7 @@ func main() {
 		status["ashare"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[aShareEnabled], "provider": cfg.AShareProvider, "history_enabled": aShareEnabled}
 		status["hk"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[hkEnabled], "provider": cfg.HKProvider, "history_enabled": hkEnabled}
 		status["massive"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[cfg.Provider == "massive" || cfg.IndexProvider == "massive"], "plan": cfg.MassivePlanName}
+		status["options"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[cfg.OptionsProvider == "massive"], "provider": cfg.OptionsProvider, "plan": cfg.MassiveOptionsPlanName, "history_enabled": cfg.OptionsProvider == "massive"}
 		if newsService != nil {
 			status["fmp_news"] = newsService.Status()
 		} else {
@@ -282,7 +302,7 @@ func main() {
 	}
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           (&marketserver.HTTP{Store: store, Token: cfg.BearerToken, Access: auth, Limiter: limiter, Live: hub, Usage: usage, ProviderStatus: providerStatus, ClickHouseEnabled: cfg.ClickHouseEnabled, ClickHouse: historicalClickHouse, RedisEnabled: cfg.RedisEnabled, Redis: redisCache, HistoryCatalog: historyCatalog, DataVersion: historyDataVersion, EmptyCoverageTTL: cfg.EmptyCoverageTTL, HistoryRetention: cfg.ClickHouseRetention, RecentTrades: recentTrades, News: newsService, SecurityProfiles: securityProfiles}).Handler(),
+		Handler:           (&marketserver.HTTP{Store: store, Token: cfg.BearerToken, Access: auth, Limiter: limiter, Live: hub, Usage: usage, OptionsUsage: optionsUsage, Options: optionsCatalog, ProviderStatus: providerStatus, ClickHouseEnabled: cfg.ClickHouseEnabled, ClickHouse: historicalClickHouse, RedisEnabled: cfg.RedisEnabled, Redis: redisCache, HistoryCatalog: historyCatalog, DataVersion: historyDataVersion, EmptyCoverageTTL: cfg.EmptyCoverageTTL, HistoryRetention: cfg.ClickHouseRetention, RecentTrades: recentTrades, News: newsService, SecurityProfiles: securityProfiles}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    1 << 20,
@@ -303,6 +323,9 @@ func main() {
 func logEnabledProviders(cfg config.Server) {
 	if cfg.Provider == "massive" {
 		log.Printf("Massive historical provider enabled: plan=%s, data_version=%s", cfg.MassivePlanName, cfg.DataVersion)
+	}
+	if cfg.OptionsProvider == "massive" {
+		log.Printf("Massive options provider enabled: plan=%s, requests_per_minute=%d", cfg.MassiveOptionsPlanName, cfg.MassiveOptionsPerMinute)
 	}
 	if cfg.NewsProvider == "fmp" {
 		log.Printf("FMP news provider enabled: poll_interval=%s, retention=%s", cfg.FMPNewsPollInterval, cfg.NewsRetention)

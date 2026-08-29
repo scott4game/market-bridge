@@ -21,6 +21,10 @@ type Server struct {
 	MassivePlanName           string
 	MassivePerMinute          int
 	MassivePerMonth           int
+	OptionsProvider           string
+	MassiveOptionsPlanName    string
+	MassiveOptionsPerMinute   int
+	MassiveOptionsPerMonth    int
 	AShareProvider            string
 	HKProvider                string
 	TushareToken              string
@@ -73,6 +77,7 @@ func ServerFromEnv() Server {
 		Provider: env("GO_SERVER_PROVIDER", "mock"), IndexProvider: strings.ToLower(strings.TrimSpace(env("GO_SERVER_INDEX_PROVIDER", "disabled"))), DataVersion: env("GO_SERVER_DATA_VERSION", "market-v1"),
 		BearerToken: os.Getenv("GO_SERVER_TOKEN"), MassiveAPIKey: os.Getenv("MASSIVE_API_KEY"), MassiveBaseURL: env("MASSIVE_BASE_URL", "https://api.massive.com"),
 		MassivePlanName: env("MASSIVE_PLAN_NAME", "stocks_basic"), MassivePerMinute: integer("MASSIVE_REQUESTS_PER_MINUTE", 5), MassivePerMonth: integer("MASSIVE_REQUESTS_PER_MONTH", 0),
+		OptionsProvider: env("GO_SERVER_OPTIONS_PROVIDER", "disabled"), MassiveOptionsPlanName: env("MASSIVE_OPTIONS_PLAN_NAME", "options_basic"), MassiveOptionsPerMinute: integer("MASSIVE_OPTIONS_REQUESTS_PER_MINUTE", 5), MassiveOptionsPerMonth: integer("MASSIVE_OPTIONS_REQUESTS_PER_MONTH", 0),
 		AShareProvider: historyProvider("GO_SERVER_A_SHARE_PROVIDER", legacyLongbridgeHistory), HKProvider: historyProvider("GO_SERVER_HK_PROVIDER", legacyLongbridgeHistory),
 		TushareToken: os.Getenv("TUSHARE_TOKEN"), TushareBaseURL: env("TUSHARE_BASE_URL", "https://api.tushare.pro"), TusharePerMinute: integer("TUSHARE_REQUESTS_PER_MINUTE", 200),
 		NewsProvider: env("GO_SERVER_NEWS_PROVIDER", "disabled"), FMPAPIKey: os.Getenv("FMP_API_KEY"), FMPBaseURL: env("FMP_BASE_URL", "https://financialmodelingprep.com"), FMPNewsPollInterval: duration("FMP_NEWS_POLL_INTERVAL", time.Minute), NewsRetention: duration("GO_SERVER_NEWS_RETENTION", 30*24*time.Hour),
@@ -135,6 +140,15 @@ func (s Server) Validate() error {
 	}
 	if (s.Provider == "massive" || s.IndexProvider == "massive") && strings.TrimSpace(s.MassiveAPIKey) == "" {
 		return fmt.Errorf("MASSIVE_API_KEY is required when a Massive provider is enabled")
+	}
+	if s.OptionsProvider != "disabled" && s.OptionsProvider != "massive" {
+		return fmt.Errorf("unsupported options provider %q", s.OptionsProvider)
+	}
+	if s.OptionsProvider == "massive" && strings.TrimSpace(s.MassiveAPIKey) == "" {
+		return fmt.Errorf("MASSIVE_API_KEY is required when GO_SERVER_OPTIONS_PROVIDER=massive")
+	}
+	if s.MassiveOptionsPerMinute < 0 || s.MassiveOptionsPerMonth < 0 {
+		return fmt.Errorf("Massive options request limits must be non-negative")
 	}
 	liveProviders := s.EffectiveLiveProviders()
 	for _, name := range liveProviders {

@@ -48,6 +48,8 @@ type HTTP struct {
 	Limiter           *access.Limiter
 	Live              http.Handler
 	Usage             UsageReader
+	OptionsUsage      UsageReader
+	Options           *OptionCatalog
 	ProviderStatus    func() any
 	ClickHouseEnabled bool
 	ClickHouse        HistoricalClickHouse
@@ -75,12 +77,15 @@ func (h *HTTP) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/news/ws", h.auth("news:read", h.newsWS))
 	mux.HandleFunc("GET /v1/news/stream", h.auth("news:read", h.newsSSE))
 	mux.HandleFunc("GET /v1/providers/massive/usage", h.auth("provider:usage", h.usage))
+	mux.HandleFunc("GET /v1/providers/massive-options/usage", h.auth("provider:usage", h.optionsUsage))
 	mux.HandleFunc("GET /v1/providers/status", h.auth("profile:read", h.providerStatus))
 	mux.HandleFunc("GET /v1/storage/capabilities", h.auth("profile:read", h.storageCapabilities))
 	mux.HandleFunc("POST /v1/history/bars", h.auth("history:read", h.historyBars))
 	mux.HandleFunc("GET /v1/market-history/universe", h.auth("history:read", h.historyUniverse))
 	mux.HandleFunc("GET /v1/market-history/security-profiles", h.auth("history:read", h.historySecurityProfiles))
 	mux.HandleFunc("GET /v1/market-history/adjustments/{symbol}", h.auth("history:read", h.historyAdjustments))
+	mux.HandleFunc("GET /v1/options/contracts", h.auth("history:read", h.optionContracts))
+	mux.HandleFunc("GET /v1/options/bars/{contract}", h.auth("history:read", h.optionBars))
 	mux.HandleFunc("GET /v1/me", h.auth("profile:read", h.me))
 	mux.HandleFunc("GET /v1/me/usage", h.auth("profile:read", h.myUsage))
 	mux.HandleFunc("GET /v1/me/watchlist", h.auth("profile:read", h.getWatchlist))
@@ -457,6 +462,113 @@ func (h *HTTP) usage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, snapshot)
+}
+
+func (h *HTTP) optionsUsage(w http.ResponseWriter, r *http.Request) {
+	if h.OptionsUsage == nil {
+		writeJSON(w, 404, map[string]string{"error": "Massive options usage tracking is not enabled"})
+		return
+	}
+	snapshot, err := h.OptionsUsage.Snapshot(r.Context(), "massive_options")
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, snapshot)
+}
+
+func (h *HTTP) optionContracts(w http.ResponseWriter, r *http.Request) {
+	if h.Options == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "options provider is not enabled"})
+		return
+	}
+	q := r.URL.Query()
+	query := provider.OptionContractQuery{
+		Underlying: q.Get("underlying"), ContractType: q.Get("type"), ExpirationFrom: q.Get("expiration_from"),
+		ExpirationTo: q.Get("expiration_to"), AsOf: q.Get("as_of"),
+	}
+	var err error
+	if value := q.Get("strike_gte"); value != "" {
+		query.StrikeGTE, err = strconv.ParseFloat(value, 64)
+		if err != nil {
+			writeJSON(w, 400, map[string]string{"error": "strike_gte must be numeric"})
+			return
+		}
+	}
+	if value := q.Get("strike_lte"); value != "" {
+		query.StrikeLTE, err = strconv.ParseFloat(value, 64)
+		if err != nil {
+			writeJSON(w, 400, map[string]string{"error": "strike_lte must be numeric"})
+			return
+		}
+	}
+	query, err = query.Normalize()
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	contracts, source, err := h.Options.Contracts(r.Context(), query)
+	if err != nil {
+		writeProviderError(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"source": source, "count": len(contracts), "contracts": nonNilOptionContracts(contracts)})
+}
+
+func (h *HTTP) optionBars(w http.ResponseWriter, r *http.Request) {
+	if h.Options == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "options provider is not enabled"})
+		return
+	}
+	from, err := parseOptionDate(r.URL.Query().Get("from"))
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"error": "from must be YYYY-MM-DD or RFC3339"})
+		return
+	}
+	to, err := parseOptionDate(r.URL.Query().Get("to"))
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"error": "to must be YYYY-MM-DD or RFC3339"})
+		return
+	}
+	if !from.Before(to) {
+		writeJSON(w, 400, map[string]string{"error": "from must be before to"})
+		return
+	}
+	contract := strings.ToUpper(strings.TrimSpace(r.PathValue("contract")))
+	if !strings.HasPrefix(contract, "O:") || len(contract) < 5 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "contract must be an OCC ticker prefixed with O:"})
+		return
+	}
+	bars, source, err := h.Options.Bars(r.Context(), contract, from, to)
+	if err != nil {
+		writeProviderError(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"source": source, "contract": contract, "count": len(bars), "bars": nonNilOptionBars(bars)})
+}
+
+func parseOptionDate(value string) (time.Time, error) {
+	if value == "" {
+		return time.Time{}, errors.New("date is required")
+	}
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return parsed.UTC(), nil
+	}
+	return time.Parse("2006-01-02", value)
+}
+
+func nonNilOptionContracts(values []provider.OptionContract) []provider.OptionContract {
+	if values == nil {
+		return []provider.OptionContract{}
+	}
+	return values
+}
+
+func nonNilOptionBars(values []provider.OptionBar) []provider.OptionBar {
+	if values == nil {
+		return []provider.OptionBar{}
+	}
+	return values
 }
 
 func (h *HTTP) auth(scope string, next http.HandlerFunc) http.HandlerFunc {

@@ -295,6 +295,49 @@ func TestSecurityProfilesProxyForwardsServerToken(t *testing.T) {
 	}
 }
 
+func TestOptionsProxyForwardsQueryAndServerToken(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/options/contracts":
+			if r.URL.Query().Get("underlying") != "NVDA" || r.URL.Query().Get("type") != "put" {
+				http.Error(w, "unexpected query", http.StatusBadRequest)
+				return
+			}
+			_, _ = w.Write([]byte(`{"source":"cache","count":1,"contracts":[{"ticker":"O:NVDA261002P00190000"}]}`))
+		case "/v1/options/bars/O:NVDA261002P00190000":
+			_, _ = w.Write([]byte(`{"source":"cache","count":0,"bars":[]}`))
+		case "/v1/providers/massive-options/usage":
+			_, _ = w.Write([]byte(`{"provider":"massive_options","totals":{"requests":2}}`))
+		default:
+			http.Error(w, "unexpected path", http.StatusNotFound)
+		}
+	}))
+	defer upstream.Close()
+
+	cache, err := NewCache(config.Client{CacheDir: t.TempDir(), ServerURL: upstream.URL, ServerToken: "secret", RedisEnabled: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cache.Close()
+	recorder := httptest.NewRecorder()
+	(&HTTP{Cache: cache}).Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/options/contracts?underlying=NVDA&type=put", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "O:NVDA261002P00190000") {
+		t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	for _, path := range []string{"/v1/options/bars/O:NVDA261002P00190000?from=2026-08-01&to=2026-08-29", "/v1/providers/massive-options/usage"} {
+		recorder = httptest.NewRecorder()
+		(&HTTP{Cache: cache}).Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("path=%s status=%d body=%q", path, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
 func TestIndicatorsAreStoredLocallyWithoutCallingServer(t *testing.T) {
 	upstreamCalls := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -50,6 +50,8 @@ Content-Type: application/json
 | GET | `/v1/market-history/universe` | 获取可搜索的全部标的代码 |
 | GET | `/v1/market-history/security-profiles` | 获取活跃美股普通股的通用公司资料、SIC和市值 |
 | GET | `/v1/market-history/adjustments/{symbol}` | 获取美股前复权累计因子及版本 |
+| GET | `/v1/options/contracts` | 查询美股期权合约目录；需要服务端启用Massive Options |
+| GET | `/v1/options/bars/{contract}` | 查询单个期权合约的日线OHLCV |
 | GET | `/v1/bars/{symbol}` | 查询单标的历史 K 线 |
 | GET | `/v1/live/trades/{symbol}?limit=100` | 查询 Longbridge 最近逐笔成交，最多 1000 笔 |
 | GET | `/v1/news?symbols=AAPL&limit=50` | 查询本地新闻镜像，默认返回最新 50 条 |
@@ -62,6 +64,32 @@ Content-Type: application/json
 
 `/readyz` 只表示本地 HTTP 已就绪，不保证上游行情一定可用，因此不能替代 provider
 状态检查。
+
+### 3.1 期权合约与日线
+
+期权接口是通用市场数据能力，不包含策略、信号或自动下单。Massive Options Basic默认按
+每分钟5次上游调用限速；go-server缓存合约目录和已完成日线，go-client只做安全代理。
+
+```bash
+curl -fsS --get 'http://127.0.0.1:17600/v1/options/contracts' \
+  --data-urlencode 'underlying=NVDA' \
+  --data-urlencode 'type=put' \
+  --data-urlencode 'expiration_from=2026-10-01' \
+  --data-urlencode 'expiration_to=2026-10-31' \
+  --data-urlencode 'strike_gte=180' \
+  --data-urlencode 'strike_lte=210' \
+  --data-urlencode 'as_of=2026-08-28'
+
+curl -fsS --get \
+  'http://127.0.0.1:17600/v1/options/bars/O:NVDA261002P00190000' \
+  --data-urlencode 'from=2026-08-01' \
+  --data-urlencode 'to=2026-08-29'
+```
+
+合约响应包含`ticker/underlying/contract_type/expiration_date/strike_price`、每张股数、
+行权方式和交易所。日线响应的价格字段为十进制字符串，时间范围仍为`[from,to)`；
+历史策略只使用`completed=true`。Options Basic不保证历史Greeks、IV或买卖报价，不能把
+期权OHLC回测等同于可成交报价回测。
 
 ## 4. 查询标的目录
 
