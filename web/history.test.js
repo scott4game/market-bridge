@@ -5,7 +5,7 @@ const to = Date.parse('2026-08-26T12:00:00Z')
 const floor = Date.parse('2024-08-26T12:00:00Z')
 
 assert.equal(history.twoYearFloor(to), floor)
-assert.deepEqual(history.initialRange(to, '1d'), { from: floor, to, floor })
+assert.equal(history.initialRange(to, '1d').to - history.initialRange(to, '1d').from, history.MAX_HISTORY_REQUEST_MS)
 
 const minute = history.initialRange(to, '1m')
 assert.equal(minute.to - minute.from, 5000 * 60 * 1000)
@@ -15,6 +15,7 @@ assert.deepEqual(history.olderRange(floor + 60_000, '1m', floor, false), { from:
 assert.equal(history.olderRange(floor, '1m', floor, false), null)
 const upgraded = history.olderRange(floor, '1d', floor, true)
 assert.ok(upgraded.from < floor)
+assert.equal(upgraded.to - upgraded.from, history.MAX_HISTORY_REQUEST_MS)
 
 assert.equal(history.canRequestOlder(floor, floor, false, 1), false)
 assert.equal(history.canRequestOlder(floor, floor, true, 1), true)

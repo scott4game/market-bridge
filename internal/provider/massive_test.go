@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -356,12 +357,15 @@ func TestMassiveStockPlanHistoryWindows(t *testing.T) {
 func TestMassiveStocksStarterClampsHistoryToFiveYears(t *testing.T) {
 	location, _ := time.LoadLocation("America/New_York")
 	want, _ := massiveStockHistoryStart("stocks_starter", time.Now(), time.UTC)
+	var ranges [][2]time.Time
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(r.URL.Path, "/")
-		got, err := time.ParseDuration(parts[len(parts)-2] + "ms")
-		if err != nil || got.Milliseconds() != want.UnixMilli() {
-			t.Fatalf("path=%s got=%v err=%v want=%v", r.URL.Path, got, err, want)
+		fromMillis, fromErr := strconv.ParseInt(parts[len(parts)-2], 10, 64)
+		toMillis, toErr := strconv.ParseInt(parts[len(parts)-1], 10, 64)
+		if fromErr != nil || toErr != nil {
+			t.Fatalf("path=%s from_err=%v to_err=%v", r.URL.Path, fromErr, toErr)
 		}
+		ranges = append(ranges, [2]time.Time{time.UnixMilli(fromMillis), time.UnixMilli(toMillis + 1)})
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "OK", "results": []map[string]any{}})
 	}))
 	defer server.Close()
@@ -372,6 +376,41 @@ func TestMassiveStocksStarterClampsHistoryToFiveYears(t *testing.T) {
 	}
 	if _, err := (&Massive{APIKey: "test", PlanName: "stocks_starter", BaseURL: server.URL, HTTP: server.Client()}).Bars(context.Background(), spec); err != nil {
 		t.Fatal(err)
+	}
+	if len(ranges) != 5 || !ranges[0][0].Equal(want) {
+		t.Fatalf("ranges=%v want_start=%v", ranges, want)
+	}
+	for _, item := range ranges {
+		if item[1].After(item[0].AddDate(1, 0, 0)) {
+			t.Fatalf("Massive request exceeds one year: %v", item)
+		}
+	}
+}
+
+func TestMassiveDividendFactorsUsePlanHistoryFloor(t *testing.T) {
+	location, _ := time.LoadLocation("America/New_York")
+	want, _ := massiveStockHistoryStart("stocks_starter", time.Now(), location)
+	var ranges [][2]time.Time
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		from, fromErr := time.ParseInLocation("2006-01-02", r.URL.Query().Get("ex_dividend_date.gte"), location)
+		to, toErr := time.ParseInLocation("2006-01-02", r.URL.Query().Get("ex_dividend_date.lte"), location)
+		if fromErr != nil || toErr != nil {
+			t.Fatalf("query=%s from_err=%v to_err=%v", r.URL.RawQuery, fromErr, toErr)
+		}
+		ranges = append(ranges, [2]time.Time{from, to})
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "OK", "results": []map[string]any{}})
+	}))
+	defer server.Close()
+	if _, err := (&Massive{APIKey: "test", PlanName: "stocks_starter", BaseURL: server.URL, HTTP: server.Client()}).ForwardAdjustmentFactors(context.Background(), "NVDA"); err != nil {
+		t.Fatal(err)
+	}
+	if len(ranges) != 5 || ranges[0][0].Format("2006-01-02") != want.In(location).Format("2006-01-02") {
+		t.Fatalf("ranges=%v want_start=%v", ranges, want)
+	}
+	for _, item := range ranges {
+		if item[1].After(item[0].AddDate(1, 0, -1)) {
+			t.Fatalf("Massive dividend request exceeds one year: %v", item)
+		}
 	}
 }
 

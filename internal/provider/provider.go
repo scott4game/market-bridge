@@ -302,99 +302,121 @@ func (m *Massive) fetchBars(ctx context.Context, spec market.DatasetSpec) ([]mar
 			bars = append(bars, part...)
 			continue
 		}
-		next := fmt.Sprintf("%s/v2/aggs/ticker/%s/range/%d/%s/%d/%d", baseURL, url.PathEscape(symbol), multiplier, span, symbolSpec.From.UnixMilli(), symbolSpec.To.Add(-time.Millisecond).UnixMilli())
-		visited := map[string]struct{}{}
-		pages := 0
-		for next != "" {
-			u, err := url.Parse(next)
-			if err != nil {
-				return nil, err
-			}
-			if u.Scheme != base.Scheme || !strings.EqualFold(u.Host, base.Host) {
-				return nil, fmt.Errorf("massive: rejected cross-origin next_url %q", next)
-			}
-			canonical := u.String()
-			if _, ok := visited[canonical]; ok {
-				return nil, fmt.Errorf("massive: pagination cycle at %q", canonical)
-			}
-			visited[canonical] = struct{}{}
-			pages++
-			if pages > 10_000 {
-				return nil, fmt.Errorf("massive: pagination exceeded 10000 pages")
-			}
-			q := u.Query()
-			q.Set("apiKey", m.APIKey)
-			q.Set("sort", "asc")
-			q.Set("limit", "50000")
-			q.Set("adjusted", strconv.FormatBool(spec.Adjustment == market.SplitAdjusted))
-			u.RawQuery = q.Encode()
-			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-			finish := func(int, error) {}
-			if m.Usage != nil {
-				finish = m.Usage.Begin("massive", "stocks_aggregates_custom_bars")
-			}
-			resp, err := client.Do(req)
-			if err != nil {
-				finish(0, err)
-				return nil, err
-			}
-			if resp.StatusCode/100 != 2 {
-				body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		requestSpecs := []market.DatasetSpec{symbolSpec}
+		if venue == market.VenueUS {
+			requestSpecs = splitMassiveStockRequests(symbolSpec)
+		}
+		for _, requestSpec := range requestSpecs {
+			next := fmt.Sprintf("%s/v2/aggs/ticker/%s/range/%d/%s/%d/%d", baseURL, url.PathEscape(symbol), multiplier, span, requestSpec.From.UnixMilli(), requestSpec.To.Add(-time.Millisecond).UnixMilli())
+			visited := map[string]struct{}{}
+			pages := 0
+			for next != "" {
+				u, err := url.Parse(next)
+				if err != nil {
+					return nil, err
+				}
+				if u.Scheme != base.Scheme || !strings.EqualFold(u.Host, base.Host) {
+					return nil, fmt.Errorf("massive: rejected cross-origin next_url %q", next)
+				}
+				canonical := u.String()
+				if _, ok := visited[canonical]; ok {
+					return nil, fmt.Errorf("massive: pagination cycle at %q", canonical)
+				}
+				visited[canonical] = struct{}{}
+				pages++
+				if pages > 10_000 {
+					return nil, fmt.Errorf("massive: pagination exceeded 10000 pages")
+				}
+				q := u.Query()
+				q.Set("apiKey", m.APIKey)
+				q.Set("sort", "asc")
+				q.Set("limit", "50000")
+				q.Set("adjusted", strconv.FormatBool(spec.Adjustment == market.SplitAdjusted))
+				u.RawQuery = q.Encode()
+				req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+				finish := func(int, error) {}
+				if m.Usage != nil {
+					finish = m.Usage.Begin("massive", "stocks_aggregates_custom_bars")
+				}
+				resp, err := client.Do(req)
+				if err != nil {
+					finish(0, err)
+					return nil, err
+				}
+				if resp.StatusCode/100 != 2 {
+					body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+					resp.Body.Close()
+					if readErr != nil {
+						finish(resp.StatusCode, readErr)
+						return nil, readErr
+					}
+					finish(resp.StatusCode, nil)
+					var failure struct {
+						Error string `json:"error"`
+					}
+					_ = json.Unmarshal(body, &failure)
+					message := strings.TrimSpace(string(body))
+					if failure.Error != "" {
+						message = failure.Error
+					}
+					if strings.HasPrefix(symbol, "I:") && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+						message += "; index access requires a separately enabled Massive Indices plan (Indices Basic is free)"
+					}
+					return nil, fmt.Errorf("massive: status %d: %s", resp.StatusCode, message)
+				}
+				var payload struct {
+					Status  string `json:"status"`
+					Error   string `json:"error"`
+					NextURL string `json:"next_url"`
+					Results []struct {
+						O float64 `json:"o"`
+						H float64 `json:"h"`
+						L float64 `json:"l"`
+						C float64 `json:"c"`
+						V float64 `json:"v"`
+						T int64   `json:"t"`
+					}
+				}
+				err = json.NewDecoder(resp.Body).Decode(&payload)
 				resp.Body.Close()
-				if readErr != nil {
-					finish(resp.StatusCode, readErr)
-					return nil, readErr
+				if err != nil {
+					finish(resp.StatusCode, err)
+					return nil, err
 				}
 				finish(resp.StatusCode, nil)
-				var failure struct {
-					Error string `json:"error"`
+				if payload.Error != "" {
+					message := payload.Error
+					if strings.HasPrefix(symbol, "I:") {
+						message += "; index access requires a separately enabled Massive Indices plan (Indices Basic is free)"
+					}
+					return nil, fmt.Errorf("massive: %s", message)
 				}
-				_ = json.Unmarshal(body, &failure)
-				message := strings.TrimSpace(string(body))
-				if failure.Error != "" {
-					message = failure.Error
+				for _, x := range payload.Results {
+					ts := time.UnixMilli(x.T).UTC()
+					bars = append(bars, market.Bar{Symbol: symbol, Timestamp: ts, Open: market.DecimalFromFloat(x.O), High: market.DecimalFromFloat(x.H), Low: market.DecimalFromFloat(x.L), Close: market.DecimalFromFloat(x.C), Volume: int64(x.V), Session: spec.Session, Source: "massive", Completed: true})
 				}
-				if strings.HasPrefix(symbol, "I:") && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
-					message += "; index access requires a separately enabled Massive Indices plan (Indices Basic is free)"
-				}
-				return nil, fmt.Errorf("massive: status %d: %s", resp.StatusCode, message)
+				next = payload.NextURL
 			}
-			var payload struct {
-				Status  string `json:"status"`
-				Error   string `json:"error"`
-				NextURL string `json:"next_url"`
-				Results []struct {
-					O float64 `json:"o"`
-					H float64 `json:"h"`
-					L float64 `json:"l"`
-					C float64 `json:"c"`
-					V float64 `json:"v"`
-					T int64   `json:"t"`
-				}
-			}
-			err = json.NewDecoder(resp.Body).Decode(&payload)
-			resp.Body.Close()
-			if err != nil {
-				finish(resp.StatusCode, err)
-				return nil, err
-			}
-			finish(resp.StatusCode, nil)
-			if payload.Error != "" {
-				message := payload.Error
-				if strings.HasPrefix(symbol, "I:") {
-					message += "; index access requires a separately enabled Massive Indices plan (Indices Basic is free)"
-				}
-				return nil, fmt.Errorf("massive: %s", message)
-			}
-			for _, x := range payload.Results {
-				ts := time.UnixMilli(x.T).UTC()
-				bars = append(bars, market.Bar{Symbol: symbol, Timestamp: ts, Open: market.DecimalFromFloat(x.O), High: market.DecimalFromFloat(x.H), Low: market.DecimalFromFloat(x.L), Close: market.DecimalFromFloat(x.C), Volume: int64(x.V), Session: spec.Session, Source: "massive", Completed: true})
-			}
-			next = payload.NextURL
 		}
 	}
 	market.SortBars(bars)
 	return bars, nil
+}
+
+func splitMassiveStockRequests(spec market.DatasetSpec) []market.DatasetSpec {
+	var requests []market.DatasetSpec
+	for from := spec.From; from.Before(spec.To); {
+		to := from.AddDate(1, 0, 0)
+		if to.After(spec.To) {
+			to = spec.To
+		}
+		request := spec
+		request.From = from
+		request.To = to
+		requests = append(requests, request)
+		from = to
+	}
+	return requests
 }
 
 func massiveStockHistoryStart(planName string, now time.Time, fallbackLocation *time.Location) (time.Time, bool) {
@@ -546,98 +568,18 @@ func (m *Massive) ForwardAdjustmentFactors(ctx context.Context, symbol string) (
 	if err != nil {
 		return market.ForwardFactors{}, fmt.Errorf("invalid Massive base URL: %w", err)
 	}
-	next := baseURL + "/stocks/v1/dividends"
-	visited := map[string]struct{}{}
+	oldest, hasHistoryLimit := massiveStockHistoryStart(m.PlanName, now, location)
 	var factors []market.ForwardFactor
-	pages := 0
-	for next != "" {
-		u, parseErr := url.Parse(next)
-		if parseErr != nil {
-			return market.ForwardFactors{}, parseErr
+	dateRanges := [][2]time.Time{{time.Time{}, now}}
+	if hasHistoryLimit {
+		dateRanges = splitMassiveDividendRequests(oldest.In(location), now)
+	}
+	for _, dateRange := range dateRanges {
+		part, fetchErr := m.fetchDividendFactors(ctx, client, base, baseURL, normalized, dateRange[0], dateRange[1])
+		if fetchErr != nil {
+			return market.ForwardFactors{}, fetchErr
 		}
-		if u.Scheme != base.Scheme || !strings.EqualFold(u.Host, base.Host) {
-			return market.ForwardFactors{}, fmt.Errorf("massive dividends: rejected cross-origin next_url %q", next)
-		}
-		if _, ok := visited[u.String()]; ok {
-			return market.ForwardFactors{}, fmt.Errorf("massive dividends: pagination cycle")
-		}
-		visited[u.String()] = struct{}{}
-		pages++
-		if pages > 10_000 {
-			return market.ForwardFactors{}, fmt.Errorf("massive dividends: pagination exceeded 10000 pages")
-		}
-		q := u.Query()
-		q.Set("apiKey", m.APIKey)
-		q.Set("ticker", normalized)
-		q.Set("limit", "5000")
-		q.Set("sort", "ex_dividend_date.asc")
-		q.Set("ex_dividend_date.lte", now.Format("2006-01-02"))
-		u.RawQuery = q.Encode()
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-		finish := func(int, error) {}
-		if m.Usage != nil {
-			finish = m.Usage.Begin("massive", "stocks_dividends")
-		}
-		resp, requestErr := client.Do(req)
-		if requestErr != nil {
-			finish(0, requestErr)
-			return market.ForwardFactors{}, requestErr
-		}
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-		resp.Body.Close()
-		if readErr != nil {
-			finish(resp.StatusCode, readErr)
-			return market.ForwardFactors{}, readErr
-		}
-		if resp.StatusCode/100 != 2 {
-			finish(resp.StatusCode, nil)
-			var failure struct {
-				Error string `json:"error"`
-			}
-			_ = json.Unmarshal(body, &failure)
-			message := strings.TrimSpace(string(body))
-			if failure.Error != "" {
-				message = failure.Error
-			}
-			return market.ForwardFactors{}, fmt.Errorf("massive dividends: status %d: %s", resp.StatusCode, message)
-		}
-		var payload struct {
-			Status  string `json:"status"`
-			Error   string `json:"error"`
-			NextURL string `json:"next_url"`
-			Results []struct {
-				Date   string       `json:"ex_dividend_date"`
-				Factor *json.Number `json:"historical_adjustment_factor"`
-			} `json:"results"`
-		}
-		decoder := json.NewDecoder(bytes.NewReader(body))
-		decoder.UseNumber()
-		decodeErr := decoder.Decode(&payload)
-		if decodeErr != nil {
-			finish(resp.StatusCode, decodeErr)
-			return market.ForwardFactors{}, decodeErr
-		}
-		if !strings.EqualFold(payload.Status, "OK") || strings.TrimSpace(payload.Error) != "" {
-			message := strings.TrimSpace(payload.Error)
-			if message == "" {
-				message = fmt.Sprintf("unexpected status %q", payload.Status)
-			}
-			logicalErr := fmt.Errorf("massive dividends: %s", message)
-			finish(resp.StatusCode, logicalErr)
-			return market.ForwardFactors{}, logicalErr
-		}
-		finish(resp.StatusCode, nil)
-		for _, item := range payload.Results {
-			if item.Date == "" || item.Factor == nil {
-				return market.ForwardFactors{}, fmt.Errorf("massive dividends returned an incomplete adjustment factor for %s", normalized)
-			}
-			factor, factorErr := market.DecimalFromString(item.Factor.String())
-			if factorErr != nil {
-				return market.ForwardFactors{}, fmt.Errorf("massive dividends factor for %s: %w", normalized, factorErr)
-			}
-			factors = append(factors, market.ForwardFactor{EffectiveDate: item.Date, Factor: factor})
-		}
-		next = payload.NextURL
+		factors = append(factors, part...)
 	}
 	curve := market.ForwardFactors{Symbol: normalized, Mode: market.ForwardAdjusted, AsOf: now.Format("2006-01-02"), Factors: factors}
 	curve, err = market.AccumulateForwardFactors(curve)
@@ -655,6 +597,117 @@ func (m *Massive) ForwardAdjustmentFactors(ctx context.Context, symbol string) (
 	m.factorCache[normalized] = massiveFactorCache{curve: curve, expiresAt: expiresAt}
 	m.factorMu.Unlock()
 	return curve, nil
+}
+
+func splitMassiveDividendRequests(from, to time.Time) [][2]time.Time {
+	var requests [][2]time.Time
+	for start := from; !start.After(to); {
+		end := start.AddDate(1, 0, -1)
+		if end.After(to) {
+			end = to
+		}
+		requests = append(requests, [2]time.Time{start, end})
+		start = end.AddDate(0, 0, 1)
+	}
+	return requests
+}
+
+func (m *Massive) fetchDividendFactors(ctx context.Context, client *http.Client, base *url.URL, baseURL, symbol string, from, to time.Time) ([]market.ForwardFactor, error) {
+	next := baseURL + "/stocks/v1/dividends"
+	visited := map[string]struct{}{}
+	var factors []market.ForwardFactor
+	for pages := 1; next != ""; pages++ {
+		if pages > 10_000 {
+			return nil, fmt.Errorf("massive dividends: pagination exceeded 10000 pages")
+		}
+		u, parseErr := url.Parse(next)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		if u.Scheme != base.Scheme || !strings.EqualFold(u.Host, base.Host) {
+			return nil, fmt.Errorf("massive dividends: rejected cross-origin next_url %q", next)
+		}
+		if _, ok := visited[u.String()]; ok {
+			return nil, fmt.Errorf("massive dividends: pagination cycle")
+		}
+		visited[u.String()] = struct{}{}
+		q := u.Query()
+		q.Set("apiKey", m.APIKey)
+		q.Set("ticker", symbol)
+		q.Set("limit", "5000")
+		q.Set("sort", "ex_dividend_date.asc")
+		q.Set("ex_dividend_date.lte", to.Format("2006-01-02"))
+		if !from.IsZero() {
+			q.Set("ex_dividend_date.gte", from.Format("2006-01-02"))
+		}
+		u.RawQuery = q.Encode()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+		finish := func(int, error) {}
+		if m.Usage != nil {
+			finish = m.Usage.Begin("massive", "stocks_dividends")
+		}
+		resp, requestErr := client.Do(req)
+		if requestErr != nil {
+			finish(0, requestErr)
+			return nil, requestErr
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+		resp.Body.Close()
+		if readErr != nil {
+			finish(resp.StatusCode, readErr)
+			return nil, readErr
+		}
+		if resp.StatusCode/100 != 2 {
+			finish(resp.StatusCode, nil)
+			var failure struct {
+				Error string `json:"error"`
+			}
+			_ = json.Unmarshal(body, &failure)
+			message := strings.TrimSpace(string(body))
+			if failure.Error != "" {
+				message = failure.Error
+			}
+			return nil, fmt.Errorf("massive dividends: status %d: %s", resp.StatusCode, message)
+		}
+		var payload struct {
+			Status  string `json:"status"`
+			Error   string `json:"error"`
+			NextURL string `json:"next_url"`
+			Results []struct {
+				Date   string       `json:"ex_dividend_date"`
+				Factor *json.Number `json:"historical_adjustment_factor"`
+			} `json:"results"`
+		}
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		decoder.UseNumber()
+		decodeErr := decoder.Decode(&payload)
+		if decodeErr != nil {
+			finish(resp.StatusCode, decodeErr)
+			return nil, decodeErr
+		}
+		if !strings.EqualFold(payload.Status, "OK") || strings.TrimSpace(payload.Error) != "" {
+			message := strings.TrimSpace(payload.Error)
+			if message == "" {
+				message = fmt.Sprintf("unexpected status %q", payload.Status)
+			}
+			logicalErr := fmt.Errorf("massive dividends: %s", message)
+			finish(resp.StatusCode, logicalErr)
+			return nil, logicalErr
+		}
+		finish(resp.StatusCode, nil)
+		for _, item := range payload.Results {
+			if item.Date == "" || item.Factor == nil {
+				return nil, fmt.Errorf("massive dividends returned an incomplete adjustment factor for %s", symbol)
+			}
+			factor, factorErr := market.DecimalFromString(item.Factor.String())
+			if factorErr != nil {
+				return nil, fmt.Errorf("massive dividends factor for %s: %w", symbol, factorErr)
+			}
+			factors = append(factors, market.ForwardFactor{EffectiveDate: item.Date, Factor: factor})
+		}
+		next = payload.NextURL
+	}
+	return factors, nil
 }
 
 func massiveInterval(v string) (int, string, error) {

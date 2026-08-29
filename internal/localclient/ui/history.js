@@ -4,6 +4,7 @@
   if (root) root.marketHistory = api
 })(typeof window !== 'undefined' ? window : globalThis, function () {
   const MAX_BARS_PER_REQUEST = 5000
+  const MAX_HISTORY_REQUEST_MS = 366 * 24 * 60 * 60 * 1000
   const INTERVAL_MS = {
     '1m': 60 * 1000,
     '3m': 3 * 60 * 1000,
@@ -28,7 +29,7 @@
   }
 
   function chunkSpan(interval) {
-    return (INTERVAL_MS[interval] || INTERVAL_MS['1d']) * MAX_BARS_PER_REQUEST
+    return Math.min((INTERVAL_MS[interval] || INTERVAL_MS['1d']) * MAX_BARS_PER_REQUEST, MAX_HISTORY_REQUEST_MS)
   }
 
   function initialRange(to, interval) {
@@ -74,6 +75,7 @@
 
   return {
     MAX_BARS_PER_REQUEST,
+    MAX_HISTORY_REQUEST_MS,
     twoYearFloor,
     chunkSpan,
     initialRange,
