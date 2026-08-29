@@ -377,13 +377,52 @@ func TestMassiveStocksStarterClampsHistoryToFiveYears(t *testing.T) {
 	if _, err := (&Massive{APIKey: "test", PlanName: "stocks_starter", BaseURL: server.URL, HTTP: server.Client()}).Bars(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
-	if len(ranges) != 5 || !ranges[0][0].Equal(want) {
+	if len(ranges) != 5 || !ranges[len(ranges)-1][0].Equal(want) {
 		t.Fatalf("ranges=%v want_start=%v", ranges, want)
+	}
+	for index := 1; index < len(ranges); index++ {
+		if !ranges[index][0].Before(ranges[index-1][0]) {
+			t.Fatalf("Massive ranges must be fetched newest first: %v", ranges)
+		}
 	}
 	for _, item := range ranges {
 		if item[1].After(item[0].AddDate(1, 0, 0)) {
 			t.Fatalf("Massive request exceeds one year: %v", item)
 		}
+	}
+}
+
+func TestMassiveReturnsRecentBarsWhenOlderRangeIsForbidden(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls > 1 {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"status":"NOT_AUTHORIZED","message":"timeframe not included"}`))
+			return
+		}
+		parts := strings.Split(r.URL.Path, "/")
+		fromMillis, err := strconv.ParseInt(parts[len(parts)-2], 10, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":  "OK",
+			"results": []map[string]any{{"o": 100, "h": 101, "l": 99, "c": 100, "v": 10, "t": fromMillis}},
+		})
+	}))
+	defer server.Close()
+	now := time.Now().UTC().Truncate(time.Hour)
+	spec := market.DatasetSpec{
+		Symbols: []string{"AAPL"}, Interval: "1d", From: now.AddDate(-2, 0, 0), To: now,
+		Session: market.RegularSession, Adjustment: market.SplitAdjusted,
+	}
+	bars, err := (&Massive{APIKey: "test", PlanName: "custom", BaseURL: server.URL, HTTP: server.Client()}).Bars(context.Background(), spec)
+	if err == nil || !strings.Contains(err.Error(), "status 403") {
+		t.Fatalf("err=%v", err)
+	}
+	if calls != 2 || len(bars) != 1 || bars[0].Timestamp.Before(now.AddDate(-1, 0, -1)) {
+		t.Fatalf("calls=%d bars=%v", calls, bars)
 	}
 }
 

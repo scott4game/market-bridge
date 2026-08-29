@@ -687,6 +687,7 @@ chart.setDataLoader({
       $('source').textContent = `缓存：${data.source}`
       $('count').textContent = `Bars：${lastBars.length}`
       $('updated').textContent = `更新：${new Date().toLocaleTimeString()}`
+      if (data.warning) $('error').textContent = `部分历史数据加载失败，已展示可用数据：${data.warning}`
       if (type === 'init') {
         setChartEmptyState(bars.length ? '' : '暂无 K 线数据')
         if (bars.length) setTimeout(() => chart.scrollToRealTime(), 0)

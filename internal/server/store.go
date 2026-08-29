@@ -225,7 +225,7 @@ func (s *Store) providerBarsCached(ctx context.Context, spec market.DatasetSpec,
 	}
 	bars, err := provider.BarsWithForwardFactors(ctx, s.provider, spec, curves)
 	if err != nil {
-		return nil, false, err
+		return bars, false, err
 	}
 	if bars == nil {
 		bars = []market.Bar{}

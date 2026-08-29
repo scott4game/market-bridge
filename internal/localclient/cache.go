@@ -242,6 +242,9 @@ func (c *Cache) legacyBars(ctx context.Context, spec market.DatasetSpec, allowLo
 	if !ok {
 		m, err = c.ensureRemote(ctx, key, spec)
 		if err != nil {
+			if bars, source, historyErr := c.remoteHistoryBars(ctx, spec, false); len(bars) > 0 {
+				return bars, source, historyErr
+			}
 			return nil, "", err
 		}
 		source = "go-server"
@@ -253,6 +256,9 @@ func (c *Cache) legacyBars(ctx context.Context, spec market.DatasetSpec, allowLo
 		releaseGuard()
 		m, err = c.ensureRemote(ctx, key, spec)
 		if err != nil {
+			if bars, source, historyErr := c.remoteHistoryBars(ctx, spec, false); len(bars) > 0 {
+				return bars, source, historyErr
+			}
 			return nil, "", err
 		}
 		datasetLock, releaseGuard = c.datasetLock(m.DatasetID)
@@ -283,15 +289,18 @@ func (c *Cache) routedBars(ctx context.Context, spec market.DatasetSpec, capabil
 	cutoff := time.Now().UTC().Add(-c.clickhouseRetention())
 	var bars []market.Bar
 	var sources []string
+	var warnings error
 	if spec.From.Before(cutoff) {
 		archive := spec
 		archive.To = minTime(spec.To, cutoff)
 		part, source, err := c.archiveBars(ctx, archive, capability.DataVersion, capability.Redis.Enabled)
-		if err != nil {
-			return nil, "", err
-		}
 		bars = append(bars, part...)
-		sources = append(sources, source)
+		if source != "" {
+			sources = append(sources, source)
+		}
+		if err != nil {
+			warnings = errors.Join(warnings, err)
+		}
 	}
 	if spec.To.After(cutoff) {
 		recent := spec
@@ -300,17 +309,22 @@ func (c *Cache) routedBars(ctx context.Context, spec market.DatasetSpec, capabil
 		}
 		part, source, err := c.recentBars(ctx, recent, capability)
 		if err != nil {
-			return nil, "", err
+			warnings = errors.Join(warnings, err)
+			bars = append(bars, part...)
+			if source != "" {
+				sources = append(sources, source)
+			}
+		} else {
+			bars = append(bars, part...)
+			sources = append(sources, source)
 		}
-		bars = append(bars, part...)
-		sources = append(sources, source)
 	}
 	market.SortBars(bars)
 	bars = deduplicateMarketBars(bars)
 	if bars == nil {
 		bars = []market.Bar{}
 	}
-	return bars, strings.Join(sources, "+"), nil
+	return bars, strings.Join(sources, "+"), warnings
 }
 
 func (c *Cache) recentBars(ctx context.Context, spec market.DatasetSpec, capability StorageCapability) ([]market.Bar, string, error) {
@@ -341,7 +355,7 @@ func (c *Cache) recentBars(ctx context.Context, spec market.DatasetSpec, capabil
 		}
 		bars, source, err := c.remoteHistoryBars(ctx, spec, false)
 		if err != nil {
-			return nil, "", err
+			return bars, source, err
 		}
 		if allowLocalRedis {
 			c.setRedisBars(ctx, "recent:"+key, bars, c.recentRedisTTL(bars))
@@ -351,7 +365,7 @@ func (c *Cache) recentBars(ctx context.Context, spec market.DatasetSpec, capabil
 	if c.clickhouse == nil {
 		bars, source, err := c.remoteHistoryBars(ctx, spec, false)
 		if err != nil {
-			return nil, "", err
+			return bars, source, err
 		}
 		if allowLocalRedis {
 			c.setRedisBars(ctx, "recent:"+key, bars, c.recentRedisTTL(bars))
@@ -368,15 +382,19 @@ func (c *Cache) recentBars(ctx context.Context, spec market.DatasetSpec, capabil
 		return nil, "", err
 	}
 	fetched := false
+	var providerWarning error
 	for _, gap := range coverage.GroupMissing(missing) {
 		part, _, err := c.remoteHistoryBars(ctx, gap, false)
 		if err != nil {
-			return nil, "", err
+			providerWarning = errors.Join(providerWarning, err)
 		}
 		if len(part) > 0 {
 			if err := c.clickhouse.WriteBars(ctx, gap.Interval, gap.Adjustment, part, uint64(time.Now().UnixMilli())); err != nil {
 				return nil, "", err
 			}
+		}
+		if err != nil {
+			continue
 		}
 		ttl := c.cfg.EmptyCoverageTTL
 		if ttl <= 0 {
@@ -404,7 +422,7 @@ func (c *Cache) recentBars(ctx context.Context, spec market.DatasetSpec, capabil
 	if allowLocalRedis {
 		c.setRedisBars(ctx, "recent:"+key, bars, c.recentRedisTTL(bars))
 	}
-	return bars, source, nil
+	return bars, source, providerWarning
 }
 
 func (c *Cache) recentRedisTTL(bars []market.Bar) time.Duration {
@@ -446,7 +464,7 @@ func (c *Cache) archiveBars(ctx context.Context, spec market.DatasetSpec, dataVe
 			var source string
 			cached, source, err = c.remoteHistoryBars(ctx, chunk, true)
 			if err != nil {
-				return nil, "", err
+				return all, "provider-partial", err
 			}
 			ttl := c.cfg.RedisTTL
 			if len(cached) == 0 && (ttl <= 0 || ttl > time.Hour) {
@@ -557,9 +575,10 @@ func (c *Cache) remoteHistoryBars(ctx context.Context, spec market.DatasetSpec, 
 	}
 	defer resp.Body.Close()
 	var payload struct {
-		Source string       `json:"source"`
-		Bars   []market.Bar `json:"bars"`
-		Error  string       `json:"error"`
+		Source  string       `json:"source"`
+		Bars    []market.Bar `json:"bars"`
+		Error   string       `json:"error"`
+		Warning string       `json:"warning"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return nil, "", err
@@ -569,6 +588,9 @@ func (c *Cache) remoteHistoryBars(ctx context.Context, spec market.DatasetSpec, 
 	}
 	if payload.Bars == nil {
 		payload.Bars = []market.Bar{}
+	}
+	if payload.Warning != "" {
+		return payload.Bars, payload.Source, errors.New(payload.Warning)
 	}
 	return payload.Bars, payload.Source, nil
 }

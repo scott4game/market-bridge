@@ -20,7 +20,7 @@ assert.equal(upgraded.to - upgraded.from, history.MAX_HISTORY_REQUEST_MS)
 assert.equal(history.canRequestOlder(floor, floor, false, 1), false)
 assert.equal(history.canRequestOlder(floor, floor, true, 1), true)
 assert.equal(history.canRequestOlder(floor, floor, true, 0), false)
-assert.equal(history.allowHistoryBeyondTwoYears('AAPL', { massive: { state: 'enabled', plan: 'stocks_basic' } }), false)
+assert.equal(history.allowHistoryBeyondTwoYears('AAPL', { massive: { state: 'enabled', plan: 'stocks_basic' } }), true)
 assert.equal(history.allowHistoryBeyondTwoYears('AAPL', { massive: { state: 'enabled', plan: 'stocks_advanced' } }), true)
 assert.equal(history.allowHistoryBeyondTwoYears('700.HK', null), true)
 

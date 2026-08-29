@@ -234,6 +234,11 @@ func (h *HTTP) ensure(w http.ResponseWriter, r *http.Request) {
 	}
 	bars, source, err := h.Cache.Bars(r.Context(), spec)
 	if err != nil {
+		if len(bars) > 0 {
+			w.Header().Set("X-Cache-Source", source)
+			jsonResponse(w, 200, map[string]any{"source": source, "count": len(bars), "bars": bars, "warning": err.Error()})
+			return
+		}
 		jsonResponse(w, 502, map[string]string{"error": err.Error()})
 		return
 	}
@@ -255,6 +260,11 @@ func (h *HTTP) bars(w http.ResponseWriter, r *http.Request) {
 	spec := market.DatasetSpec{Symbols: []string{r.PathValue("symbol")}, Interval: q.Get("interval"), From: from, To: to, Session: market.Session(q.Get("session")), Adjustment: market.AdjustmentMode(q.Get("adjustment"))}
 	bars, source, err := h.Cache.Bars(r.Context(), spec)
 	if err != nil {
+		if len(bars) > 0 {
+			w.Header().Set("X-Cache-Source", source)
+			jsonResponse(w, 200, map[string]any{"source": source, "bars": bars, "warning": err.Error()})
+			return
+		}
 		jsonResponse(w, 502, map[string]string{"error": err.Error()})
 		return
 	}

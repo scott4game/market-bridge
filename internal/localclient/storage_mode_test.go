@@ -5,11 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"net/http/httptest"
 
 	"github.com/scott4game/market-bridge/internal/config"
 	"github.com/scott4game/market-bridge/internal/localclient"
@@ -218,5 +218,41 @@ func TestRemoteRedisRoutesHistoryAndDisablesLocalRedis(t *testing.T) {
 	status := cache.StorageStatus(context.Background())
 	if status["redis_mode"] != "remote_redis" || status["local_redis_enabled"] != true || status["local_redis_active"] != false {
 		t.Fatalf("status=%#v", status)
+	}
+}
+
+func TestLegacyDatasetFailureFallsBackToPartialHistory(t *testing.T) {
+	from := time.Now().UTC().AddDate(-1, 0, 0).Truncate(24 * time.Hour)
+	price := market.DecimalFromFloat(100)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/storage/capabilities":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"clickhouse": map[string]any{"enabled": false, "healthy": false, "error": ""},
+				"redis":      map[string]any{"enabled": false, "healthy": false, "error": ""},
+			})
+		case "/v1/datasets":
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "older range forbidden"})
+		case "/v1/history/bars":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"source":  "provider-partial",
+				"bars":    []market.Bar{{Symbol: "AAPL", Timestamp: from, Open: price, High: price, Low: price, Close: price, Session: market.RegularSession, Source: "massive", Completed: true}},
+				"warning": "older range forbidden",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+	cache, err := localclient.NewCache(config.Client{CacheDir: t.TempDir(), ServerURL: upstream.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cache.Close()
+	spec := market.DatasetSpec{Symbols: []string{"AAPL"}, Interval: "1d", From: from, To: from.AddDate(1, 0, 0), Session: market.RegularSession, Adjustment: market.SplitAdjusted}
+	bars, source, warning := cache.Bars(context.Background(), spec)
+	if len(bars) != 1 || source != "provider-partial" || warning == nil || !strings.Contains(warning.Error(), "older range forbidden") {
+		t.Fatalf("bars=%v source=%s warning=%v", bars, source, warning)
 	}
 }

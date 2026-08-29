@@ -277,6 +277,10 @@ func (h *HTTP) historyBars(w http.ResponseWriter, r *http.Request) {
 	if body.ProviderOnly || !canonical || h.HistoryCatalog == nil {
 		bars, cached, err := h.Store.ProviderBarsCached(r.Context(), spec)
 		if err != nil {
+			if len(bars) > 0 {
+				writeJSON(w, 200, map[string]any{"source": "provider-partial", "bars": nonNilBars(bars), "warning": err.Error()})
+				return
+			}
 			writeProviderError(w, err)
 			return
 		}
@@ -322,11 +326,19 @@ func (h *HTTP) historyBars(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fetched := false
+	var providerWarning error
 	for _, gap := range coverage.GroupMissing(missing) {
 		bars, err := h.Store.ProviderBars(r.Context(), gap)
 		if err != nil {
-			writeProviderError(w, err)
-			return
+			providerWarning = errors.Join(providerWarning, err)
+			if len(bars) > 0 {
+				if persistErr := h.persistHistory(r.Context(), gap, bars, coverageVersion); persistErr != nil {
+					writeJSON(w, 503, map[string]string{"error": persistErr.Error()})
+					return
+				}
+				fetched = true
+			}
+			continue
 		}
 		if err := h.persistHistory(r.Context(), gap, bars, coverageVersion); err != nil {
 			writeJSON(w, 503, map[string]string{"error": err.Error()})
@@ -359,7 +371,15 @@ func (h *HTTP) historyBars(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, 200, map[string]any{"source": source, "bars": nonNilBars(bars)})
+	payload := map[string]any{"source": source, "bars": nonNilBars(bars)}
+	if providerWarning != nil {
+		if len(bars) == 0 {
+			writeProviderError(w, providerWarning)
+			return
+		}
+		payload["warning"] = providerWarning.Error()
+	}
+	writeJSON(w, 200, payload)
 }
 
 func writeProviderError(w http.ResponseWriter, err error) {

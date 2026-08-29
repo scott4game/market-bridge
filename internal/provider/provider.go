@@ -212,7 +212,8 @@ func (m *Massive) bars(ctx context.Context, spec market.DatasetSpec, pinnedCurve
 		fetchSpec.From = startOfUSCalendarPeriod(spec.From, target, location)
 	}
 	bars, err := m.fetchBars(ctx, fetchSpec)
-	if err != nil {
+	fetchErr := err
+	if err != nil && len(bars) == 0 {
 		return nil, err
 	}
 	if len(bars) == 0 {
@@ -257,7 +258,7 @@ func (m *Massive) bars(ctx context.Context, spec market.DatasetSpec, pinnedCurve
 	}
 	bars = filterRequestedRange(bars, spec.From, spec.To)
 	market.SortBars(bars)
-	return bars, nil
+	return bars, fetchErr
 }
 
 func (m *Massive) fetchBars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar, error) {
@@ -306,26 +307,29 @@ func (m *Massive) fetchBars(ctx context.Context, spec market.DatasetSpec) ([]mar
 		if venue == market.VenueUS {
 			requestSpecs = splitMassiveStockRequests(symbolSpec)
 		}
-		for _, requestSpec := range requestSpecs {
+		// Fetch newest ranges first. If an older range is outside the account's
+		// entitlement, callers can still render the recent bars already fetched.
+		for requestIndex := len(requestSpecs) - 1; requestIndex >= 0; requestIndex-- {
+			requestSpec := requestSpecs[requestIndex]
 			next := fmt.Sprintf("%s/v2/aggs/ticker/%s/range/%d/%s/%d/%d", baseURL, url.PathEscape(symbol), multiplier, span, requestSpec.From.UnixMilli(), requestSpec.To.Add(-time.Millisecond).UnixMilli())
 			visited := map[string]struct{}{}
 			pages := 0
 			for next != "" {
 				u, err := url.Parse(next)
 				if err != nil {
-					return nil, err
+					return bars, err
 				}
 				if u.Scheme != base.Scheme || !strings.EqualFold(u.Host, base.Host) {
-					return nil, fmt.Errorf("massive: rejected cross-origin next_url %q", next)
+					return bars, fmt.Errorf("massive: rejected cross-origin next_url %q", next)
 				}
 				canonical := u.String()
 				if _, ok := visited[canonical]; ok {
-					return nil, fmt.Errorf("massive: pagination cycle at %q", canonical)
+					return bars, fmt.Errorf("massive: pagination cycle at %q", canonical)
 				}
 				visited[canonical] = struct{}{}
 				pages++
 				if pages > 10_000 {
-					return nil, fmt.Errorf("massive: pagination exceeded 10000 pages")
+					return bars, fmt.Errorf("massive: pagination exceeded 10000 pages")
 				}
 				q := u.Query()
 				q.Set("apiKey", m.APIKey)
@@ -341,14 +345,14 @@ func (m *Massive) fetchBars(ctx context.Context, spec market.DatasetSpec) ([]mar
 				resp, err := client.Do(req)
 				if err != nil {
 					finish(0, err)
-					return nil, err
+					return bars, err
 				}
 				if resp.StatusCode/100 != 2 {
 					body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
 					resp.Body.Close()
 					if readErr != nil {
 						finish(resp.StatusCode, readErr)
-						return nil, readErr
+						return bars, readErr
 					}
 					finish(resp.StatusCode, nil)
 					var failure struct {
@@ -362,7 +366,7 @@ func (m *Massive) fetchBars(ctx context.Context, spec market.DatasetSpec) ([]mar
 					if strings.HasPrefix(symbol, "I:") && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
 						message += "; index access requires a separately enabled Massive Indices plan (Indices Basic is free)"
 					}
-					return nil, fmt.Errorf("massive: status %d: %s", resp.StatusCode, message)
+					return bars, fmt.Errorf("massive: status %d: %s", resp.StatusCode, message)
 				}
 				var payload struct {
 					Status  string `json:"status"`
@@ -381,7 +385,7 @@ func (m *Massive) fetchBars(ctx context.Context, spec market.DatasetSpec) ([]mar
 				resp.Body.Close()
 				if err != nil {
 					finish(resp.StatusCode, err)
-					return nil, err
+					return bars, err
 				}
 				finish(resp.StatusCode, nil)
 				if payload.Error != "" {
@@ -389,7 +393,7 @@ func (m *Massive) fetchBars(ctx context.Context, spec market.DatasetSpec) ([]mar
 					if strings.HasPrefix(symbol, "I:") {
 						message += "; index access requires a separately enabled Massive Indices plan (Indices Basic is free)"
 					}
-					return nil, fmt.Errorf("massive: %s", message)
+					return bars, fmt.Errorf("massive: %s", message)
 				}
 				for _, x := range payload.Results {
 					ts := time.UnixMilli(x.T).UTC()

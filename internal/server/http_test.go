@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -32,6 +33,15 @@ func (f *fakeRecentTrades) Trades(_ context.Context, symbol string, count int32)
 type factorProvider struct{ version string }
 
 type securityProvider struct{}
+
+type partialHistoryProvider struct{}
+
+func (partialHistoryProvider) Name() string        { return "partial-test" }
+func (partialHistoryProvider) DataVersion() string { return "partial-v1" }
+func (partialHistoryProvider) Bars(_ context.Context, spec market.DatasetSpec) ([]market.Bar, error) {
+	price := market.DecimalFromFloat(100)
+	return []market.Bar{{Symbol: spec.Symbols[0], Timestamp: spec.From, Open: price, High: price, Low: price, Close: price, Session: spec.Session, Source: "partial-test", Completed: true}}, fmt.Errorf("older history forbidden")
+}
 
 func (securityProvider) Name() string        { return "security-test" }
 func (securityProvider) DataVersion() string { return "security-v1" }
@@ -225,6 +235,19 @@ func TestDisabledHistoricalProviderReturnsServiceUnavailable(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	(&HTTP{Store: store}).historyBars(recorder, httptest.NewRequest(http.MethodPost, "/v1/history/bars", strings.NewReader(body)))
 	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "GO_SERVER_HK_PROVIDER=longbridge") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestHistoryReturnsPartialBarsWithWarning(t *testing.T) {
+	store, err := NewStore(t.TempDir(), partialHistoryProvider{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"spec":{"symbols":["AAPL"],"interval":"1d","from":"2026-08-01T00:00:00Z","to":"2026-08-02T00:00:00Z","session":"regular","adjustment":"split_adjusted"}}`
+	recorder := httptest.NewRecorder()
+	(&HTTP{Store: store}).historyBars(recorder, httptest.NewRequest(http.MethodPost, "/v1/history/bars", strings.NewReader(body)))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"bars":[{`) || !strings.Contains(recorder.Body.String(), `"warning":"older history forbidden"`) {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }

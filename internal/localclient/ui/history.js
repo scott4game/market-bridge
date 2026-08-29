@@ -66,11 +66,9 @@
   }
 
   function allowHistoryBeyondTwoYears(symbol, providers) {
-    const upper = String(symbol || '').toUpperCase()
-	if (upper.startsWith('I:') || upper.endsWith('.HK') || upper.endsWith('.SH') || upper.endsWith('.SZ') || upper.endsWith('.BINANCE')) return true
-	const massive = providers && providers.massive
-	const plan = String((massive && massive.plan) || '').toLowerCase()
-	return Boolean(massive && massive.state === 'enabled' && plan && plan !== 'stocks_basic')
+    // Always let the cache layer look farther back. It can return locally
+    // retained bars even when the upstream plan no longer permits refetching.
+    return true
   }
 
   return {
