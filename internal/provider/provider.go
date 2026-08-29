@@ -199,13 +199,6 @@ func (m *Massive) bars(ctx context.Context, spec market.DatasetSpec, pinnedCurve
 	if err != nil {
 		return nil, fmt.Errorf("load New York timezone: %w", err)
 	}
-	if market.IsUSForwardAdjusted(spec) && strings.EqualFold(m.PlanName, "stocks_basic") {
-		now := time.Now().In(location)
-		oldest := time.Date(now.Year()-2, now.Month(), now.Day(), 0, 0, 0, 0, location)
-		if spec.From.In(location).Before(oldest) {
-			return nil, fmt.Errorf("Massive Stocks Basic forward_adjusted history is limited to the most recent two years; upgrade the Massive plan or use split_adjusted")
-		}
-	}
 	target := spec.Interval
 	fetchSpec := spec
 	if market.IsUSForwardAdjusted(spec) {
@@ -221,6 +214,9 @@ func (m *Massive) bars(ctx context.Context, spec market.DatasetSpec, pinnedCurve
 	bars, err := m.fetchBars(ctx, fetchSpec)
 	if err != nil {
 		return nil, err
+	}
+	if len(bars) == 0 {
+		return bars, nil
 	}
 	if market.IsUSForwardAdjusted(spec) {
 		curves := make(map[string]market.ForwardFactors, len(spec.Symbols))
@@ -283,15 +279,30 @@ func (m *Massive) fetchBars(ctx context.Context, spec market.DatasetSpec) ([]mar
 	}
 	var bars []market.Bar
 	for _, symbol := range spec.Symbols {
+		symbolSpec := spec
+		_, venue, err := market.NormalizeSymbol(symbol)
+		if err != nil {
+			return nil, err
+		}
+		if venue == market.VenueUS {
+			if oldest, ok := massiveStockHistoryStart(m.PlanName, time.Now(), time.Local); ok {
+				if !symbolSpec.To.After(oldest) {
+					continue
+				}
+				if symbolSpec.From.Before(oldest) {
+					symbolSpec.From = oldest
+				}
+			}
+		}
 		if strings.HasPrefix(symbol, "F:") {
-			part, err := m.fetchFuturesBars(ctx, client, base, baseURL, strings.TrimPrefix(symbol, "F:"), symbol, spec)
+			part, err := m.fetchFuturesBars(ctx, client, base, baseURL, strings.TrimPrefix(symbol, "F:"), symbol, symbolSpec)
 			if err != nil {
 				return nil, err
 			}
 			bars = append(bars, part...)
 			continue
 		}
-		next := fmt.Sprintf("%s/v2/aggs/ticker/%s/range/%d/%s/%d/%d", baseURL, url.PathEscape(symbol), multiplier, span, spec.From.UnixMilli(), spec.To.Add(-time.Millisecond).UnixMilli())
+		next := fmt.Sprintf("%s/v2/aggs/ticker/%s/range/%d/%s/%d/%d", baseURL, url.PathEscape(symbol), multiplier, span, symbolSpec.From.UnixMilli(), symbolSpec.To.Add(-time.Millisecond).UnixMilli())
 		visited := map[string]struct{}{}
 		pages := 0
 		for next != "" {
@@ -384,6 +395,31 @@ func (m *Massive) fetchBars(ctx context.Context, spec market.DatasetSpec) ([]mar
 	}
 	market.SortBars(bars)
 	return bars, nil
+}
+
+func massiveStockHistoryStart(planName string, now time.Time, fallbackLocation *time.Location) (time.Time, bool) {
+	plan := strings.NewReplacer("-", "_", " ", "_").Replace(strings.ToLower(strings.TrimSpace(planName)))
+	years, ok := map[string]int{
+		"basic":            2,
+		"stocks_basic":     2,
+		"starter":          5,
+		"stocks_starter":   5,
+		"developer":        10,
+		"stocks_developer": 10,
+		"advanced":         20,
+		"stocks_advanced":  20,
+	}[plan]
+	if !ok {
+		return time.Time{}, false
+	}
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		location = fallbackLocation
+	}
+	today := now.In(location)
+	// Stay one calendar day inside Massive's rolling entitlement boundary so
+	// timezone and intraday cutoffs cannot turn an allowed request into a 403.
+	return time.Date(today.Year()-years, today.Month(), today.Day()+1, 0, 0, 0, 0, location).UTC(), true
 }
 
 func (m *Massive) fetchFuturesBars(ctx context.Context, client *http.Client, base *url.URL, baseURL, ticker, symbol string, spec market.DatasetSpec) ([]market.Bar, error) {

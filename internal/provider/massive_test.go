@@ -335,12 +335,72 @@ func TestStartOfUSCalendarPeriod(t *testing.T) {
 	}
 }
 
-func TestMassiveStocksBasicForwardAdjustmentLimitExplainsAlternatives(t *testing.T) {
+func TestMassiveStockPlanHistoryWindows(t *testing.T) {
 	location, _ := time.LoadLocation("America/New_York")
-	from := time.Now().In(location).AddDate(-2, 0, -1)
-	spec := market.DatasetSpec{Symbols: []string{"SNDK"}, Interval: "1d", From: from.UTC(), To: from.AddDate(0, 0, 1).UTC(), Session: market.RegularSession, Adjustment: market.ForwardAdjusted}
-	_, err := (&Massive{APIKey: "test", PlanName: "stocks_basic"}).Bars(context.Background(), spec)
-	if err == nil || !strings.Contains(err.Error(), "upgrade the Massive plan") || !strings.Contains(err.Error(), "split_adjusted") {
-		t.Fatalf("err=%v", err)
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, location)
+	for plan, want := range map[string]string{
+		"basic": "2024-08-30", "stocks-basic": "2024-08-30",
+		"Starter": "2021-08-30", "stocks_starter": "2021-08-30",
+		"developer": "2016-08-30", "stocks_advanced": "2006-08-30",
+	} {
+		got, ok := massiveStockHistoryStart(plan, now, time.UTC)
+		if !ok || got.In(location).Format("2006-01-02") != want {
+			t.Fatalf("plan=%s got=%s ok=%v want=%s", plan, got, ok, want)
+		}
+	}
+	if _, ok := massiveStockHistoryStart("custom", now, time.UTC); ok {
+		t.Fatal("custom plans must not receive an inferred history limit")
+	}
+}
+
+func TestMassiveStocksStarterClampsHistoryToFiveYears(t *testing.T) {
+	location, _ := time.LoadLocation("America/New_York")
+	want, _ := massiveStockHistoryStart("stocks_starter", time.Now(), time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(r.URL.Path, "/")
+		got, err := time.ParseDuration(parts[len(parts)-2] + "ms")
+		if err != nil || got.Milliseconds() != want.UnixMilli() {
+			t.Fatalf("path=%s got=%v err=%v want=%v", r.URL.Path, got, err, want)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "OK", "results": []map[string]any{}})
+	}))
+	defer server.Close()
+	spec := market.DatasetSpec{
+		Symbols: []string{"SNDK"}, Interval: "1d",
+		From: time.Now().In(location).AddDate(-10, 0, 0).UTC(), To: time.Now().Add(time.Hour),
+		Session: market.RegularSession, Adjustment: market.SplitAdjusted,
+	}
+	if _, err := (&Massive{APIKey: "test", PlanName: "stocks_starter", BaseURL: server.URL, HTTP: server.Client()}).Bars(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMassiveStocksStarterSkipsRangesOlderThanFiveYears(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "OK"})
+	}))
+	defer server.Close()
+	from := time.Now().AddDate(-10, 0, 0)
+	spec := market.DatasetSpec{Symbols: []string{"SNDK"}, Interval: "1d", From: from, To: from.AddDate(0, 1, 0), Session: market.RegularSession, Adjustment: market.ForwardAdjusted}
+	bars, err := (&Massive{APIKey: "test", PlanName: "stocks_starter", BaseURL: server.URL, HTTP: server.Client()}).Bars(context.Background(), spec)
+	if err != nil || len(bars) != 0 || requests != 0 {
+		t.Fatalf("bars=%v requests=%d err=%v", bars, requests, err)
+	}
+}
+
+func TestMassiveStockPlanDoesNotLimitIndices(t *testing.T) {
+	from := time.Date(2010, 1, 4, 14, 30, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, fmt.Sprintf("/%d/", from.UnixMilli())) {
+			t.Fatalf("index history was clamped: %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "OK", "results": []map[string]any{}})
+	}))
+	defer server.Close()
+	spec := market.DatasetSpec{Symbols: []string{"I:VIX"}, Interval: "1d", From: from, To: from.AddDate(0, 0, 1), Session: market.RegularSession, Adjustment: market.Raw}
+	if _, err := (&Massive{APIKey: "test", PlanName: "stocks_starter", BaseURL: server.URL, HTTP: server.Client()}).Bars(context.Background(), spec); err != nil {
+		t.Fatal(err)
 	}
 }
