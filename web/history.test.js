@@ -64,5 +64,9 @@ assert.deepEqual(
   history.chartQueryChanges({ ticker: 'AAPL' }, { type: 'day', span: 1 }, { ticker: 'AAPL' }, { type: 'day', span: 5 }),
   { symbol: false, period: true }
 )
+assert.deepEqual(
+  history.chartQueryChanges({ ticker: 'AAPL', name: 'AAPL' }, { type: 'day', span: 1 }, { ticker: 'AAPL', name: '苹果（AAPL）' }, { type: 'day', span: 1 }),
+  { symbol: true, period: false }
+)
 
 console.log('history policy tests passed')

@@ -169,6 +169,12 @@ function renderSecurityIdentity(symbol) {
   $('security-code').textContent = symbol || '—'
 }
 
+function chartSymbolName(symbol) {
+  const security = universeSecurities.find(item => item.symbol === symbol)
+  const name = security?.name_cn || security?.name_en
+  return name ? `${name}（${symbol}）` : symbol
+}
+
 function normalizeSelectedMarketSymbol(value) {
   const matched = securityForInput(value)
   if (matched) return matched.symbol
@@ -371,7 +377,8 @@ const chart = window.klinecharts.init('chart', {
         upColor: RED, downColor: GREEN, noChangeColor: '#9aa4b2',
         upBorderColor: RED, downBorderColor: GREEN, noChangeBorderColor: '#9aa4b2',
         upWickColor: RED, downWickColor: GREEN, noChangeWickColor: '#9aa4b2'
-      }
+      },
+      tooltip: { title: { template: '{name} · {period}' } }
     },
     xAxis: { axisLine: { color: '#343a46' }, tickLine: { color: '#343a46' }, tickText: { color: '#9aa4b2' } },
     yAxis: { axisLine: { color: '#343a46' }, tickLine: { color: '#343a46' }, tickText: { color: '#9aa4b2' } },
@@ -1055,7 +1062,7 @@ $('query').addEventListener('submit', event => {
     setChartEmptyState('正在加载 K 线')
     chart.setTimezone(defaults.timezone)
     const crypto = symbol.endsWith('.BINANCE')
-    const nextSymbol = { ticker: symbol, pricePrecision: crypto ? 8 : 4, volumePrecision: crypto ? 8 : 0 }
+    const nextSymbol = { ticker: symbol, name: chartSymbolName(symbol), pricePrecision: crypto ? 8 : 4, volumePrecision: crypto ? 8 : 0 }
     const nextPeriod = intervalToPeriod(interval)
     const chartChanges = window.marketHistory.chartQueryChanges(chart.getSymbol(), chart.getPeriod(), nextSymbol, nextPeriod)
     if (chartChanges.symbol) chart.setSymbol(nextSymbol)

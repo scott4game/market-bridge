@@ -75,10 +75,12 @@
   function chartQueryChanges(currentSymbol, currentPeriod, nextSymbol, nextPeriod) {
     const currentTicker = String(currentSymbol?.ticker || '')
     const nextTicker = String(nextSymbol?.ticker || '')
+    const currentName = String(currentSymbol?.name || '')
+    const nextName = String(nextSymbol?.name || '')
     const samePeriod = String(currentPeriod?.type || '') === String(nextPeriod?.type || '') &&
       Number(currentPeriod?.span) === Number(nextPeriod?.span)
     return {
-      symbol: currentTicker !== nextTicker,
+      symbol: currentTicker !== nextTicker || currentName !== nextName,
       period: !samePeriod
     }
   }

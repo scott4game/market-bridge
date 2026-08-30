@@ -94,6 +94,8 @@ func TestEmbeddedUIUsesProviderCapabilitiesAndSignedHistogramColors(t *testing.T
 		"scrollZoomEnabled: yAxisZoomEnabled",
 		"/v1/me/indicators/reset-display",
 		"upColor: RED, downColor: GREEN",
+		"tooltip: { title: { template: '{name} · {period}' } }",
+		"name: chartSymbolName(symbol)",
 		"$('query').requestSubmit()",
 		"window.marketHistory.chartQueryChanges(chart.getSymbol(), chart.getPeriod(), nextSymbol, nextPeriod)",
 		"if (!chartChanges.symbol && !chartChanges.period) chart.resetData()",
