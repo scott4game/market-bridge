@@ -72,6 +72,17 @@
     )
   }
 
+  function chartQueryChanges(currentSymbol, currentPeriod, nextSymbol, nextPeriod) {
+    const currentTicker = String(currentSymbol?.ticker || '')
+    const nextTicker = String(nextSymbol?.ticker || '')
+    const samePeriod = String(currentPeriod?.type || '') === String(nextPeriod?.type || '') &&
+      Number(currentPeriod?.span) === Number(nextPeriod?.span)
+    return {
+      symbol: currentTicker !== nextTicker,
+      period: !samePeriod
+    }
+  }
+
   function historyYearsFor(symbol, providers) {
     const upper = String(symbol || '').toUpperCase()
     const routes = providers?.history_policy?.routes || {}
@@ -96,6 +107,7 @@
     canRequestOlder,
     mergeBars,
     isCurrentQuery,
+    chartQueryChanges,
     historyYearsFor
   }
 })

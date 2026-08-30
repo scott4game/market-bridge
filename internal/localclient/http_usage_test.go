@@ -95,6 +95,8 @@ func TestEmbeddedUIUsesProviderCapabilitiesAndSignedHistogramColors(t *testing.T
 		"/v1/me/indicators/reset-display",
 		"upColor: RED, downColor: GREEN",
 		"$('query').requestSubmit()",
+		"window.marketHistory.chartQueryChanges(chart.getSymbol(), chart.getPeriod(), nextSymbol, nextPeriod)",
+		"if (!chartChanges.symbol && !chartChanges.period) chart.resetData()",
 		"events: ['bar', 'quote', 'trade', 'depth']",
 		"consumeQuote(payload.quote)",
 		"/v1/live/trades/",
@@ -103,6 +105,9 @@ func TestEmbeddedUIUsesProviderCapabilitiesAndSignedHistogramColors(t *testing.T
 		if !strings.Contains(source, want) {
 			t.Fatalf("embedded app is missing %q", want)
 		}
+	}
+	if strings.Contains(source, "scrollToRealTime") {
+		t.Fatal("history response must not force the chart viewport to jump")
 	}
 }
 

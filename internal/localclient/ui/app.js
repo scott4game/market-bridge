@@ -691,7 +691,6 @@ chart.setDataLoader({
       if (data.warning) $('error').textContent = `部分历史数据加载失败，已展示可用数据：${data.warning}`
       if (type === 'init') {
         setChartEmptyState(bars.length ? '' : '暂无 K 线数据')
-        if (bars.length) setTimeout(() => chart.scrollToRealTime(), 0)
       }
     } catch (error) {
       callback([], { forward: false, backward: false })
@@ -1056,9 +1055,12 @@ $('query').addEventListener('submit', event => {
     setChartEmptyState('正在加载 K 线')
     chart.setTimezone(defaults.timezone)
     const crypto = symbol.endsWith('.BINANCE')
-    chart.setSymbol({ ticker: symbol, pricePrecision: crypto ? 8 : 4, volumePrecision: crypto ? 8 : 0 })
-    chart.setPeriod(intervalToPeriod(interval))
-    chart.resetData()
+    const nextSymbol = { ticker: symbol, pricePrecision: crypto ? 8 : 4, volumePrecision: crypto ? 8 : 0 }
+    const nextPeriod = intervalToPeriod(interval)
+    const chartChanges = window.marketHistory.chartQueryChanges(chart.getSymbol(), chart.getPeriod(), nextSymbol, nextPeriod)
+    if (chartChanges.symbol) chart.setSymbol(nextSymbol)
+    if (chartChanges.period) chart.setPeriod(nextPeriod)
+    if (!chartChanges.symbol && !chartChanges.period) chart.resetData()
   } catch (error) {
     $('error').textContent = error.message
   }

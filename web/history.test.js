@@ -47,4 +47,22 @@ assert.equal(history.isCurrentQuery(activeQuery, 7, 'MSFT', '1d'), false)
 assert.equal(history.isCurrentQuery(activeQuery, 7, 'AAPL', '1h'), false)
 assert.equal(history.isCurrentQuery(null, 7, 'AAPL', '1d'), false)
 
+assert.deepEqual(
+  history.chartQueryChanges(
+    { ticker: 'AAPL', pricePrecision: 4 },
+    { type: 'day', span: 1 },
+    { ticker: 'AAPL', pricePrecision: 4 },
+    { type: 'day', span: 1 }
+  ),
+  { symbol: false, period: false }
+)
+assert.deepEqual(
+  history.chartQueryChanges({ ticker: 'AAPL' }, { type: 'day', span: 1 }, { ticker: 'MSFT' }, { type: 'hour', span: 1 }),
+  { symbol: true, period: true }
+)
+assert.deepEqual(
+  history.chartQueryChanges({ ticker: 'AAPL' }, { type: 'day', span: 1 }, { ticker: 'AAPL' }, { type: 'day', span: 5 }),
+  { symbol: false, period: true }
+)
+
 console.log('history policy tests passed')
