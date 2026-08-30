@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	localIndicatorTemplateVersion = 2
+	localIndicatorTemplateVersion = 3
 	maxLocalIndicators            = 50
 	maxLocalEnabledIndicators     = 18
 )
@@ -71,6 +71,7 @@ var localDefaultIndicators = []struct {
 	key, name, pane, formula string
 	params                   []localIndicatorParameter
 	sortOrder                int
+	defaultEnabled           bool
 }{
 	{key: "ma-v1", name: "MA 均线", pane: "main", sortOrder: 10, formula: `MA5:MA(CLOSE,M1),COLORWHITE;
 MA10:MA(CLOSE,M2),COLORYELLOW;
@@ -91,7 +92,7 @@ UPPER:MID+P*STD(CLOSE,N),COLORYELLOW;
 LOWER:MID-P*STD(CLOSE,N),COLORBLUE;`, params: []localIndicatorParameter{
 		{Name: "N", Default: 20, Min: 1, Max: 500, Step: 1, Value: 20}, {Name: "P", Default: 2, Min: .1, Max: 10, Step: .1, Value: 2},
 	}},
-	{key: "vol-v1", name: "VOL 成交量", pane: "sub", sortOrder: 40, formula: `VOLUME:VOL,VOLSTICK;
+	{key: "vol-v1", name: "VOL 成交量", pane: "sub", sortOrder: 40, defaultEnabled: true, formula: `VOLUME:VOL,VOLSTICK;
 MAVOL5:MA(VOL,M1),COLORYELLOW;
 MAVOL10:MA(VOL,M2),COLORCYAN;`, params: []localIndicatorParameter{
 		{Name: "M1", Default: 5, Min: 1, Max: 500, Step: 1, Value: 5}, {Name: "M2", Default: 10, Min: 1, Max: 500, Step: 1, Value: 10},
@@ -130,10 +131,15 @@ func (c *Cache) ensureLocalIndicators(ctx context.Context) error {
 			return err
 		}
 		params, _ := json.Marshal(template.params)
-		if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO local_indicators(id,kind,template_key,name,pane,formula,parameters_json,enabled,sort_order,revision,created_at,updated_at) VALUES(?,'template',?,?,?,?,?,0,?,1,?,?)`, id, template.key, template.name, template.pane, template.formula, string(params), template.sortOrder, now, now); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO local_indicators(id,kind,template_key,name,pane,formula,parameters_json,enabled,sort_order,revision,created_at,updated_at) VALUES(?,'template',?,?,?,?,?,?,?,1,?,?)`, id, template.key, template.name, template.pane, template.formula, string(params), boolNumber(template.defaultEnabled), template.sortOrder, now, now); err != nil {
 			return err
 		}
 		if _, err = tx.ExecContext(ctx, `UPDATE local_indicators SET name=?,pane=?,formula=? WHERE template_key=?`, template.name, template.pane, template.formula, template.key); err != nil {
+			return err
+		}
+	}
+	if version < 3 {
+		if _, err = tx.ExecContext(ctx, `UPDATE local_indicators SET enabled=1,revision=revision+1,updated_at=? WHERE template_key='vol-v1' AND enabled=0`, now); err != nil {
 			return err
 		}
 	}
@@ -237,7 +243,7 @@ func (c *Cache) ResetLocalIndicatorDisplay(ctx context.Context) ([]localIndicato
 		return nil, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `UPDATE local_indicators SET enabled=0,revision=revision+1,updated_at=? WHERE enabled=1`, time.Now().Unix()); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE local_indicators SET enabled=CASE WHEN template_key='vol-v1' THEN 1 ELSE 0 END,revision=revision+1,updated_at=? WHERE (template_key='vol-v1' AND enabled=0) OR (template_key<>'vol-v1' AND enabled=1) OR (template_key IS NULL AND enabled=1)`, time.Now().Unix()); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {

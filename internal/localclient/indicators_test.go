@@ -21,7 +21,8 @@ func TestLocalIndicatorDefaultsAndPersistence(t *testing.T) {
 	}
 	wantKeys := []string{"ma-v1", "ema-v1", "boll-v1", "vol-v1", "rsi-v1", "kdj-v1"}
 	for index, indicator := range defaults {
-		if indicator.Kind != "template" || indicator.TemplateKey != wantKeys[index] || indicator.Enabled {
+		wantEnabled := indicator.TemplateKey == "vol-v1"
+		if indicator.Kind != "template" || indicator.TemplateKey != wantKeys[index] || indicator.Enabled != wantEnabled {
 			t.Fatalf("default[%d]=%+v", index, indicator)
 		}
 	}
@@ -59,7 +60,10 @@ func TestLocalIndicatorTemplateUpgradePreservesExistingEnabledState(t *testing.T
 	if _, err := cache.db.Exec(`UPDATE local_indicators SET enabled=1 WHERE template_key='ma-v1'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cache.db.Exec(`UPDATE local_indicator_state SET version=1 WHERE id=1`); err != nil {
+	if _, err := cache.db.Exec(`UPDATE local_indicators SET enabled=0 WHERE template_key='vol-v1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cache.db.Exec(`UPDATE local_indicator_state SET version=2 WHERE id=1`); err != nil {
 		t.Fatal(err)
 	}
 	if err := cache.Close(); err != nil {
@@ -78,6 +82,9 @@ func TestLocalIndicatorTemplateUpgradePreservesExistingEnabledState(t *testing.T
 	for _, item := range items {
 		if item.TemplateKey == "ma-v1" && !item.Enabled {
 			t.Fatal("template migration overwrote the existing enabled state")
+		}
+		if item.TemplateKey == "vol-v1" && !item.Enabled {
+			t.Fatal("template migration did not enable the default volume pane")
 		}
 	}
 }
@@ -104,8 +111,8 @@ func TestResetLocalIndicatorDisplayIsIdempotent(t *testing.T) {
 		if item.ID == created.ID {
 			reset = item
 		}
-		if item.Enabled {
-			t.Fatalf("indicator remains enabled after reset: %+v", item)
+		if item.Enabled != (item.TemplateKey == "vol-v1") {
+			t.Fatalf("indicator does not match default display after reset: %+v", item)
 		}
 	}
 	if reset.ID == "" || reset.Revision != created.Revision+1 {

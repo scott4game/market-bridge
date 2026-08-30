@@ -961,7 +961,7 @@ $('reset-futu-view').addEventListener('click', async () => {
     chart.setBarSpace(10)
     setYAxisZoomEnabled(false)
     if ($('symbol').value.trim()) $('query').requestSubmit()
-    $('indicator-state').textContent = '已恢复 Futu 默认 · 0 个指标'
+    $('indicator-state').textContent = '已恢复默认 · VOL 成交量已启用'
   } catch (error) {
     $('indicator-error').textContent = error.message
   } finally {

@@ -374,7 +374,7 @@ func TestIndicatorsAreStoredLocallyWithoutCallingServer(t *testing.T) {
 	}
 	reset := httptest.NewRecorder()
 	handler.ServeHTTP(reset, httptest.NewRequest(http.MethodPost, "/v1/me/indicators/reset-display", nil))
-	if reset.Code != http.StatusOK || !strings.Contains(reset.Body.String(), `"storage":"local"`) || strings.Contains(reset.Body.String(), `"enabled":true`) {
+	if reset.Code != http.StatusOK || !strings.Contains(reset.Body.String(), `"storage":"local"`) || !strings.Contains(reset.Body.String(), `"template_key":"vol-v1"`) || !strings.Contains(reset.Body.String(), `"enabled":true`) {
 		t.Fatalf("status=%d body=%q", reset.Code, reset.Body.String())
 	}
 	if upstreamCalls != 0 {
