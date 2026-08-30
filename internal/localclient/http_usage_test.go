@@ -280,6 +280,26 @@ func TestUniverseProxyForwardsServerToken(t *testing.T) {
 	}
 }
 
+func TestUniverseProxyAllowsFullMarketCatalogLargerThanOneMiB(t *testing.T) {
+	payload := `{"securities":[{"symbol":"AAPL","name_cn":"苹果"}],"padding":"` + strings.Repeat("x", 2<<20) + `"}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, payload)
+	}))
+	defer upstream.Close()
+
+	cache, err := NewCache(config.Client{CacheDir: t.TempDir(), ServerURL: upstream.URL, ServerToken: "secret", RedisEnabled: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cache.Close()
+	recorder := httptest.NewRecorder()
+	(&HTTP{Cache: cache}).Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/market-history/universe", nil))
+	if recorder.Code != http.StatusOK || recorder.Body.Len() != len(payload) || !strings.Contains(recorder.Body.String(), `"name_cn":"苹果"`) {
+		t.Fatalf("status=%d bytes=%d", recorder.Code, recorder.Body.Len())
+	}
+}
+
 func TestSecurityProfilesProxyForwardsServerToken(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/market-history/security-profiles" || r.Header.Get("Authorization") != "Bearer secret" {

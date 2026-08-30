@@ -960,15 +960,23 @@ func (c *Cache) ServerJSON(ctx context.Context, method, path string, body io.Rea
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	limit := int64(1 << 20)
+	requestPath := strings.SplitN(path, "?", 2)[0]
+	if requestPath == "/v1/market-history/universe" || requestPath == "/v1/market-history/security-profiles" {
+		limit = 32 << 20
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return nil, resp.StatusCode, err
+	}
+	if int64(len(raw)) > limit {
+		return nil, resp.StatusCode, fmt.Errorf("go-server JSON response exceeds %d MiB", limit>>20)
 	}
 	if resp.StatusCode == http.StatusNoContent && len(raw) == 0 {
 		return nil, resp.StatusCode, nil
 	}
 	if !json.Valid(raw) {
-		return nil, resp.StatusCode, fmt.Errorf("go-server returned invalid JSON")
+		return nil, resp.StatusCode, fmt.Errorf("go-server returned invalid JSON (status %d)", resp.StatusCode)
 	}
 	return json.RawMessage(raw), resp.StatusCode, nil
 }
