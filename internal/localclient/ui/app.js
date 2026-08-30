@@ -1,6 +1,9 @@
 const $ = id => document.getElementById(id)
 const UNIVERSE_STORAGE_KEY = 'market-bridge:market-universe-v3'
 const Y_AXIS_ZOOM_STORAGE_KEY = 'market-bridge:y-axis-zoom-v1'
+const INDICATOR_PANE_HEIGHTS_STORAGE_KEY = 'market-bridge:indicator-pane-heights-v1'
+const DEFAULT_INDICATOR_PANE_HEIGHT = 132
+const MIN_INDICATOR_PANE_HEIGHT = 80
 const BLUE = '#4f8cff'
 const YELLOW = '#f2c94c'
 const CYAN = '#0caee6'
@@ -33,6 +36,17 @@ function storedYAxisZoomEnabled() {
 }
 
 let yAxisZoomEnabled = storedYAxisZoomEnabled()
+
+function storedIndicatorPaneHeights() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(INDICATOR_PANE_HEIGHTS_STORAGE_KEY) || '{}')
+    return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {}
+  } catch (_) {
+    return {}
+  }
+}
+
+let indicatorPaneHeights = storedIndicatorPaneHeights()
 
 function setStatus(text, state = '') {
   $('status').textContent = text
@@ -397,7 +411,34 @@ chart.setZoomAnchor('cursor')
 chart.setOffsetRightDistance(64)
 chart.overrideXAxis({ scrollZoomEnabled: true })
 chart.overrideYAxis({ paneId: 'candle_pane', scrollZoomEnabled: yAxisZoomEnabled })
+chart.setPaneOptions({ id: 'candle_pane', minHeight: 240 })
 $('y-axis-zoom').checked = yAxisZoomEnabled
+
+function indicatorPaneHeight(indicatorID) {
+  const saved = Number(indicatorPaneHeights[indicatorID])
+  return Number.isFinite(saved) && saved >= MIN_INDICATOR_PANE_HEIGHT ? Math.round(saved) : DEFAULT_INDICATOR_PANE_HEIGHT
+}
+
+function persistIndicatorPaneHeights() {
+  let changed = false
+  for (const active of activeFormulaCharts) {
+    if (!active.indicatorID) continue
+    const height = Math.round(Number(chart.getPaneOptions(active.paneId)?.height))
+    if (!Number.isFinite(height) || height < MIN_INDICATOR_PANE_HEIGHT || indicatorPaneHeights[active.indicatorID] === height) continue
+    indicatorPaneHeights[active.indicatorID] = height
+    changed = true
+  }
+  if (!changed) return
+  try {
+    localStorage.setItem(INDICATOR_PANE_HEIGHTS_STORAGE_KEY, JSON.stringify(indicatorPaneHeights))
+  } catch (_) {}
+}
+
+let paneHeightSaveTimer = null
+chart.subscribeAction('onPaneDrag', () => {
+  window.clearTimeout(paneHeightSaveTimer)
+  paneHeightSaveTimer = window.setTimeout(persistIndicatorPaneHeights, 120)
+})
 
 function setYAxisZoomEnabled(enabled, persist = true) {
   yAxisZoomEnabled = Boolean(enabled)
@@ -831,7 +872,8 @@ async function formulaRows(indicator, data) {
   return rows
 }
 
-async function applyFormulaIndicators() {
+async function applyFormulaIndicators({ persistHeights = true } = {}) {
+  if (persistHeights) persistIndicatorPaneHeights()
   for (const active of activeFormulaCharts) {
     if (chart.getIndicators({ name: active.name, paneId: active.paneId }).length) chart.removeIndicator({ name: active.name, paneId: active.paneId })
   }
@@ -846,8 +888,8 @@ async function applyFormulaIndicators() {
     }
     const paneId = indicator.pane === 'main' ? 'candle_pane' : `tdx_${indicator.id}`
     chart.createIndicator({ name, paneId }, indicator.pane === 'main')
-    if (indicator.pane !== 'main') chart.setPaneOptions({ id: paneId, height: 190, minHeight: 100 })
-    activeFormulaCharts.push({ name, paneId })
+    if (indicator.pane !== 'main') chart.setPaneOptions({ id: paneId, height: indicatorPaneHeight(indicator.id), minHeight: MIN_INDICATOR_PANE_HEIGHT })
+    activeFormulaCharts.push({ name, paneId, indicatorID: indicator.pane === 'sub' ? indicator.id : '' })
   }
   $('indicator-state').textContent = `${enabled.length} 个已启用 · 仅保存在本机`
 }
@@ -957,7 +999,9 @@ $('reset-futu-view').addEventListener('click', async () => {
     const selectedID = selectedIndicator?.id
     localIndicators = response.indicators || []
     selectIndicator(localIndicators.find(indicator => indicator.id === selectedID) || localIndicators[0] || null)
-    await applyFormulaIndicators()
+    indicatorPaneHeights = {}
+    try { localStorage.removeItem(INDICATOR_PANE_HEIGHTS_STORAGE_KEY) } catch (_) {}
+    await applyFormulaIndicators({ persistHeights: false })
     chart.setBarSpace(10)
     setYAxisZoomEnabled(false)
     if ($('symbol').value.trim()) $('query').requestSubmit()
