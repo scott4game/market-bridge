@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/scott4game/market-bridge/internal/market"
+	shopdecimal "github.com/shopspring/decimal"
 )
 
 type Provider interface {
@@ -52,6 +54,18 @@ type ForwardAdjustmentProvider interface {
 // used to identify and build a forward-adjusted dataset.
 type ForwardFactorBarsProvider interface {
 	BarsWithForwardFactors(context.Context, market.DatasetSpec, map[string]market.ForwardFactors) ([]market.Bar, error)
+}
+
+type GroupedDailyProvider interface {
+	GroupedDaily(context.Context, string) ([]market.Bar, error)
+}
+
+func GroupedDaily(ctx context.Context, p Provider, date string) ([]market.Bar, error) {
+	grouped, ok := p.(GroupedDailyProvider)
+	if !ok {
+		return nil, fmt.Errorf("provider %s does not support grouped daily bars", p.Name())
+	}
+	return grouped.GroupedDaily(ctx, date)
 }
 
 func BarsWithForwardFactors(ctx context.Context, p Provider, spec market.DatasetSpec, curves map[string]market.ForwardFactors) ([]market.Bar, error) {
@@ -163,6 +177,11 @@ type Massive struct {
 type massiveFactorCache struct {
 	curve     market.ForwardFactors
 	expiresAt time.Time
+}
+
+type massiveHTTPResponse struct {
+	response *http.Response
+	finish   func(int, error)
 }
 
 func (m *Massive) Name() string { return "massive" }
@@ -338,15 +357,11 @@ func (m *Massive) fetchBars(ctx context.Context, spec market.DatasetSpec) ([]mar
 				q.Set("adjusted", strconv.FormatBool(spec.Adjustment == market.SplitAdjusted))
 				u.RawQuery = q.Encode()
 				req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-				finish := func(int, error) {}
-				if m.Usage != nil {
-					finish = m.Usage.Begin("massive", "stocks_aggregates_custom_bars")
-				}
-				resp, err := client.Do(req)
+				tracked, err := m.doRequest(ctx, client, req, "stocks_aggregates_custom_bars")
 				if err != nil {
-					finish(0, err)
 					return bars, err
 				}
+				resp, finish := tracked.response, tracked.finish
 				if resp.StatusCode/100 != 2 {
 					body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
 					resp.Body.Close()
@@ -373,12 +388,13 @@ func (m *Massive) fetchBars(ctx context.Context, spec market.DatasetSpec) ([]mar
 					Error   string `json:"error"`
 					NextURL string `json:"next_url"`
 					Results []struct {
-						O float64 `json:"o"`
-						H float64 `json:"h"`
-						L float64 `json:"l"`
-						C float64 `json:"c"`
-						V float64 `json:"v"`
-						T int64   `json:"t"`
+						O  float64     `json:"o"`
+						H  float64     `json:"h"`
+						L  float64     `json:"l"`
+						C  float64     `json:"c"`
+						V  json.Number `json:"v"`
+						VW json.Number `json:"vw"`
+						T  int64       `json:"t"`
 					}
 				}
 				err = json.NewDecoder(resp.Body).Decode(&payload)
@@ -397,11 +413,165 @@ func (m *Massive) fetchBars(ctx context.Context, spec market.DatasetSpec) ([]mar
 				}
 				for _, x := range payload.Results {
 					ts := time.UnixMilli(x.T).UTC()
-					bars = append(bars, market.Bar{Symbol: symbol, Timestamp: ts, Open: market.DecimalFromFloat(x.O), High: market.DecimalFromFloat(x.H), Low: market.DecimalFromFloat(x.L), Close: market.DecimalFromFloat(x.C), Volume: int64(x.V), Session: spec.Session, Source: "massive", Completed: true})
+					volume, volumeOK := massiveVolume(x.V)
+					bar := market.Bar{Symbol: symbol, Timestamp: ts, Open: market.DecimalFromFloat(x.O), High: market.DecimalFromFloat(x.H), Low: market.DecimalFromFloat(x.L), Close: market.DecimalFromFloat(x.C), Volume: volume, Session: spec.Session, Source: "massive", Completed: true}
+					if turnover, ok := massiveTurnover(x.VW, x.V); ok && volumeOK {
+						bar.Turnover = &turnover
+					}
+					bars = append(bars, bar)
 				}
 				next = payload.NextURL
 			}
 		}
+	}
+	market.SortBars(bars)
+	return bars, nil
+}
+
+func massiveVolume(value json.Number) (int64, bool) {
+	if value.String() == "" {
+		return 0, false
+	}
+	parsed, err := shopdecimal.NewFromString(value.String())
+	if err != nil || parsed.IsNegative() || parsed.GreaterThan(shopdecimal.NewFromInt(math.MaxInt64)) {
+		return 0, false
+	}
+	return parsed.Round(0).IntPart(), true
+}
+
+func massiveTurnover(vwap, volume json.Number) (market.Decimal, bool) {
+	if vwap.String() == "" || volume.String() == "" {
+		return 0, false
+	}
+	price, err := shopdecimal.NewFromString(vwap.String())
+	if err != nil || price.IsNegative() {
+		return 0, false
+	}
+	volumeValue, err := shopdecimal.NewFromString(volume.String())
+	if err != nil || volumeValue.IsNegative() {
+		return 0, false
+	}
+	value := price.Mul(volumeValue).Round(6)
+	parsed, err := market.DecimalFromString(value.String())
+	return parsed, err == nil
+}
+
+func (m *Massive) doRequest(ctx context.Context, client *http.Client, request *http.Request, endpoint string) (massiveHTTPResponse, error) {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		finish := func(int, error) {}
+		if m.Usage != nil {
+			finish = m.Usage.Begin("massive", endpoint)
+		}
+		resp, err := client.Do(request.Clone(ctx))
+		if err == nil && !retryableMassiveStatus(resp.StatusCode) {
+			return massiveHTTPResponse{response: resp, finish: finish}, nil
+		}
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+			_ = resp.Body.Close()
+			lastErr = fmt.Errorf("massive transient status %d", status)
+		} else {
+			lastErr = err
+		}
+		finish(status, err)
+		if attempt == 2 || ctx.Err() != nil {
+			break
+		}
+		timer := time.NewTimer(time.Duration(250*(1<<attempt)) * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return massiveHTTPResponse{}, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return massiveHTTPResponse{}, lastErr
+}
+
+func retryableMassiveStatus(status int) bool {
+	return status == http.StatusTooManyRequests || status == http.StatusBadGateway || status == http.StatusServiceUnavailable
+}
+
+func (m *Massive) GroupedDaily(ctx context.Context, date string) ([]market.Bar, error) {
+	if m.APIKey == "" {
+		return nil, fmt.Errorf("MASSIVE_API_KEY is required")
+	}
+	if _, err := time.Parse("2006-01-02", date); err != nil {
+		return nil, fmt.Errorf("grouped daily date must be YYYY-MM-DD")
+	}
+	client := m.HTTP
+	if client == nil {
+		client = &http.Client{Timeout: 45 * time.Second}
+	}
+	baseURL := strings.TrimRight(m.BaseURL, "/")
+	if baseURL == "" {
+		baseURL = "https://api.massive.com"
+	}
+	u, err := url.Parse(baseURL + "/v2/aggs/grouped/locale/us/market/stocks/" + date)
+	if err != nil {
+		return nil, err
+	}
+	q := u.Query()
+	q.Set("adjusted", "false")
+	q.Set("include_otc", "false")
+	q.Set("apiKey", m.APIKey)
+	u.RawQuery = q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	tracked, err := m.doRequest(ctx, client, req, "stocks_grouped_daily")
+	if err != nil {
+		return nil, err
+	}
+	resp, finish := tracked.response, tracked.finish
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if readErr != nil {
+			finish(resp.StatusCode, readErr)
+			return nil, readErr
+		}
+		finish(resp.StatusCode, nil)
+		return nil, fmt.Errorf("massive grouped daily: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var payload struct {
+		Status  string `json:"status"`
+		Error   string `json:"error"`
+		Results []struct {
+			Ticker string      `json:"T"`
+			O      float64     `json:"o"`
+			H      float64     `json:"h"`
+			L      float64     `json:"l"`
+			C      float64     `json:"c"`
+			V      json.Number `json:"v"`
+			VW     json.Number `json:"vw"`
+			T      int64       `json:"t"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		finish(resp.StatusCode, err)
+		return nil, err
+	}
+	finish(resp.StatusCode, nil)
+	if payload.Error != "" {
+		return nil, fmt.Errorf("massive grouped daily: %s", payload.Error)
+	}
+	bars := make([]market.Bar, 0, len(payload.Results))
+	for _, row := range payload.Results {
+		symbol, venue, err := market.NormalizeSymbol(row.Ticker)
+		if err != nil || venue != market.VenueUS {
+			continue
+		}
+		volume, volumeOK := massiveVolume(row.V)
+		bar := market.Bar{Symbol: symbol, Timestamp: time.UnixMilli(row.T).UTC(), Open: market.DecimalFromFloat(row.O), High: market.DecimalFromFloat(row.H), Low: market.DecimalFromFloat(row.L), Close: market.DecimalFromFloat(row.C), Volume: volume, Session: market.RegularSession, Source: "massive", Completed: true}
+		if turnover, ok := massiveTurnover(row.VW, row.V); ok && volumeOK {
+			bar.Turnover = &turnover
+		}
+		bars = append(bars, bar)
 	}
 	market.SortBars(bars)
 	return bars, nil

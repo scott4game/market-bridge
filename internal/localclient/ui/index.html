@@ -30,7 +30,7 @@
       </div>
     </section>
     <aside id="live-market" aria-label="实时成交与盘口">
-      <nav class="live-tabs" aria-label="右侧信息面板"><button type="button" data-live-tab="depth" aria-pressed="true">盘口</button><button type="button" data-live-tab="trades" aria-pressed="false">成交</button><button type="button" data-live-tab="news" aria-pressed="false">新闻 <em id="news-unread" hidden>0</em></button></nav>
+      <nav class="live-tabs" aria-label="右侧信息面板"><button type="button" data-live-tab="depth" aria-pressed="true">盘口</button><button type="button" data-live-tab="trades" aria-pressed="false">成交</button><button type="button" data-live-tab="funds" aria-pressed="false">资金</button><button type="button" data-live-tab="news" aria-pressed="false">新闻 <em id="news-unread" hidden>0</em></button></nav>
       <section class="live-tab-view depth-panel" data-live-view="depth">
         <div class="live-panel-title"><strong>实时盘口</strong><span id="depth-state">等待订阅</span></div>
         <div class="market-table-head"><span>档位</span><span>价格</span><span>挂单量</span><span>委托笔数</span></div>
@@ -47,11 +47,33 @@
         <div class="news-filters"><button type="button" data-news-scope="symbol" aria-pressed="true">当前股票</button><button type="button" data-news-scope="all" aria-pressed="false">全部最新</button><select id="news-kind" aria-label="新闻类型"><option value="">全部</option><option value="stock_news">股票新闻</option><option value="press_release">公司公告</option></select></div>
         <div id="news-rows" class="news-list"><p class="live-empty">正在加载新闻</p></div>
       </section>
+      <section class="live-tab-view funds-panel" data-live-view="funds" hidden>
+        <div class="live-panel-title"><strong>量能与资金流</strong><span id="funds-state">Massive 代理</span></div>
+        <div class="fund-summary">
+          <div><small>量比 20</small><strong id="fund-volume-ratio">—</strong></div>
+          <div><small>成交额比 20</small><strong id="fund-turnover-ratio">—</strong></div>
+          <div><small>流入</small><strong id="fund-inflow">—</strong></div>
+          <div><small>流出</small><strong id="fund-outflow">—</strong></div>
+          <div><small>净流入</small><strong id="fund-net-flow">—</strong></div>
+          <div><small>净流入占比</small><strong id="fund-flow-ratio">—</strong></div>
+        </div>
+        <div class="fund-section-title"><strong>SIC 板块</strong><div class="segmented"><button type="button" data-sector-sort="amount" aria-pressed="true">金额</button><button type="button" data-sector-sort="ratio" aria-pressed="false">比例</button></div></div>
+        <div id="sector-flow-rows" class="fund-list"><p class="live-empty">加载股票后显示板块资金</p></div>
+        <div class="fund-section-title"><strong>本机概念篮子</strong><button id="new-flow-basket" type="button" title="新建概念篮子">＋</button></div>
+        <select id="flow-basket-select" aria-label="概念篮子"><option value="">选择篮子</option></select>
+        <form id="flow-basket-editor" class="flow-basket-editor" hidden>
+          <input id="flow-basket-id" type="hidden"><input id="flow-basket-revision" type="hidden">
+          <label>名称<input id="flow-basket-name" maxlength="80" required></label>
+          <label>股票代码<input id="flow-basket-symbols" placeholder="NVDA,AMD,AVGO" required></label>
+          <div><button type="submit">保存</button><button id="delete-flow-basket" class="danger" type="button">删除</button></div>
+        </form>
+        <div id="basket-flow-state" class="fund-basket-state">选择篮子查看聚合资金流</div>
+      </section>
     </aside>
   </section>
   <section class="indicator-toolbar" aria-label="图表显示与公式指标">
     <div><strong>公式指标</strong><span id="indicator-state">正在读取本地配置</span></div>
-    <div class="display-controls"><label class="axis-zoom-toggle"><input id="y-axis-zoom" type="checkbox">纵轴缩放</label><button id="reset-futu-view" type="button">恢复 Futu 默认</button><button id="manage-indicators" type="button">管理指标</button></div>
+    <div class="display-controls"><label class="axis-zoom-toggle"><input id="volume-energy-pane" type="checkbox" checked>量能</label><label class="axis-zoom-toggle"><input id="flow-proxy-pane" type="checkbox" checked>资金流</label><label class="axis-zoom-toggle"><input id="y-axis-zoom" type="checkbox">纵轴缩放</label><button id="reset-futu-view" type="button">恢复 Futu 默认</button><button id="manage-indicators" type="button">管理指标</button></div>
   </section>
   <section id="indicator-manager" class="indicator-manager" hidden>
     <aside><div class="manager-title"><strong>我的指标</strong><button id="new-indicator" type="button">新建</button></div><div id="indicator-list"></div></aside>
@@ -88,6 +110,7 @@
 <script src="/history.js"></script>
 <script src="/live-market.js"></script>
 <script src="/news.js"></script>
+<script src="/flow-analytics.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

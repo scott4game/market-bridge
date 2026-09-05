@@ -616,6 +616,11 @@ curl -fsS -X POST \
 | `POST /v1/cache/prune?expired=true` | 清理过期缓存 |
 | `GET /v1/providers/status` | 查看行情提供者状态 |
 | `GET /v1/market-history/security-profiles` | 获取活跃美股普通股的公司资料、SIC和市值 |
+| `GET /v1/market-analytics/volume/{symbol}` | 查询量能与20日/同时间桶基线 |
+| `GET /v1/market-analytics/flow/{symbol}` | 查询Massive收盘位置资金流代理 |
+| `GET /v1/market-analytics/sector-flow` | 查询SIC日线资金代理排名 |
+| `POST /v1/market-analytics/basket-flow` | 聚合最多200只美股的资金流代理 |
+| `GET/POST /v1/me/flow-baskets` | 管理本机命名概念篮子 |
 | `GET /v1/providers/massive/usage` | 查看 Massive 调用量 |
 | `GET /v1/me` | 查看当前远端账号 |
 | `GET /v1/me/usage` | 查看配额和用量 |

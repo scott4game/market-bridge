@@ -152,6 +152,13 @@ func (r *Router) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.Ba
 	return r.BarsWithForwardFactors(ctx, spec, nil)
 }
 
+func (r *Router) GroupedDaily(ctx context.Context, date string) ([]market.Bar, error) {
+	if r.US == nil {
+		return nil, &HistoricalProviderDisabledError{Provider: "US", Venue: market.VenueUS}
+	}
+	return GroupedDaily(ctx, r.US, date)
+}
+
 func (r *Router) Supports(spec market.DatasetSpec) bool {
 	routes, err := r.route(spec)
 	if err != nil {

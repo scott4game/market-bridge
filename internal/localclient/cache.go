@@ -43,6 +43,8 @@ type Cache struct {
 	coverage        *coverage.Store
 	factorMu        sync.Mutex
 	factorCache     map[string]cachedForwardFactors
+	flowMu          sync.Mutex
+	flowBuilds      map[string]struct{}
 }
 
 type cachedForwardFactors struct {
@@ -112,6 +114,8 @@ func NewCacheWithClickHouse(cfg config.Client, clickhouse HistoricalClickHouse) 
 		`CREATE TABLE IF NOT EXISTS local_indicators (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('template','personal')), template_key TEXT UNIQUE, name TEXT NOT NULL UNIQUE COLLATE NOCASE, pane TEXT NOT NULL CHECK(pane IN ('main','sub')), formula TEXT NOT NULL, parameters_json TEXT NOT NULL DEFAULT '[]', warnings_json TEXT NOT NULL DEFAULT '[]', enabled INTEGER NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS local_indicators_order ON local_indicators(sort_order,name)`,
 		`CREATE TABLE IF NOT EXISTS local_indicator_state (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS flow_baskets (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, symbols_json TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS flow_basket_results (cache_key TEXT PRIMARY KEY, basket_id TEXT NOT NULL, payload BLOB NOT NULL, complete INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
 	}
 	for _, q := range stmts {
 		if _, err = db.Exec(q); err != nil {
@@ -130,7 +134,7 @@ func NewCacheWithClickHouse(cfg config.Client, clickhouse HistoricalClickHouse) 
 		db.Close()
 		return nil, err
 	}
-	c := &Cache{cfg: cfg, db: db, http: &http.Client{Timeout: 2 * time.Minute}, inflight: map[string]*flight{}, active: map[string]int{}, datasetLocks: map[string]*datasetGuard{}, clickhouse: clickhouse, coverage: coverageStore, factorCache: map[string]cachedForwardFactors{}}
+	c := &Cache{cfg: cfg, db: db, http: &http.Client{Timeout: 2 * time.Minute}, inflight: map[string]*flight{}, active: map[string]int{}, datasetLocks: map[string]*datasetGuard{}, clickhouse: clickhouse, coverage: coverageStore, factorCache: map[string]cachedForwardFactors{}, flowBuilds: map[string]struct{}{}}
 	if err := c.importPrivateIndicators(context.Background()); err != nil {
 		c.Close()
 		return nil, err
@@ -142,6 +146,7 @@ func NewCacheWithClickHouse(cfg config.Client, clickhouse HistoricalClickHouse) 
 		c.Close()
 		return nil, err
 	}
+	_, _ = c.db.Exec(`DELETE FROM flow_basket_results WHERE updated_at<?`, time.Now().Add(-90*24*time.Hour).Unix())
 	return c, nil
 }
 
@@ -948,6 +953,16 @@ func (c *Cache) RunMarketHistorySync(ctx context.Context) {
 }
 
 func (c *Cache) ServerJSON(ctx context.Context, method, path string, body io.Reader) (json.RawMessage, int, error) {
+	return c.serverJSON(ctx, c.http, method, path, body)
+}
+
+func (c *Cache) ServerJSONLong(ctx context.Context, method, path string, body io.Reader) (json.RawMessage, int, error) {
+	client := *c.http
+	client.Timeout = 45 * time.Minute
+	return c.serverJSON(ctx, &client, method, path, body)
+}
+
+func (c *Cache) serverJSON(ctx context.Context, client *http.Client, method, path string, body io.Reader) (json.RawMessage, int, error) {
 	req, err := c.request(ctx, method, path, body)
 	if err != nil {
 		return nil, 0, err
@@ -955,14 +970,14 @@ func (c *Cache) ServerJSON(ctx context.Context, method, path string, body io.Rea
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := c.http.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
 	limit := int64(1 << 20)
 	requestPath := strings.SplitN(path, "?", 2)[0]
-	if requestPath == "/v1/market-history/universe" || requestPath == "/v1/market-history/security-profiles" {
+	if requestPath == "/v1/market-history/universe" || requestPath == "/v1/market-history/security-profiles" || strings.HasPrefix(requestPath, "/v1/market-analytics/") {
 		limit = 32 << 20
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))

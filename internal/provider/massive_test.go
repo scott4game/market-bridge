@@ -44,6 +44,57 @@ func TestMassiveReportsHTTPStatusBeforeJSONDecode(t *testing.T) {
 	}
 }
 
+func TestMassiveAggregatesPopulateTurnoverFromVWAP(t *testing.T) {
+	spec := massiveTestSpec()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprintf(w, `{"status":"OK","results":[{"o":10,"h":12,"l":9,"c":11,"v":100,"vw":10.25,"t":%d}]}`, spec.From.UnixMilli())
+	}))
+	defer server.Close()
+	bars, err := (&Massive{APIKey: "test", BaseURL: server.URL, HTTP: server.Client(), PlanName: "custom"}).Bars(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bars) != 1 || bars[0].Turnover == nil || bars[0].Turnover.String() != "1025.000000" {
+		t.Fatalf("bars=%+v", bars)
+	}
+}
+
+func TestMassiveGroupedDailyUsesRawVWAPTurnover(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/aggs/grouped/locale/us/market/stocks/2026-09-03" || r.URL.Query().Get("adjusted") != "false" || r.URL.Query().Get("include_otc") != "false" {
+			t.Fatalf("request=%s", r.URL.String())
+		}
+		_, _ = w.Write([]byte(`{"status":"OK","results":[{"T":"NVDA","o":170,"h":180,"l":169,"c":179,"v":200,"vw":175.5,"t":1788408000000}]}`))
+	}))
+	defer server.Close()
+	bars, err := (&Massive{APIKey: "test", BaseURL: server.URL, HTTP: server.Client()}).GroupedDaily(context.Background(), "2026-09-03")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bars) != 1 || bars[0].Symbol != "NVDA" || bars[0].Turnover == nil || bars[0].Turnover.String() != "35100.000000" || bars[0].Session != market.RegularSession {
+		t.Fatalf("bars=%+v", bars)
+	}
+}
+
+func TestMassiveGroupedDailyRetriesTransientStatus(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		if requests < 3 {
+			http.Error(w, "retry", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"OK","results":[]}`))
+	}))
+	defer server.Close()
+	if _, err := (&Massive{APIKey: "test", BaseURL: server.URL, HTTP: server.Client()}).GroupedDaily(context.Background(), "2026-09-03"); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 3 {
+		t.Fatalf("requests=%d", requests)
+	}
+}
+
 func TestMassiveReadsIndexWithNativeTicker(t *testing.T) {
 	from := time.Date(2026, 8, 24, 14, 30, 0, 0, time.UTC)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

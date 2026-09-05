@@ -1,8 +1,11 @@
 package localclient
 
 import (
+	"bytes"
+	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
 	"net/http"
@@ -43,6 +46,10 @@ func (h *HTTP) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/market-history/adjustments/{symbol}", h.proxyServerJSON)
 	mux.HandleFunc("GET /v1/options/contracts", h.proxyServerJSON)
 	mux.HandleFunc("GET /v1/options/bars/{contract}", h.proxyServerJSON)
+	mux.HandleFunc("GET /v1/market-analytics/volume/{symbol}", h.proxyServerJSON)
+	mux.HandleFunc("GET /v1/market-analytics/flow/{symbol}", h.proxyServerJSON)
+	mux.HandleFunc("POST /v1/market-analytics/basket-flow", h.proxyServerJSON)
+	mux.HandleFunc("GET /v1/market-analytics/sector-flow", h.proxyServerJSON)
 	mux.HandleFunc("GET /v1/storage/status", func(w http.ResponseWriter, r *http.Request) { jsonResponse(w, 200, h.Cache.StorageStatus(r.Context())) })
 	mux.HandleFunc("GET /v1/me", h.proxyServerJSON)
 	mux.HandleFunc("GET /v1/me/usage", h.proxyServerJSON)
@@ -54,6 +61,11 @@ func (h *HTTP) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/me/indicators/{id}", h.updateLocalIndicator)
 	mux.HandleFunc("DELETE /v1/me/indicators/{id}", h.deleteLocalIndicator)
 	mux.HandleFunc("POST /v1/me/indicators/{id}/copy", h.copyLocalIndicator)
+	mux.HandleFunc("GET /v1/me/flow-baskets", h.getFlowBaskets)
+	mux.HandleFunc("POST /v1/me/flow-baskets", h.createFlowBasket)
+	mux.HandleFunc("PUT /v1/me/flow-baskets/{id}", h.updateFlowBasket)
+	mux.HandleFunc("DELETE /v1/me/flow-baskets/{id}", h.deleteFlowBasket)
+	mux.HandleFunc("GET /v1/me/flow-baskets/{id}/flow", h.flowBasketAnalytics)
 	if h.Live != nil {
 		mux.Handle("/v1/live/ws", h.Live)
 	}
@@ -65,6 +77,165 @@ func (h *HTTP) Handler() http.Handler {
 	assets, _ := fs.Sub(ui, "ui")
 	mux.Handle("/", http.FileServer(http.FS(assets)))
 	return security(mux)
+}
+
+func (h *HTTP) getFlowBaskets(w http.ResponseWriter, r *http.Request) {
+	baskets, err := h.Cache.FlowBaskets(r.Context())
+	if err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]any{"baskets": baskets, "storage": "local"})
+}
+
+func decodeFlowBasket(w http.ResponseWriter, r *http.Request) (flowBasketMutation, bool) {
+	var mutation flowBasketMutation
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 128<<10)).Decode(&mutation); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return mutation, false
+	}
+	return mutation, true
+}
+
+func flowBasketError(w http.ResponseWriter, err error) {
+	status := http.StatusBadRequest
+	switch err {
+	case errFlowBasketNotFound:
+		status = http.StatusNotFound
+	case errFlowBasketConflict, errFlowBasketName:
+		status = http.StatusConflict
+	case errFlowBasketLimit:
+		status = http.StatusTooManyRequests
+	}
+	jsonResponse(w, status, map[string]string{"error": err.Error()})
+}
+
+func (h *HTTP) createFlowBasket(w http.ResponseWriter, r *http.Request) {
+	mutation, ok := decodeFlowBasket(w, r)
+	if !ok {
+		return
+	}
+	basket, err := h.Cache.CreateFlowBasket(r.Context(), mutation)
+	if err != nil {
+		flowBasketError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusCreated, basket)
+}
+
+func (h *HTTP) updateFlowBasket(w http.ResponseWriter, r *http.Request) {
+	mutation, ok := decodeFlowBasket(w, r)
+	if !ok {
+		return
+	}
+	basket, err := h.Cache.UpdateFlowBasket(r.Context(), r.PathValue("id"), mutation)
+	if err != nil {
+		flowBasketError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, basket)
+}
+
+func (h *HTTP) deleteFlowBasket(w http.ResponseWriter, r *http.Request) {
+	revision, err := strconv.Atoi(r.URL.Query().Get("revision"))
+	if err != nil || revision < 1 {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "revision is required"})
+		return
+	}
+	if err := h.Cache.DeleteFlowBasket(r.Context(), r.PathValue("id"), revision); err != nil {
+		flowBasketError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *HTTP) flowBasketAnalytics(w http.ResponseWriter, r *http.Request) {
+	basket, err := h.Cache.FlowBasket(r.Context(), r.PathValue("id"))
+	if err != nil {
+		flowBasketError(w, err)
+		return
+	}
+	q := r.URL.Query()
+	from, err := time.Parse(time.RFC3339, q.Get("from"))
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "from must be RFC3339"})
+		return
+	}
+	to, err := time.Parse(time.RFC3339, q.Get("to"))
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "to must be RFC3339"})
+		return
+	}
+	spec, err := (market.DatasetSpec{Symbols: basket.Symbols, Interval: q.Get("interval"), From: from, To: to, Session: market.Session(q.Get("session")), Adjustment: market.Raw}).Normalize()
+	if err != nil || market.IntervalDuration(spec.Interval) > 24*time.Hour {
+		if err == nil {
+			err = errors.New("flow basket supports intervals from 1m through 1d")
+		}
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	capability, capabilityErr := h.Cache.storageCapability(r.Context())
+	identity := "unknown"
+	if capabilityErr == nil {
+		identity = capability.DataVersion
+	}
+	key, err := flowBasketCacheKey(basket, spec, identity)
+	if err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	raw, found, complete, updatedAt, err := h.Cache.flowBasketResult(r.Context(), key)
+	if err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if !complete && (!found || time.Since(updatedAt) >= 30*time.Second) {
+		h.startFlowBasketBuild(key, basket.ID, spec)
+	}
+	if found {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(raw)
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]any{
+		"source": "pending", "method": "massive_close_location_v1", "proxy": true, "as_of": time.Now().UTC(),
+		"complete": false, "coverage": map[string]any{"total": len(spec.Symbols), "evaluated": 0},
+		"points": []any{}, "retry_after_seconds": 5,
+	})
+}
+
+func (h *HTTP) startFlowBasketBuild(key, basketID string, spec market.DatasetSpec) {
+	if !h.Cache.beginFlowBuild(key) {
+		return
+	}
+	go func() {
+		defer h.Cache.endFlowBuild(key)
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+		defer cancel()
+		body, _ := json.Marshal(map[string]any{"symbols": spec.Symbols, "interval": spec.Interval, "from": spec.From, "to": spec.To, "session": spec.Session})
+		raw, status, err := h.Cache.ServerJSONLong(ctx, http.MethodPost, "/v1/market-analytics/basket-flow", bytes.NewReader(body))
+		if err != nil || status != http.StatusOK {
+			message := "basket flow build failed"
+			if err != nil {
+				message = err.Error()
+			}
+			failed, _ := json.Marshal(map[string]any{
+				"source": "massive", "method": "massive_close_location_v1", "proxy": true, "as_of": time.Now().UTC(),
+				"complete": false, "coverage": map[string]any{"total": len(spec.Symbols), "evaluated": 0, "missing_symbols": spec.Symbols},
+				"points": []any{}, "errors": []string{message}, "retry_after_seconds": 30,
+			})
+			_ = h.Cache.storeFlowBasketResult(context.Background(), key, basketID, failed, false)
+			return
+		}
+		var metadata struct {
+			Complete bool `json:"complete"`
+		}
+		if json.Unmarshal(raw, &metadata) != nil {
+			return
+		}
+		_ = h.Cache.storeFlowBasketResult(context.Background(), key, basketID, raw, metadata.Complete)
+	}()
 }
 
 func (h *HTTP) getLocalIndicators(w http.ResponseWriter, r *http.Request) {

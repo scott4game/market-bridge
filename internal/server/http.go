@@ -62,6 +62,7 @@ type HTTP struct {
 	RecentTrades      RecentTradesReader
 	News              *news.Service
 	SecurityProfiles  *SecurityProfileCatalog
+	Analytics         *MarketAnalytics
 }
 
 func (h *HTTP) Handler() http.Handler {
@@ -86,6 +87,10 @@ func (h *HTTP) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/market-history/adjustments/{symbol}", h.auth("history:read", h.historyAdjustments))
 	mux.HandleFunc("GET /v1/options/contracts", h.auth("history:read", h.optionContracts))
 	mux.HandleFunc("GET /v1/options/bars/{contract}", h.auth("history:read", h.optionBars))
+	mux.HandleFunc("GET /v1/market-analytics/volume/{symbol}", h.auth("history:read", h.analyticsVolume))
+	mux.HandleFunc("GET /v1/market-analytics/flow/{symbol}", h.auth("history:read", h.analyticsFlow))
+	mux.HandleFunc("POST /v1/market-analytics/basket-flow", h.auth("history:read", h.analyticsBasketFlow))
+	mux.HandleFunc("GET /v1/market-analytics/sector-flow", h.auth("history:read", h.analyticsSectorFlow))
 	mux.HandleFunc("GET /v1/me", h.auth("profile:read", h.me))
 	mux.HandleFunc("GET /v1/me/usage", h.auth("profile:read", h.myUsage))
 	mux.HandleFunc("GET /v1/me/watchlist", h.auth("profile:read", h.getWatchlist))

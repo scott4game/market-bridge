@@ -308,13 +308,18 @@ func main() {
 	if clickhouse != nil {
 		historicalClickHouse = clickhouse
 	}
+	marketAnalytics, err := marketserver.OpenMarketAnalytics(filepath.Join(cfg.DataDir, "market-analytics.db"), store, historicalClickHouse, historyCatalog, securityProfiles, historyDataVersion)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer marketAnalytics.Close()
 	var recentTrades marketserver.RecentTradesReader
 	if longbridgeQuote != nil {
 		recentTrades = longbridgeQuote
 	}
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           (&marketserver.HTTP{Store: store, Token: cfg.BearerToken, Access: auth, Limiter: limiter, Live: hub, Usage: usage, OptionsUsage: optionsUsage, Options: optionsCatalog, ProviderStatus: providerStatus, ClickHouseEnabled: cfg.ClickHouseEnabled, ClickHouse: historicalClickHouse, RedisEnabled: cfg.RedisEnabled, Redis: redisCache, HistoryCatalog: historyCatalog, DataVersion: historyDataVersion, EmptyCoverageTTL: cfg.EmptyCoverageTTL, HistoryRetention: cfg.ClickHouseRetention, RecentTrades: recentTrades, News: newsService, SecurityProfiles: securityProfiles}).Handler(),
+		Handler:           (&marketserver.HTTP{Store: store, Token: cfg.BearerToken, Access: auth, Limiter: limiter, Live: hub, Usage: usage, OptionsUsage: optionsUsage, Options: optionsCatalog, ProviderStatus: providerStatus, ClickHouseEnabled: cfg.ClickHouseEnabled, ClickHouse: historicalClickHouse, RedisEnabled: cfg.RedisEnabled, Redis: redisCache, HistoryCatalog: historyCatalog, DataVersion: historyDataVersion, EmptyCoverageTTL: cfg.EmptyCoverageTTL, HistoryRetention: cfg.ClickHouseRetention, RecentTrades: recentTrades, News: newsService, SecurityProfiles: securityProfiles, Analytics: marketAnalytics}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    1 << 20,

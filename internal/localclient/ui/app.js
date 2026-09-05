@@ -17,6 +17,11 @@ let universeSecurities = []
 const wsMonitor = { state: 'disabled', symbol: '', interval: '', count: 0, connectedAt: 0, lastMessageAt: 0, lastType: '', detail: '实时推送目前仅支持 1m 周期' }
 let activeQuery = null
 let lastBars = []
+let analyticsGeneration = 0
+let sectorSortMode = 'amount'
+let sectorFlowRows = []
+let flowBaskets = []
+let selectedFlowBasket = null
 let providerStatus = null
 let queryGeneration = 0
 let localIndicators = []
@@ -414,6 +419,42 @@ chart.overrideYAxis({ paneId: 'candle_pane', scrollZoomEnabled: yAxisZoomEnabled
 chart.setPaneOptions({ id: 'candle_pane', minHeight: 240 })
 $('y-axis-zoom').checked = yAxisZoomEnabled
 
+window.klinecharts.registerIndicator({
+  name: 'MB_VOLUME_ENERGY', shortName: '量能', series: 'volume', precision: 2,
+  figures: [
+    { key: 'volumeValue', title: 'VOL: ', type: 'bar', baseValue: 0, styles: ({ data }) => ({ color: Number(data.current?.__close) >= Number(data.current?.__open) ? RED : GREEN }) },
+    lineFigure('volumeRatioValue', '量比20: ', YELLOW),
+    lineFigure('turnoverRatioValue', '额比20: ', CYAN)
+  ],
+  calc: data => data.map(item => ({ __open: item.open, __close: item.close, volumeValue: item.volume, volumeRatioValue: item.volumeRatio, turnoverRatioValue: item.turnoverRatio }))
+})
+window.klinecharts.registerIndicator({
+  name: 'MB_FLOW_PROXY', shortName: '资金流代理', series: 'normal', precision: 2,
+  figures: [
+    { key: 'netFlowValue', title: '净流入: ', type: 'bar', baseValue: 0, styles: ({ data }) => ({ color: Number(data.current?.netFlowValue) >= 0 ? RED : GREEN }) },
+    lineFigure('flowRatioValue', '占比: ', YELLOW)
+  ],
+  calc: data => data.map(item => ({ netFlowValue: item.netFlow, flowRatioValue: Number.isFinite(item.flowRatio) ? item.flowRatio * 100 : null }))
+})
+
+function applyAnalyticsPanes() {
+  const configurations = [
+    { id: 'market_volume_energy', name: 'MB_VOLUME_ENERGY', enabled: $('volume-energy-pane').checked },
+    { id: 'market_flow_proxy', name: 'MB_FLOW_PROXY', enabled: $('flow-proxy-pane').checked }
+  ]
+  for (const item of configurations) {
+    const exists = chart.getIndicators({ name: item.name, paneId: item.id }).length > 0
+    if (item.enabled && !exists) {
+      chart.createIndicator({ name: item.name, paneId: item.id }, false)
+      chart.setPaneOptions({ id: item.id, height: DEFAULT_INDICATOR_PANE_HEIGHT, minHeight: MIN_INDICATOR_PANE_HEIGHT })
+    } else if (!item.enabled && exists) {
+      chart.removeIndicator({ name: item.name, paneId: item.id })
+    }
+  }
+}
+
+applyAnalyticsPanes()
+
 function indicatorPaneHeight(indicatorID) {
   const saved = Number(indicatorPaneHeights[indicatorID])
   return Number.isFinite(saved) && saved >= MIN_INDICATOR_PANE_HEIGHT ? Math.round(saved) : DEFAULT_INDICATOR_PANE_HEIGHT
@@ -689,6 +730,135 @@ function startLive(symbol, period, callback) {
   }
 }
 
+function analyticsSupported(symbol, interval) {
+  return !symbol.includes('.') && !symbol.startsWith('I:') && !symbol.startsWith('F:') && /^(1|3|5|10|15|30)m$|^[1-4]h$|^1d$/.test(interval)
+}
+
+function formatRatio(value) {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? `${(numeric * 100).toFixed(2)}%` : '—'
+}
+
+function renderFundSummary(volumePoint, flowPoint, state = 'Massive 代理') {
+  $('fund-volume-ratio').textContent = volumePoint?.volumeRatio == null ? '—' : `${volumePoint.volumeRatio.toFixed(2)}×`
+  $('fund-turnover-ratio').textContent = volumePoint?.turnoverRatio == null ? '—' : `${volumePoint.turnoverRatio.toFixed(2)}×`
+  $('fund-inflow').textContent = compactMarketNumber(flowPoint?.inflow)
+  $('fund-outflow').textContent = compactMarketNumber(flowPoint?.outflow)
+  $('fund-net-flow').textContent = compactMarketNumber(flowPoint?.netFlow)
+  $('fund-flow-ratio').textContent = formatRatio(flowPoint?.flowRatio)
+  $('fund-net-flow').className = Number(flowPoint?.netFlow) > 0 ? 'up' : Number(flowPoint?.netFlow) < 0 ? 'down' : ''
+  $('funds-state').textContent = state
+}
+
+function renderSectorFlows() {
+  const rows = window.flowAnalyticsUtils.sortSectors(sectorFlowRows, sectorSortMode).slice(0, 30)
+  if (!rows.length) {
+    const empty = document.createElement('p')
+    empty.className = 'live-empty'
+    empty.textContent = '暂无已完成日线板块数据'
+    $('sector-flow-rows').replaceChildren(empty)
+    return
+  }
+  const fragment = document.createDocumentFragment()
+  for (const sector of rows) {
+    const row = document.createElement('div')
+    row.className = `fund-row ${(sector.netFlow || 0) >= 0 ? 'up' : 'down'}`
+    const label = document.createElement('span')
+    label.textContent = `${sector.code} · ${sector.name || '未命名行业'} · ${sector.evaluated}/${sector.members}`
+    label.title = label.textContent
+    const value = document.createElement('strong')
+    value.textContent = sectorSortMode === 'ratio' ? formatRatio(sector.flowRatio) : compactMarketNumber(sector.netFlow)
+    row.append(label, value)
+    fragment.appendChild(row)
+  }
+  $('sector-flow-rows').replaceChildren(fragment)
+}
+
+async function loadSectorFlows(generation) {
+  try {
+    const response = await getJSON('/v1/market-analytics/sector-flow?taxonomy=sic&limit=200')
+    if (generation !== analyticsGeneration) return
+    sectorFlowRows = response.sectors || []
+    renderSectorFlows()
+    const coverage = response.coverage || {}
+    $('funds-state').textContent = `Massive 代理 · SIC ${coverage.evaluated ?? 0}/${coverage.total ?? 0}`
+  } catch (error) {
+    if (generation !== analyticsGeneration) return
+    sectorFlowRows = []
+    renderSectorFlows()
+    $('funds-state').textContent = `板块数据不可用：${error.message}`
+  }
+}
+
+async function loadMarketAnalytics(symbol, interval, from, to, adjustment, generation) {
+  if (!analyticsSupported(symbol, interval)) {
+    renderFundSummary(null, null, '该市场或周期暂不支持')
+    return
+  }
+  const base = new URLSearchParams({ interval, from: new Date(from).toISOString(), to: new Date(to).toISOString(), session: 'regular' })
+  const volumeQuery = new URLSearchParams(base)
+  volumeQuery.set('adjustment', adjustment)
+  const [volumeResult, flowResult] = await Promise.allSettled([
+    getJSON(`/v1/market-analytics/volume/${encodeURIComponent(symbol)}?${volumeQuery}`),
+    getJSON(`/v1/market-analytics/flow/${encodeURIComponent(symbol)}?${base}`)
+  ])
+  if (generation !== analyticsGeneration || !activeQuery || activeQuery.symbol !== symbol || activeQuery.interval !== interval) return
+  const volumePoints = volumeResult.status === 'fulfilled' ? volumeResult.value.points || [] : []
+  const flowPoints = flowResult.status === 'fulfilled' ? flowResult.value.points || [] : []
+  lastBars = window.flowAnalyticsUtils.mergeIntoBars(lastBars, volumePoints, flowPoints)
+  chart.overrideIndicator({ name: 'MB_VOLUME_ENERGY' })
+  chart.overrideIndicator({ name: 'MB_FLOW_PROXY' })
+  const latestVolume = volumePoints.length ? window.flowAnalyticsUtils.normalizeVolumePoint(volumePoints[volumePoints.length - 1]) : null
+  const latestFlow = flowPoints.length ? window.flowAnalyticsUtils.normalizeFlowPoint(flowPoints[flowPoints.length - 1]) : null
+  const failures = [volumeResult, flowResult].filter(result => result.status === 'rejected').length
+  renderFundSummary(latestVolume, latestFlow, failures ? `Massive 代理 · ${2 - failures}/2 可用` : 'Massive 代理')
+}
+
+function renderFlowBasketOptions() {
+  const current = $('flow-basket-select').value
+  const options = [new Option('选择篮子', '')]
+  for (const basket of flowBaskets) options.push(new Option(`${basket.name} · ${basket.symbols.length}`, basket.id))
+  $('flow-basket-select').replaceChildren(...options)
+  $('flow-basket-select').value = flowBaskets.some(item => item.id === current) ? current : ''
+}
+
+async function loadFlowBaskets() {
+  const response = await getJSON('/v1/me/flow-baskets')
+  flowBaskets = response.baskets || []
+  renderFlowBasketOptions()
+}
+
+function editFlowBasket(basket = null) {
+  selectedFlowBasket = basket
+  $('flow-basket-editor').hidden = false
+  $('flow-basket-id').value = basket?.id || ''
+  $('flow-basket-revision').value = basket?.revision || ''
+  $('flow-basket-name').value = basket?.name || ''
+  $('flow-basket-symbols').value = (basket?.symbols || []).join(',')
+  $('delete-flow-basket').hidden = !basket
+}
+
+async function pollSelectedBasketFlow() {
+  const basket = selectedFlowBasket
+  if (!basket || !activeQuery || !analyticsSupported(activeQuery.symbol, activeQuery.interval)) return
+  const generation = analyticsGeneration
+  const query = new URLSearchParams({
+    interval: activeQuery.interval, from: new Date(activeQuery.loadedFrom).toISOString(), to: new Date(activeQuery.to).toISOString(), session: 'regular'
+  })
+  try {
+    const response = await getJSON(`/v1/me/flow-baskets/${basket.id}/flow?${query}`)
+    if (generation !== analyticsGeneration || selectedFlowBasket?.id !== basket.id) return
+    const coverage = response.coverage || {}
+    const latest = response.points?.length ? window.flowAnalyticsUtils.normalizeFlowPoint(response.points[response.points.length - 1]) : null
+    $('basket-flow-state').textContent = response.complete
+      ? `${basket.name} · ${coverage.evaluated}/${coverage.total} · 净流入 ${compactMarketNumber(latest?.netFlow)} · ${formatRatio(latest?.flowRatio)}`
+      : `${basket.name} · 后台补齐 ${coverage.evaluated ?? 0}/${coverage.total ?? basket.symbols.length}`
+    if (!response.complete) window.setTimeout(pollSelectedBasketFlow, Math.max(5, Number(response.retry_after_seconds || 5)) * 1000)
+  } catch (error) {
+    if (generation === analyticsGeneration) $('basket-flow-state').textContent = error.message
+  }
+}
+
 chart.setDataLoader({
   async getBars({ type, timestamp, symbol, period, callback }) {
     if ((type !== 'init' && type !== 'forward') || !activeQuery) {
@@ -739,7 +909,9 @@ chart.setDataLoader({
       if (data.warning) $('error').textContent = `部分历史数据加载失败，已展示可用数据：${data.warning}`
       if (type === 'init') {
         setChartEmptyState(bars.length ? '' : '暂无 K 线数据')
+		loadSectorFlows(analyticsGeneration)
       }
+		loadMarketAnalytics(ticker, interval, range.from, range.to, activeQuery.adjustment, analyticsGeneration)
     } catch (error) {
       callback([], { forward: false, backward: false })
       if (!window.marketHistory.isCurrentQuery(activeQuery, generation, ticker, interval)) return
@@ -1056,6 +1228,53 @@ $('save-watchlist').addEventListener('click', async () => {
   }
 })
 
+$('volume-energy-pane').addEventListener('change', applyAnalyticsPanes)
+$('flow-proxy-pane').addEventListener('change', applyAnalyticsPanes)
+for (const button of document.querySelectorAll('[data-sector-sort]')) {
+  button.addEventListener('click', () => {
+    sectorSortMode = button.dataset.sectorSort
+    for (const item of document.querySelectorAll('[data-sector-sort]')) item.setAttribute('aria-pressed', String(item === button))
+    renderSectorFlows()
+  })
+}
+$('new-flow-basket').addEventListener('click', () => editFlowBasket())
+$('flow-basket-select').addEventListener('change', () => {
+  selectedFlowBasket = flowBaskets.find(item => item.id === $('flow-basket-select').value) || null
+  if (selectedFlowBasket) editFlowBasket(selectedFlowBasket)
+  else $('flow-basket-editor').hidden = true
+  pollSelectedBasketFlow()
+})
+$('flow-basket-editor').addEventListener('submit', async event => {
+  event.preventDefault()
+  const symbols = $('flow-basket-symbols').value.split(',').map(value => value.trim()).filter(Boolean)
+  const id = $('flow-basket-id').value
+  const body = { name: $('flow-basket-name').value.trim(), symbols, revision: Number($('flow-basket-revision').value || 0) }
+  try {
+    const saved = await getJSON(id ? `/v1/me/flow-baskets/${id}` : '/v1/me/flow-baskets', {
+      method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    })
+    await loadFlowBaskets()
+    $('flow-basket-select').value = saved.id
+    editFlowBasket(saved)
+    $('basket-flow-state').textContent = '已保存，正在读取资金流'
+    pollSelectedBasketFlow()
+  } catch (error) {
+    $('basket-flow-state').textContent = error.message
+  }
+})
+$('delete-flow-basket').addEventListener('click', async () => {
+  if (!selectedFlowBasket || !confirm(`删除篮子“${selectedFlowBasket.name}”？`)) return
+  try {
+    await getJSON(`/v1/me/flow-baskets/${selectedFlowBasket.id}?revision=${selectedFlowBasket.revision}`, { method: 'DELETE' })
+    selectedFlowBasket = null
+    $('flow-basket-editor').hidden = true
+    $('basket-flow-state').textContent = '已删除'
+    await loadFlowBaskets()
+  } catch (error) {
+    $('basket-flow-state').textContent = error.message
+  }
+})
+
 $('market').addEventListener('change', () => {
   const placeholders = { us: '输入代码或名称，例如 NVDA / I:VIX / I:IXIC', hk: '输入代码或名称，例如 700.HK / I:HSI', cn: '输入代码或名称，例如 600519.SH / 贵州茅台' }
   $('symbol').value = ''
@@ -1099,6 +1318,8 @@ $('query').addEventListener('submit', event => {
       adjustment: defaults.adjustment,
       generation: ++queryGeneration
     }
+	++analyticsGeneration
+	renderFundSummary(null, null, analyticsSupported(symbol, interval) ? 'Massive 代理 · 加载中' : '该市场或周期暂不支持')
     lastBars = []
     $('source').textContent = `市场：${defaults.market} · ${defaults.timezone} · 加载中`
     $('count').textContent = 'Bars：0'
@@ -1123,7 +1344,7 @@ setInterval(refreshAccount, 10000)
 setInterval(renderWSStatus, 1000)
 
 async function bootstrap() {
-  await Promise.all([refreshAccount(), loadSymbolOptions()])
+  await Promise.all([refreshAccount(), loadSymbolOptions(), loadFlowBaskets()])
   $('query').requestSubmit()
 }
 
