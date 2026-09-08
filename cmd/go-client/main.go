@@ -96,6 +96,9 @@ func main() {
 			_ = srv.Shutdown(shutdownCtx)
 		}()
 		log.Printf("go-client and KLineChart listening on http://%s", cfg.Listen)
+		if cfg.MCPEnabled {
+			log.Printf("MCP enabled at /mcp (loopback connections only)")
+		}
 		err = srv.ListenAndServe()
 		if err != nil && err != http.ErrServerClosed {
 			log.Fatal(err)

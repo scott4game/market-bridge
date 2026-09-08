@@ -268,16 +268,44 @@ func (s *Service) ListHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	rows, err := s.Store.List(r.Context(), q)
+	response, err := s.List(r.Context(), q)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	response := ListResponse{News: rows, LatestSequence: s.Store.LatestSequence(r.Context())}
+	writeJSON(w, http.StatusOK, response)
+}
+
+// List shares validated news filtering and pagination with HTTP and MCP callers.
+func (s *Service) List(ctx context.Context, q Query) (ListResponse, error) {
+	var err error
+	if q.Limit == 0 {
+		q.Limit = 50
+	}
+	if q.Limit < 1 || q.Limit > 500 {
+		return ListResponse{}, errors.New("limit must be between 1 and 500")
+	}
+	if q.AfterSequence < 0 || q.BeforeSequence < 0 || (q.AfterSequence > 0 && q.BeforeSequence > 0) {
+		return ListResponse{}, errors.New("invalid news cursor")
+	}
+	if q.Symbols, err = normalizeSymbolsStrict(q.Symbols); err != nil {
+		return ListResponse{}, err
+	}
+	if q.Kinds, err = normalizeKindsStrict(q.Kinds); err != nil {
+		return ListResponse{}, err
+	}
+	if s.Store == nil {
+		return ListResponse{}, errors.New("news store is unavailable")
+	}
+	rows, err := s.Store.List(ctx, q)
+	if err != nil {
+		return ListResponse{}, err
+	}
+	response := ListResponse{News: rows, LatestSequence: s.Store.LatestSequence(ctx)}
 	if len(rows) == q.Limit && q.AfterSequence == 0 {
 		response.NextBeforeSequence = rows[len(rows)-1].Sequence
 	}
-	writeJSON(w, http.StatusOK, response)
+	return response, nil
 }
 
 func (s *Service) ServeWS(w http.ResponseWriter, r *http.Request) {

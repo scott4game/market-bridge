@@ -305,3 +305,14 @@ func TestInvalidValuesUseDefaults(t *testing.T) {
 		t.Fatalf("invalid values did not fall back to defaults: %+v", got)
 	}
 }
+
+func TestClientMCPEnabledEnvironment(t *testing.T) {
+	t.Setenv("GO_CLIENT_MCP_ENABLED", "")
+	if !ClientFromEnv().MCPEnabled {
+		t.Fatal("MCP should default to enabled")
+	}
+	t.Setenv("GO_CLIENT_MCP_ENABLED", "false")
+	if ClientFromEnv().MCPEnabled {
+		t.Fatal("MCP should be disabled")
+	}
+}

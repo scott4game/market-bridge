@@ -24,6 +24,11 @@ type HTTP struct {
 
 func (h *HTTP) Handler() http.Handler {
 	mux := http.NewServeMux()
+	if h.Cache != nil && h.Cache.cfg.MCPEnabled {
+		mux.Handle("/mcp", h.mcpHandler())
+	} else {
+		mux.HandleFunc("/mcp", http.NotFound)
+	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { jsonResponse(w, 200, map[string]string{"status": "ok"}) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
 		jsonResponse(w, 200, map[string]string{"status": "ready"})

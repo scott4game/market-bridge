@@ -75,6 +75,7 @@ services:
       target: go-client
     environment:
       GO_CLIENT_LISTEN: 0.0.0.0:17600
+      GO_CLIENT_MCP_ENABLED: ${GO_CLIENT_MCP_ENABLED:-true}
       GO_CLIENT_CACHE_DIRECTORY: /data
       GO_CLIENT_SERVER_URL: ${GO_CLIENT_SERVER_URL:?set GO_CLIENT_SERVER_URL in .env}
       GO_CLIENT_SERVER_TOKEN: ${GO_CLIENT_SERVER_TOKEN:?set GO_CLIENT_SERVER_TOKEN in .env}

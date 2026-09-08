@@ -329,3 +329,54 @@ Grok、Claude Code、Codex 等本地 Agent 通过 API 读取行情时，见
 完整说明见 [go-client 本地数据接口与策略验证指南](docs/go-client-data-api.md)。
 
 生产部署后的 Compose 升级、Nginx/OpenResty 配置、REST/WebSocket 验证及 Longbridge 常见故障排查，见 [go-server 部署、验证与故障排查](docs/server-operations.md)。
+
+
+### 本地 MCP 服务
+
+`go-client serve` 同时提供网页、REST API 和 Streamable HTTP MCP，无需另装或启动 `go-mcp`。
+在已配置好上游地址与个人 API Key 的宿主机上运行：
+
+```bash
+export GO_CLIENT_SERVER_URL=http://127.0.0.1:17601
+export GO_CLIENT_SERVER_TOKEN=你的个人APIKey
+GO_CLIENT_REDIS_ENABLED=false go run ./cmd/go-client serve
+```
+
+在支持 Streamable HTTP 的 AI 客户端中添加 MCP 服务，URL 填写
+`http://127.0.0.1:17600/mcp`。如果修改 `GO_CLIENT_LISTEN`，同步修改端口。
+无需为本地 MCP 单独设置令牌；访问 go-server 继续使用 `GO_CLIENT_SERVER_TOKEN`。
+设置 `GO_CLIENT_MCP_ENABLED=false` 可关闭该路由（返回 404）。
+
+| 工具 | 参数和行为 |
+| --- | --- |
+| `get_bars` | `symbol`、`interval`、RFC3339 `from/to`；可选 `session`、`adjustment`、`limit` |
+| `get_recent_trades` | `symbol`、可选 `limit`；需要服务端启用 Longbridge 实时数据 |
+| `get_news` | 可选 `symbols`、`kinds`、`limit`、`before_sequence` 或 `after_sequence`；查询本地新闻镜像 |
+| `get_option_contracts` | `underlying`；可选 `type`、`expiration_from/to`、`strike_gte/lte`、`as_of`、`limit`、`offset` |
+| `get_option_bars` | `contract`（`O:` 前缀）、`from/to`（日期或 RFC3339）、可选 `limit`；沿用服务端原生粒度 |
+| `get_provider_status` | 无参数；查询服务端数据源可用状态 |
+
+例如让 AI 调用 `get_bars`：
+
+```json
+{
+  "symbol": "NVDA",
+  "interval": "30m",
+  "from": "2026-09-01T00:00:00Z",
+  "to": "2026-09-08T00:00:00Z",
+  "limit": 100
+}
+```
+
+周期采用现有 API 的 `30m`、`1h`、`1d` 等写法。交易时段默认股票 `regular`、
+加密货币及期货 `continuous`；复权沿用现有市场默认规则。新闻 `kinds` 支持
+`stock_news`、`press_release`，默认最多 50 条、上限 500，使用返回的
+`next_before_sequence` 向前翻页，或使用 `after_sequence` 获取后续新闻，两者不能并用。
+其他列表默认最多 100 条、上限 1000。K 线保留指定时间范围内最近的条目并按时间升序返回；
+合约按 ticker 排序，通过 `next_offset` 翻页。K 线和合约返回 `total_count`、`count`、
+`truncated`，部分 K 线数据附带 `warning`。条数限制控制返回结果，不能减少现有上游接口
+为指定时间范围执行的数据获取量。查询可能触发既有的数据下载和缓存流程。
+
+该版本仅接受实际来源为 loopback 的连接，并校验 Host 与 Origin。Docker 默认桥接端口
+映射不满足此条件，即使从宿主机 localhost 访问也可能返回 403；需要 MCP 时请直接在
+宿主机运行 client。第一版不支持跨机器连接、实时订阅或缓存/自选股写入操作。
