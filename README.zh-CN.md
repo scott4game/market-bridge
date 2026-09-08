@@ -379,6 +379,7 @@ GO_CLIENT_REDIS_ENABLED=false go run ./cmd/go-client serve
 `truncated`，部分 K 线数据附带 `warning`。条数限制控制返回结果，不能减少现有上游接口
 为指定时间范围执行的数据获取量。查询可能触发既有的数据下载和缓存流程。
 
-该版本仅接受实际来源为 loopback 的连接，并校验 Host 与 Origin。Docker 默认桥接端口
-映射不满足此条件，即使从宿主机 localhost 访问也可能返回 403；需要 MCP 时请直接在
-宿主机运行 client。第一版不支持跨机器连接、实时订阅或缓存/自选股写入操作。
+MCP 会校验实际来源、Host 与 Origin。原生运行仅接受 loopback 来源；Docker Compose 默认
+设置 `GO_CLIENT_MCP_ALLOW_DOCKER=true`，仅在 Host 仍为 `localhost` 或 loopback 地址时接受
+私网 Docker 网关来源，映射端口仍只绑定宿主机 loopback。该版本不支持跨机器连接、实时
+订阅或缓存/自选股写入操作。

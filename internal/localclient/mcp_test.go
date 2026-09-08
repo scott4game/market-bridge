@@ -163,17 +163,20 @@ func TestMCPAccessAndDisabled(t *testing.T) {
 	for _, tc := range []struct {
 		name, peer, host, origin string
 		enabled                  bool
+		allowDocker              bool
 		want                     int
 	}{
-		{"remote", "192.168.1.2:1234", "localhost", "", true, 403},
-		{"host", "127.0.0.1:1234", "evil.example", "", true, 403},
-		{"origin", "127.0.0.1:1234", "localhost", "https://evil.example", true, 403},
-		{"disabled", "127.0.0.1:1234", "localhost", "", false, 404},
-		{"local", "127.0.0.1:1234", "localhost", "", true, 405},
-		{"ipv6", "[::1]:1234", "[::1]:17600", "", true, 405},
+		{"remote", "192.168.1.2:1234", "localhost", "", true, false, 403},
+		{"docker", "172.20.0.1:1234", "127.0.0.1:17600", "", true, true, 405},
+		{"public", "203.0.113.10:1234", "localhost", "", true, true, 403},
+		{"host", "127.0.0.1:1234", "evil.example", "", true, false, 403},
+		{"origin", "127.0.0.1:1234", "localhost", "https://evil.example", true, false, 403},
+		{"disabled", "127.0.0.1:1234", "localhost", "", false, false, 404},
+		{"local", "127.0.0.1:1234", "localhost", "", true, false, 405},
+		{"ipv6", "[::1]:1234", "[::1]:17600", "", true, false, 405},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h := &HTTP{Cache: &Cache{cfg: config.Client{MCPEnabled: tc.enabled}}}
+			h := &HTTP{Cache: &Cache{cfg: config.Client{MCPEnabled: tc.enabled, MCPAllowDocker: tc.allowDocker}}}
 			r := httptest.NewRequest("GET", "http://localhost/mcp", nil)
 			r.RemoteAddr = tc.peer
 			r.Host = tc.host

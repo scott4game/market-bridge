@@ -241,7 +241,7 @@ Example `get_bars` arguments:
 }
 ```
 
-The MCP endpoint accepts loopback connections only and validates Host and Origin headers. Docker bridge networking does not satisfy this policy and may return HTTP 403 even when accessed through a host port. Run go-client directly on the host when using MCP. Set `GO_CLIENT_MCP_ENABLED=false` to disable the endpoint.
+The MCP endpoint validates the peer, Host, and Origin headers. Native runs accept loopback peers only. Docker Compose sets `GO_CLIENT_MCP_ALLOW_DOCKER=true`, allowing a private Docker gateway peer only when the request Host is still `localhost` or a loopback address; the published port remains bound to host loopback. Set `GO_CLIENT_MCP_ENABLED=false` to disable the endpoint.
 
 ## Interactive charts and formula indicators
 

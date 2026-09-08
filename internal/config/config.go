@@ -255,6 +255,7 @@ func split(v string) []string {
 
 type Client struct {
 	MCPEnabled                  bool
+	MCPAllowDocker              bool
 	Listen                      string
 	CacheDir                    string
 	ServerURL                   string
@@ -284,11 +285,12 @@ type Client struct {
 
 func ClientFromEnv() Client {
 	return Client{
-		MCPEnabled: boolean("GO_CLIENT_MCP_ENABLED", true),
-		Listen:     env("GO_CLIENT_LISTEN", "127.0.0.1:17600"), CacheDir: env("GO_CLIENT_CACHE_DIRECTORY", "./data/client"),
+		MCPEnabled:     boolean("GO_CLIENT_MCP_ENABLED", true),
+		MCPAllowDocker: boolean("GO_CLIENT_MCP_ALLOW_DOCKER", false),
+		Listen:         env("GO_CLIENT_LISTEN", "127.0.0.1:17600"), CacheDir: env("GO_CLIENT_CACHE_DIRECTORY", "./data/client"),
 		ServerURL: env("GO_CLIENT_SERVER_URL", "http://127.0.0.1:17601"), ServerToken: os.Getenv("GO_CLIENT_SERVER_TOKEN"),
 		ParquetTTL: duration("GO_CLIENT_PARQUET_TTL", 720*time.Hour), CleanupInterval: duration("GO_CLIENT_CLEANUP_INTERVAL", 6*time.Hour),
-		RedisEnabled: boolean("GO_CLIENT_REDIS_ENABLED", true), RedisAddress: env("GO_CLIENT_REDIS_ADDRESS", "127.0.0.1:6379"), RedisUsername: os.Getenv("GO_CLIENT_REDIS_USERNAME"), RedisPassword: os.Getenv("GO_CLIENT_REDIS_PASSWORD"), RedisDB: integer("GO_CLIENT_REDIS_DB", 0), RedisTTL: duration("GO_CLIENT_REDIS_TTL", 24*time.Hour),
+		RedisEnabled: boolean("GO_CLIENT_REDIS_ENABLED", false), RedisAddress: env("GO_CLIENT_REDIS_ADDRESS", "127.0.0.1:6379"), RedisUsername: os.Getenv("GO_CLIENT_REDIS_USERNAME"), RedisPassword: os.Getenv("GO_CLIENT_REDIS_PASSWORD"), RedisDB: integer("GO_CLIENT_REDIS_DB", 0), RedisTTL: duration("GO_CLIENT_REDIS_TTL", 24*time.Hour),
 		ClickHouseEnabled: boolean("GO_CLIENT_CLICKHOUSE_ENABLED", false), ClickHouseURL: firstEnv("GO_CLIENT_CLICKHOUSE_URL", "CLICKHOUSE_URL"), ClickHouseDatabase: env("CLICKHOUSE_DATABASE", "market"), ClickHouseUser: env("CLICKHOUSE_USER", "market"), ClickHousePassword: os.Getenv("CLICKHOUSE_PASSWORD"),
 		ClickHouseCompletedBarsOnly: boolean("GO_CLIENT_CLICKHOUSE_COMPLETED_BARS_ONLY", true),
 		ClickHouseRetention:         duration("GO_CLIENT_CLICKHOUSE_RETENTION", 1825*24*time.Hour), ClickHouseCleanupInterval: duration("GO_CLIENT_CLICKHOUSE_CLEANUP_INTERVAL", 720*time.Hour), StorageCapabilityInterval: duration("GO_CLIENT_STORAGE_CAPABILITY_INTERVAL", 5*time.Minute),

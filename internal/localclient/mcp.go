@@ -86,7 +86,7 @@ func (h *HTTP) mcpHandler() http.Handler {
 		if hostname, _, e := net.SplitHostPort(host); e == nil {
 			host = hostname
 		}
-		if err != nil || !isLoopback(peer) || !(strings.EqualFold(host, "localhost") || isLoopback(host)) {
+		if err != nil || !isAllowedMCPPeer(peer, h.Cache.cfg.MCPAllowDocker) || !(strings.EqualFold(host, "localhost") || isLoopback(host)) {
 			http.Error(w, "MCP is restricted to localhost", http.StatusForbidden)
 			return
 		}
@@ -95,6 +95,11 @@ func (h *HTTP) mcpHandler() http.Handler {
 }
 
 func isLoopback(host string) bool { ip := net.ParseIP(host); return ip != nil && ip.IsLoopback() }
+
+func isAllowedMCPPeer(host string, allowDocker bool) bool {
+	ip := net.ParseIP(host)
+	return ip != nil && (ip.IsLoopback() || allowDocker && ip.IsPrivate())
+}
 
 func mcpLimit(n int) (int, error) {
 	if n == 0 {

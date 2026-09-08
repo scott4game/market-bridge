@@ -301,18 +301,36 @@ func TestInvalidValuesUseDefaults(t *testing.T) {
 	t.Setenv("GO_CLIENT_REDIS_TTL", "not-a-duration")
 
 	got := ClientFromEnv()
-	if !got.RedisEnabled || got.RedisDB != 0 || got.RedisTTL != 24*time.Hour {
+	if got.RedisEnabled || got.RedisDB != 0 || got.RedisTTL != 24*time.Hour {
 		t.Fatalf("invalid values did not fall back to defaults: %+v", got)
+	}
+}
+
+func TestClientStorageDefaultsDisabled(t *testing.T) {
+	t.Setenv("GO_CLIENT_REDIS_ENABLED", "")
+	t.Setenv("GO_CLIENT_CLICKHOUSE_ENABLED", "")
+
+	got := ClientFromEnv()
+	if got.RedisEnabled || got.ClickHouseEnabled {
+		t.Fatalf("client Redis and ClickHouse should default to disabled: %+v", got)
 	}
 }
 
 func TestClientMCPEnabledEnvironment(t *testing.T) {
 	t.Setenv("GO_CLIENT_MCP_ENABLED", "")
+	t.Setenv("GO_CLIENT_MCP_ALLOW_DOCKER", "")
 	if !ClientFromEnv().MCPEnabled {
 		t.Fatal("MCP should default to enabled")
+	}
+	if ClientFromEnv().MCPAllowDocker {
+		t.Fatal("Docker MCP access should default to disabled outside Compose")
 	}
 	t.Setenv("GO_CLIENT_MCP_ENABLED", "false")
 	if ClientFromEnv().MCPEnabled {
 		t.Fatal("MCP should be disabled")
+	}
+	t.Setenv("GO_CLIENT_MCP_ALLOW_DOCKER", "true")
+	if !ClientFromEnv().MCPAllowDocker {
+		t.Fatal("Docker MCP access should be enabled")
 	}
 }
