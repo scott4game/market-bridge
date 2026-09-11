@@ -70,6 +70,21 @@ Content-Type: application/json
 期权接口是通用市场数据能力，不包含策略、信号或自动下单。Massive Options Basic默认按
 每分钟5次上游调用限速；go-server缓存合约目录和已完成日线，go-client只做安全代理。
 
+Options Developer 会员在服务端环境文件中配置如下，复用 `MASSIVE_API_KEY`：
+
+```dotenv
+GO_SERVER_OPTIONS_PROVIDER=massive
+MASSIVE_OPTIONS_PLAN_NAME=options_developer
+MASSIVE_OPTIONS_REQUESTS_PER_MINUTE=0
+MASSIVE_OPTIONS_REQUESTS_PER_MONTH=0
+```
+
+`0` 表示不施加本地调用次数限制。修改后需重新启动服务；Docker Compose 部署需重新创建
+容器。根据 [Massive 套餐说明](https://massive.com/pricing?product=options)，Developer 提供
+4 年历史、15 分钟延迟行情。当前桥接接口支持合约目录和日线；套餐包含的快照、Greeks、IV、
+逐笔成交和 WebSocket 尚未通过这些接口接入。请求历史范围应在套餐允许的 4 年内。
+
+
 ```bash
 curl -fsS --get 'http://127.0.0.1:17600/v1/options/contracts' \
   --data-urlencode 'underlying=NVDA' \

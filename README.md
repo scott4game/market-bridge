@@ -296,7 +296,7 @@ make docker
 - `GO_SERVER_A_SHARE_PROVIDER=tushare` with `TUSHARE_TOKEN` enables Shanghai and Shenzhen daily, weekly, and monthly history.
 - `GO_SERVER_HK_PROVIDER=longbridge` enables Hong Kong history through Longbridge.
 - `GO_SERVER_NEWS_PROVIDER=fmp` with `FMP_API_KEY` enables stock news and press releases.
-- `GO_SERVER_OPTIONS_PROVIDER=massive` enables US option contracts and daily option bars.
+- `GO_SERVER_OPTIONS_PROVIDER=massive` enables US option contracts and daily option bars. For Options Developer, set `MASSIVE_OPTIONS_PLAN_NAME=options_developer`, `MASSIVE_OPTIONS_REQUESTS_PER_MINUTE=0`, and `MASSIVE_OPTIONS_REQUESTS_PER_MONTH=0` (no local call limits). The plan provides 4 years of history and 15-minute delayed market data; see [configuration and API examples](docs/local-ai-agent-api.md#31-期权合约与日线).
 - `GO_SERVER_BINANCE_ENABLED=true` enables public Binance Spot data without a Binance API key.
 - `GO_SERVER_LIVE_PROVIDERS=longbridge,binance` enables both securities and crypto live feeds.
 
