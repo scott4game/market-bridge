@@ -58,7 +58,7 @@ func main() {
 			log.Fatal(err)
 		}
 		defer optionsUsage.Close()
-		optionsSource := &provider.MassiveOptions{APIKey: cfg.MassiveAPIKey, BaseURL: cfg.MassiveBaseURL, Usage: optionsUsage, RequestsPerMinute: cfg.MassiveOptionsPerMinute}
+		optionsSource := &provider.MassiveOptions{APIKey: cfg.MassiveOptionsAPIKey, BaseURL: cfg.MassiveBaseURL, Usage: optionsUsage, RequestsPerMinute: cfg.MassiveOptionsPerMinute}
 		optionsCatalog, err = marketserver.OpenOptionCatalog(filepath.Join(cfg.DataDir, "options-cache.db"), optionsSource)
 		if err != nil {
 			log.Fatal(err)

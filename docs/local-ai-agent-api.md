@@ -70,10 +70,11 @@ Content-Type: application/json
 期权接口是通用市场数据能力，不包含策略、信号或自动下单。Massive Options Basic默认按
 每分钟5次上游调用限速；go-server缓存合约目录和已完成日线，go-client只做安全代理。
 
-Options Developer 会员在服务端环境文件中配置如下，复用 `MASSIVE_API_KEY`：
+Options Developer 会员在服务端环境文件中配置如下，使用独立的 `MASSIVE_OPTIONS_API_KEY`，不回退到股票 Key：
 
 ```dotenv
 GO_SERVER_OPTIONS_PROVIDER=massive
+MASSIVE_OPTIONS_API_KEY=你的期权_API_Key
 MASSIVE_OPTIONS_PLAN_NAME=options_developer
 MASSIVE_OPTIONS_REQUESTS_PER_MINUTE=0
 MASSIVE_OPTIONS_REQUESTS_PER_MONTH=0

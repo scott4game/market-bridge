@@ -102,19 +102,28 @@ func TestMassiveOptionsConfiguration(t *testing.T) {
 	t.Setenv("MASSIVE_OPTIONS_PLAN_NAME", "options_basic")
 	t.Setenv("MASSIVE_OPTIONS_REQUESTS_PER_MINUTE", "5")
 	t.Setenv("MASSIVE_OPTIONS_REQUESTS_PER_MONTH", "0")
-	t.Setenv("MASSIVE_API_KEY", "")
-	if err := ServerFromEnv().Validate(); err == nil || !strings.Contains(err.Error(), "MASSIVE_API_KEY") {
+	t.Setenv("GO_SERVER_PROVIDER", "mock")
+	t.Setenv("GO_SERVER_INDEX_PROVIDER", "disabled")
+	t.Setenv("MASSIVE_API_KEY", "stock-secret")
+	t.Setenv("MASSIVE_OPTIONS_API_KEY", "")
+	if err := ServerFromEnv().Validate(); err == nil || !strings.Contains(err.Error(), "MASSIVE_OPTIONS_API_KEY") {
 		t.Fatalf("err=%v", err)
 	}
-	t.Setenv("MASSIVE_API_KEY", "secret")
+	t.Setenv("MASSIVE_OPTIONS_API_KEY", "options-secret")
+	t.Setenv("MASSIVE_API_KEY", "")
 	cfg := ServerFromEnv()
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.OptionsProvider != "massive" || cfg.MassiveOptionsPlanName != "options_basic" || cfg.MassiveOptionsPerMinute != 5 {
+	if cfg.MassiveOptionsAPIKey != "options-secret" || cfg.OptionsProvider != "massive" || cfg.MassiveOptionsPlanName != "options_basic" || cfg.MassiveOptionsPerMinute != 5 {
 		t.Fatalf("cfg=%+v", cfg)
 	}
 
+	t.Setenv("GO_SERVER_OPTIONS_PROVIDER", "disabled")
+	t.Setenv("MASSIVE_OPTIONS_API_KEY", "")
+	if err := ServerFromEnv().Validate(); err != nil {
+		t.Fatalf("disabled options should not require a key: %v", err)
+	}
 	t.Setenv("GO_SERVER_OPTIONS_PROVIDER", "unknown")
 	if err := ServerFromEnv().Validate(); err == nil || !strings.Contains(err.Error(), "unsupported options provider") {
 		t.Fatalf("err=%v", err)

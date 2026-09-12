@@ -240,7 +240,7 @@ func (m *MassiveOptions) OptionBars(ctx context.Context, contract string, from, 
 
 func (m *MassiveOptions) base() (*url.URL, string, error) {
 	if strings.TrimSpace(m.APIKey) == "" {
-		return nil, "", errors.New("MASSIVE_API_KEY is required for options")
+		return nil, "", errors.New("MASSIVE_OPTIONS_API_KEY is required for options")
 	}
 	baseURL := strings.TrimRight(m.BaseURL, "/")
 	if baseURL == "" {
