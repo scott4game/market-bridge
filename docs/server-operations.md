@@ -53,6 +53,19 @@ GO_SERVER_LIVE_PROVIDERS=longbridge,binance
 
 指数对外统一使用 `I:` 代码，但各 Provider 会转换为自己的原生代码。Longbridge 支持 `I:IXIC/I:DJI/I:HSI/I:HSCEI/I:HSTECH`；FMP 支持 `I:VIX/I:NDX/I:SPX/I:IXIC/I:DJI/I:HSI`，并复用 `FMP_API_KEY/FMP_BASE_URL`。选择 FMP 不要求启用 FMP 新闻，选择 Longbridge 也不要求开启港股/A 股历史。未被所选 Provider 支持的指数会直接报错，不会换源或用 ETF 代替。
 
+可通过 `GO_SERVER_INDEX_ROUTES` 为单个指数指定历史源，例如：
+
+```dotenv
+GO_SERVER_INDEX_PROVIDER=disabled
+GO_SERVER_INDEX_ROUTES=I:HSI=longbridge,I:HSCEI=longbridge,I:HSTECH=longbridge,I:IXIC=longbridge,I:DJI=longbridge,I:VIX=fmp,I:NDX=fmp,I:SPX=fmp
+```
+
+精确配置优先于默认来源，未匹配指数使用 `GO_SERVER_INDEX_PROVIDER`；默认关闭时未匹配指数报错。路由值支持 `longbridge/fmp/massive/mock/disabled`，显式 `disabled` 可覆盖已启用的默认源。代码和来源忽略大小写及两端空白；重复代码、非法代码、未知来源以及长桥/FMP适配器不支持的显式映射会使服务启动失败。所有被引用的来源均需提供凭据，长桥连接和 Massive 配额统计与现有功能共享。权限不足、限流或上游故障不会触发换源。
+
+修改后需重启服务；启动日志和状态接口的 `index.routes` 展示实际配置及各路由历史年限，`provider` 字段仍表示默认源。路由配置会进入数据集和持久化历史缓存版本，避免读取旧源数据；仅调整配置顺序不会改变版本。此配置只影响历史 K 线，不启用指数实时订阅。
+
+启用 ClickHouse 时，启动会创建 `index_history` 表，以数据版本作为排序键的一部分隔离指数历史；旧 `kline_1m` 数据不删除，指数首次请求会重新取数。新表按时间保留 1825 天。指数与非指数混合请求走 Provider/Redis 缓存；纯指数请求可使用版本化 ClickHouse 缓存。新源取数失败不会读取旧版本指数数据。
+
 Massive 的 Stocks、Indices 和 Futures 是三个独立产品。选择 `GO_SERVER_INDEX_PROVIDER=massive` 时，需要在同一个 Massive 账号中另行启用 Indices Basic 或对应付费套餐。Massive 指数沿用 `/v2/aggs`；期货走 `/futures/v1/aggs`，本服务额外使用 `F:` 区分资产类型，且必须填写带到期月份/年份的实际合约代码，例如 `F:MNQZ6`，不能只写产品代码 `MNQ`。
 
 美股 `regular` 的 `1h/2h/3h/4h` 统一从 Massive 30 分钟母线按纽约时间 `09:30` 锚定聚合，最后不足完整周期的 K 线仍返回。美股 `forward_adjusted` 使用拆股调整行情叠加累计分红因子；Stocks Basic 只支持最近两年，超出范围需升级 Massive 套餐或改用 `split_adjusted`。浏览器不提供起止时间控件，会按周期分块加载并在左拖时补齐至少两年；REST 接口仍要求显式 `from/to`。

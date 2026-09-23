@@ -302,6 +302,7 @@ docker compose --profile local up --build
 ## 供应商
 
 - `GO_SERVER_PROVIDER=massive` 与 `MASSIVE_API_KEY` 启用 Massive 股票和 `F:MNQZ6` 这类实际期货合约历史数据；期货自动改走 `/futures/v1/aggs`。`GO_SERVER_INDEX_PROVIDER=longbridge|fmp|massive|mock` 单独选择 `I:` 指数历史源，默认 `disabled` 且不会自动回退；FMP 复用 `FMP_API_KEY`。Massive 的 Stocks、Indices、Futures 权限相互独立。`split_adjusted` 只表示 Massive 拆股调整；美股 `forward_adjusted` 在此基础上叠加 Massive 分红公司的累计历史调整因子，形成 Futu 风格前复权。
+- `GO_SERVER_INDEX_ROUTES=I:HSI=longbridge,I:VIX=fmp,I:SPX=massive` 按指数覆盖默认历史源；未匹配指数仍使用 `GO_SERVER_INDEX_PROVIDER`。支持显式 `disabled`，不自动换源；修改后需重启，缓存版本会隔离不同路由配置。仅影响历史 K 线，不改变实时订阅。
 - `GO_SERVER_A_SHARE_PROVIDER=tushare` 与 `TUSHARE_TOKEN` 将沪深 A 股日、周、月历史 K 线切换到 Tushare；`GO_SERVER_HK_PROVIDER=longbridge` 让港股历史继续使用 Longbridge。A 股默认前复权，分钟、小时和年线历史不由 Tushare A 股 Provider 提供。
 - `GO_SERVER_NEWS_PROVIDER=fmp` 与 `FMP_API_KEY` 启用 FMP 股票新闻和公司公告。go-server 默认每 60 秒轮询，发现新文章后通过 REST/SSE/WebSocket 发出；go-client 常驻镜像并默认保留 30 天。网页右栏的“新闻”标签可查看当前股票或全市场最新内容。
 - Massive 调用量会持久化到服务端数据目录的 `usage.db`。`MASSIVE_PLAN_NAME` 同时限定美股历史请求窗口：`stocks_basic` 2 年、`stocks_starter` 5 年、`stocks_developer` 10 年、`stocks_advanced` 20 年；超出窗口的起始时间会自动截断。各历史渠道另用 `MASSIVE_HISTORY_MAX_YEARS`、`LONGBRIDGE_HISTORY_MAX_YEARS`、`TUSHARE_HISTORY_MAX_YEARS`、`FMP_HISTORY_MAX_YEARS`、`BINANCE_HISTORY_MAX_YEARS` 和 `MOCK_HISTORY_MAX_YEARS` 控制请求上限，默认均为 5 年。`1h` 及以上按一年一段从新到旧拉取；某段上游失败时保留已有数据并冷却 10 分钟，期间不重复请求失败边界。免费档使用 `MASSIVE_PLAN_NAME=stocks_basic`、`MASSIVE_REQUESTS_PER_MINUTE=5`；`MASSIVE_REQUESTS_PER_MONTH=0` 表示月度不限额。通过受保护的 `GET /v1/providers/massive/usage` 或本地页面查看最近 60 秒、本月和累计调用量。

@@ -36,13 +36,19 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		log.Fatal(err)
 	}
+	indexRoutes, _ := cfg.ParsedIndexRoutes()
+	for symbol, name := range indexRoutes {
+		if err := provider.ValidateIndexRoute(name, symbol); err != nil {
+			log.Fatal(err)
+		}
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	var usage *provider.UsageTracker
 	var optionsUsage *provider.UsageTracker
 	var optionsCatalog *marketserver.OptionCatalog
 	var massiveProvider *provider.Massive
-	if cfg.Provider == "massive" || cfg.IndexProvider == "massive" {
+	if cfg.Provider == "massive" || cfg.UsesIndexProvider("massive") {
 		var err error
 		usage, err = provider.NewUsageTracker(filepath.Join(cfg.DataDir, "usage.db"), cfg.MassivePlanName, cfg.MassivePerMinute, cfg.MassivePerMonth, time.Local)
 		if err != nil {
@@ -73,7 +79,7 @@ func main() {
 		usProvider = &provider.Mock{Version: cfg.DataVersion}
 	}
 	liveProviders := cfg.EffectiveLiveProviders()
-	longbridgeNeeded := cfg.AShareProvider == "longbridge" || cfg.HKProvider == "longbridge" || cfg.IndexProvider == "longbridge" || contains(liveProviders, "longbridge")
+	longbridgeNeeded := cfg.AShareProvider == "longbridge" || cfg.HKProvider == "longbridge" || cfg.UsesIndexProvider("longbridge") || contains(liveProviders, "longbridge")
 	var longbridgeQuote *lbquote.QuoteContext
 	if longbridgeNeeded {
 		longbridgeConfig, err := lbconfig.New()
@@ -110,19 +116,13 @@ func main() {
 	if cfg.BinanceEnabled {
 		binanceHistory = &provider.Binance{BaseURL: cfg.BinanceRESTURL, Version: "binance-spot-v1-" + cfg.DataVersion}
 	}
-	var indexProvider provider.Provider
-	switch cfg.IndexProvider {
-	case "longbridge":
-		indexProvider = &provider.LongbridgeIndex{Quote: longbridgeQuote, Version: "longbridge-index-v1-" + cfg.DataVersion}
-	case "fmp":
-		indexProvider = &provider.FMPIndex{APIKey: cfg.FMPAPIKey, BaseURL: cfg.FMPBaseURL, Version: "fmp-index-v1-" + cfg.DataVersion}
-	case "massive":
-		indexProvider = massiveProvider
-	case "mock":
-		indexProvider = &provider.Mock{Version: "mock-index-v1-" + cfg.DataVersion}
+	indexProviders := buildIndexProviders(cfg, longbridgeQuote, massiveProvider)
+	routedIndexes := make(map[string]provider.Provider, len(indexRoutes))
+	for symbol, name := range indexRoutes {
+		routedIndexes[symbol] = indexProviders[name]
 	}
-	var p provider.Provider = &provider.Router{US: usProvider, Index: indexProvider, AShare: aShareHistory, HK: hkHistory, Binance: binanceHistory, UniverseProviders: universeProviders, HistoryMaxYears: cfg.HistoryMaxYears(), HistoryCooldown: 10 * time.Minute}
-	historyDataVersion := fmt.Sprintf("%s:ashare=%s:hk=%s", cfg.DataVersion, cfg.AShareProvider, cfg.HKProvider)
+	var p provider.Provider = &provider.Router{US: usProvider, Index: indexProviders[cfg.IndexProvider], IndexRoutes: routedIndexes, IndexVersion: cfg.IndexRoutingVersion(), AShare: aShareHistory, HK: hkHistory, Binance: binanceHistory, UniverseProviders: universeProviders, HistoryMaxYears: cfg.HistoryMaxYears(), HistoryCooldown: 10 * time.Minute}
+	historyDataVersion := fmt.Sprintf("%s:ashare=%s:hk=%s:%s", cfg.DataVersion, cfg.AShareProvider, cfg.HKProvider, cfg.IndexRoutingVersion())
 	if err := os.MkdirAll(filepath.Dir(cfg.AuthDB), 0o755); err != nil {
 		log.Fatal(err)
 	}
@@ -279,19 +279,19 @@ func main() {
 		} else if value, ok := status["binance"].(map[string]any); ok {
 			value["history_enabled"] = cfg.BinanceEnabled
 		}
-		status["index"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[cfg.IndexProvider != "disabled"], "provider": cfg.IndexProvider, "history_enabled": cfg.IndexProvider != "disabled"}
+		status["index"] = indexProviderStatus(cfg)
 		aShareEnabled := cfg.AShareProvider != "" && cfg.AShareProvider != "disabled"
 		hkEnabled := cfg.HKProvider != "" && cfg.HKProvider != "disabled"
 		status["ashare"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[aShareEnabled], "provider": cfg.AShareProvider, "history_enabled": aShareEnabled}
 		status["hk"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[hkEnabled], "provider": cfg.HKProvider, "history_enabled": hkEnabled}
-		status["massive"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[cfg.Provider == "massive" || cfg.IndexProvider == "massive"], "plan": cfg.MassivePlanName}
+		status["massive"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[cfg.Provider == "massive" || cfg.UsesIndexProvider("massive")], "plan": cfg.MassivePlanName}
 		status["options"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[cfg.OptionsProvider == "massive"], "provider": cfg.OptionsProvider, "plan": cfg.MassiveOptionsPlanName, "history_enabled": cfg.OptionsProvider == "massive"}
 		status["history_policy"] = map[string]any{
 			"cooldown_seconds": 600,
 			"providers":        cfg.HistoryMaxYears(),
 			"routes": map[string]any{
 				"us":      map[string]any{"provider": cfg.Provider, "max_years": historyYears(cfg, cfg.Provider)},
-				"index":   map[string]any{"provider": cfg.IndexProvider, "max_years": historyYears(cfg, cfg.IndexProvider)},
+				"index":   indexProviderStatus(cfg),
 				"ashare":  map[string]any{"provider": cfg.AShareProvider, "max_years": historyYears(cfg, cfg.AShareProvider)},
 				"hk":      map[string]any{"provider": cfg.HKProvider, "max_years": historyYears(cfg, cfg.HKProvider)},
 				"binance": map[string]any{"provider": "binance", "max_years": cfg.BinanceHistoryMaxYears},
@@ -357,6 +357,10 @@ func logEnabledProviders(cfg config.Server) {
 	}
 	if cfg.IndexProvider != "" && cfg.IndexProvider != "disabled" && cfg.IndexProvider != "mock" {
 		log.Printf("Index historical provider enabled: provider=%s, data_version=%s", cfg.IndexProvider, cfg.DataVersion)
+	}
+	if strings.TrimSpace(cfg.IndexRoutes) != "" {
+		routes, _ := cfg.ParsedIndexRoutes()
+		log.Printf("Index historical routes enabled: routes=%v, data_version=%s", routes, cfg.IndexRoutingVersion())
 	}
 	if cfg.AShareProvider != "" && cfg.AShareProvider != "disabled" {
 		log.Printf("A-share historical provider enabled: provider=%s, markets=SH,SZ, data_version=%s", cfg.AShareProvider, cfg.DataVersion)

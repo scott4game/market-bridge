@@ -34,7 +34,7 @@ func longbridgeAffectedFeatures(cfg config.Server, liveProviders []string) strin
 	if cfg.LongbridgeHistoryEnabled || cfg.AShareProvider == "longbridge" || cfg.HKProvider == "longbridge" {
 		features = append(features, "HK_CN_history_klines")
 	}
-	if cfg.IndexProvider == "longbridge" {
+	if cfg.UsesIndexProvider("longbridge") {
 		features = append(features, "index_history_klines")
 	}
 	if contains(liveProviders, "longbridge") {

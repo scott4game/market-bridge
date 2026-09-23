@@ -32,6 +32,21 @@ type HistoricalClickHouse interface {
 	WriteBars(context.Context, string, market.AdjustmentMode, []market.Bar, uint64) error
 }
 
+type indexHistoryClickHouse interface {
+	QueryIndexBars(context.Context, market.DatasetSpec, string) ([]market.Bar, error)
+	WriteIndexBars(context.Context, string, market.AdjustmentMode, []market.Bar, uint64, string) error
+}
+
+func indexSpec(spec market.DatasetSpec) (anyIndex, allIndex bool) {
+	allIndex = len(spec.Symbols) > 0
+	for _, symbol := range spec.Symbols {
+		venue, _ := market.VenueOf(symbol)
+		anyIndex = anyIndex || venue == market.VenueIndex
+		allIndex = allIndex && venue == market.VenueIndex
+	}
+	return
+}
+
 type RemoteRedis interface {
 	BarCache
 	Healthy(context.Context) error
@@ -284,6 +299,12 @@ func (h *HTTP) historyBars(w http.ResponseWriter, r *http.Request) {
 	}
 	recent := !spec.From.Before(time.Now().UTC().Add(-retention))
 	canonical := recent && h.ClickHouseEnabled && h.ClickHouse != nil
+	hasIndex, onlyIndexes := indexSpec(spec)
+	indexStorage, versionedIndexes := h.ClickHouse.(indexHistoryClickHouse)
+	if hasIndex && (!onlyIndexes || !versionedIndexes) {
+		// Mixed asset requests retain provider caching without mixing index storage versions.
+		canonical = false
+	}
 	if body.ProviderOnly || !canonical || h.HistoryCatalog == nil {
 		bars, cached, err := h.Store.ProviderBarsCached(r.Context(), spec)
 		if err != nil {
@@ -356,7 +377,12 @@ func (h *HTTP) historyBars(w http.ResponseWriter, r *http.Request) {
 		}
 		fetched = true
 	}
-	bars, err := h.ClickHouse.QueryBars(r.Context(), storageSpec)
+	var bars []market.Bar
+	if onlyIndexes {
+		bars, err = indexStorage.QueryIndexBars(r.Context(), storageSpec, coverageVersion)
+	} else {
+		bars, err = h.ClickHouse.QueryBars(r.Context(), storageSpec)
+	}
 	if err != nil {
 		writeJSON(w, 503, map[string]string{"error": err.Error()})
 		return
@@ -429,7 +455,17 @@ func applyForwardFactorCurves(spec market.DatasetSpec, bars []market.Bar, curves
 
 func (h *HTTP) persistHistory(ctx context.Context, spec market.DatasetSpec, bars []market.Bar, coverageVersion string) error {
 	if len(bars) > 0 {
-		if err := h.ClickHouse.WriteBars(ctx, spec.Interval, spec.Adjustment, bars, uint64(time.Now().UnixMilli())); err != nil {
+		var err error
+		if _, onlyIndexes := indexSpec(spec); onlyIndexes {
+			storage, ok := h.ClickHouse.(indexHistoryClickHouse)
+			if !ok {
+				return fmt.Errorf("versioned index storage is unavailable")
+			}
+			err = storage.WriteIndexBars(ctx, spec.Interval, spec.Adjustment, bars, uint64(time.Now().UnixMilli()), coverageVersion)
+		} else {
+			err = h.ClickHouse.WriteBars(ctx, spec.Interval, spec.Adjustment, bars, uint64(time.Now().UnixMilli()))
+		}
+		if err != nil {
 			return err
 		}
 	}
