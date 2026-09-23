@@ -59,6 +59,36 @@ func TestClickHouseSchemaAndBarInsert(t *testing.T) {
 	}
 }
 
+func TestIndexHistoryStorageVersionIsolation(t *testing.T) {
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		queries = append(queries, string(body))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	ctx := context.Background()
+	sink, err := NewClickHouseSink(ctx, srv.URL, "market", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	bar := market.Bar{Symbol: "I:HSI", Timestamp: now, Session: market.RegularSession, Completed: true, Source: "longbridge"}
+	if err := sink.WriteIndexBars(ctx, "1m", market.Raw, []market.Bar{bar}, 1, "route-a"); err != nil {
+		t.Fatal(err)
+	}
+	spec := market.DatasetSpec{Symbols: []string{"I:HSI"}, Interval: "1m", From: now, To: now.Add(time.Minute)}
+	if _, err := sink.QueryIndexBars(ctx, spec, "route-b"); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(queries, "\n")
+	for _, want := range []string{"ORDER BY (data_version, market", "INSERT INTO market.index_history", `"data_version":"route-a"`, "FROM market.index_history FINAL", "AND data_version='route-b'"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing %s in %s", want, joined)
+		}
+	}
+}
+
 func TestClickHouseWriteBarsLimitsPartitionsPerInsert(t *testing.T) {
 	var mu sync.Mutex
 	var inserts []string

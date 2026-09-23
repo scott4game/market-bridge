@@ -201,6 +201,35 @@ func (s *Store) ProviderBars(ctx context.Context, spec market.DatasetSpec) ([]ma
 	return bars, err
 }
 
+func (s *Store) ProviderBarsFresh(ctx context.Context, spec market.DatasetSpec) ([]market.Bar, error) {
+	spec, err := spec.Normalize()
+	if err != nil {
+		return nil, err
+	}
+	described, err := s.describeDataset(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	bars, err := provider.BarsWithForwardFactors(ctx, s.provider, spec, described.factorCurves)
+	if err != nil {
+		return bars, err
+	}
+	if bars == nil {
+		bars = []market.Bar{}
+	}
+	if s.barCache != nil {
+		key, keyErr := spec.Hash(market.SchemaVersion, "provider:"+described.DataVersion)
+		if keyErr == nil {
+			_ = s.barCache.Set(ctx, "provider:"+key, bars, s.barCacheTTL(spec, bars))
+		}
+	}
+	return bars, nil
+}
+
+func (s *Store) GroupedDaily(ctx context.Context, date string) ([]market.Bar, error) {
+	return provider.GroupedDaily(ctx, s.provider, date)
+}
+
 func (s *Store) ProviderBarsCached(ctx context.Context, spec market.DatasetSpec) ([]market.Bar, bool, error) {
 	spec, err := spec.Normalize()
 	if err != nil {

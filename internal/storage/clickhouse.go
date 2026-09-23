@@ -129,6 +129,14 @@ func (s *ClickHouseSink) insert(ctx context.Context, events []market.LiveEvent) 
 // WriteBars writes completed canonical bars in batches. The supplied version
 // makes corrected rows replace older rows with the same logical key.
 func (s *ClickHouseSink) WriteBars(ctx context.Context, interval string, adjustment market.AdjustmentMode, bars []market.Bar, version uint64) error {
+	return s.writeBars(ctx, interval, adjustment, bars, version, "kline_1m", "")
+}
+
+func (s *ClickHouseSink) WriteIndexBars(ctx context.Context, interval string, adjustment market.AdjustmentMode, bars []market.Bar, version uint64, dataVersion string) error {
+	return s.writeBars(ctx, interval, adjustment, bars, version, "index_history", dataVersion)
+}
+
+func (s *ClickHouseSink) writeBars(ctx context.Context, interval string, adjustment market.AdjustmentMode, bars []market.Bar, version uint64, table, dataVersion string) error {
 	if len(bars) == 0 {
 		return nil
 	}
@@ -174,7 +182,7 @@ func (s *ClickHouseSink) WriteBars(ctx context.Context, interval string, adjustm
 			end++
 		}
 		var body bytes.Buffer
-		fmt.Fprintf(&body, "INSERT INTO %s.kline_1m FORMAT JSONEachRow\n", s.database)
+		fmt.Fprintf(&body, "INSERT INTO %s.%s FORMAT JSONEachRow\n", s.database, table)
 		for _, item := range prepared[start:end] {
 			bar := item.bar
 			row := map[string]any{
@@ -184,6 +192,9 @@ func (s *ClickHouseSink) WriteBars(ctx context.Context, interval string, adjustm
 				"open":      bar.Open.String(), "high": bar.High.String(), "low": bar.Low.String(), "close": bar.Close.String(),
 				"volume": bar.Volume, "volume_decimal": bar.VolumeDecimal, "turnover": bar.Turnover,
 				"completed": true, "source": bar.Source, "version": version,
+			}
+			if table == "index_history" {
+				row["data_version"] = dataVersion
 			}
 			encoded, _ := json.Marshal(row)
 			body.Write(encoded)
@@ -198,6 +209,14 @@ func (s *ClickHouseSink) WriteBars(ctx context.Context, interval string, adjustm
 }
 
 func (s *ClickHouseSink) QueryBars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar, error) {
+	return s.queryBars(ctx, spec, "kline_1m", "")
+}
+
+func (s *ClickHouseSink) QueryIndexBars(ctx context.Context, spec market.DatasetSpec, dataVersion string) ([]market.Bar, error) {
+	return s.queryBars(ctx, spec, "index_history", " AND data_version="+sqlString(dataVersion))
+}
+
+func (s *ClickHouseSink) queryBars(ctx context.Context, spec market.DatasetSpec, table, condition string) ([]market.Bar, error) {
 	normalized, err := spec.Normalize()
 	if err != nil {
 		return nil, err
@@ -207,10 +226,10 @@ func (s *ClickHouseSink) QueryBars(ctx context.Context, spec market.DatasetSpec)
 		symbols = append(symbols, sqlString(symbol))
 	}
 	query := fmt.Sprintf(`SELECT symbol, timestamp, open, high, low, close, volume, volume_decimal, turnover, session, source, completed
-FROM %s.kline_1m FINAL
+FROM %s.%s FINAL
 	WHERE symbol IN (%s) AND interval=%s AND adjustment=%s AND session=%s
   AND timestamp >= fromUnixTimestamp64Milli(%d) AND timestamp < fromUnixTimestamp64Milli(%d)
-ORDER BY timestamp, symbol FORMAT JSONEachRow`, s.database, strings.Join(symbols, ","), sqlString(normalized.Interval), sqlString(string(normalized.Adjustment)), sqlString(string(normalized.Session)), normalized.From.UnixMilli(), normalized.To.UnixMilli())
+%s ORDER BY timestamp, symbol FORMAT JSONEachRow`, s.database, table, strings.Join(symbols, ","), sqlString(normalized.Interval), sqlString(string(normalized.Adjustment)), sqlString(string(normalized.Session)), normalized.From.UnixMilli(), normalized.To.UnixMilli(), condition)
 	resp, err := s.query(ctx, query)
 	if err != nil {
 		return nil, err
@@ -347,6 +366,7 @@ func schema(db string) []string {
 		`ALTER TABLE ` + db + `.bars ADD COLUMN IF NOT EXISTS volume_decimal String DEFAULT '' AFTER volume`,
 		`CREATE TABLE IF NOT EXISTS ` + db + `.kline_1m (market LowCardinality(String), symbol LowCardinality(String), interval LowCardinality(String), adjustment LowCardinality(String), session LowCardinality(String), timestamp DateTime64(3, 'UTC'), open Decimal64(6), high Decimal64(6), low Decimal64(6), close Decimal64(6), volume Int64, volume_decimal String DEFAULT '', turnover Nullable(Decimal64(6)), completed Bool, source LowCardinality(String), version UInt64) ENGINE = ReplacingMergeTree(version) PARTITION BY (market, toYYYYMM(timestamp)) ORDER BY (market, interval, adjustment, session, symbol, timestamp)`,
 		`CREATE TABLE IF NOT EXISTS ` + db + `.schema_migrations (version UInt32, applied_at DateTime('UTC')) ENGINE = TinyLog`,
+		`CREATE TABLE IF NOT EXISTS ` + db + `.index_history (market LowCardinality(String), symbol LowCardinality(String), interval LowCardinality(String), adjustment LowCardinality(String), session LowCardinality(String), timestamp DateTime64(3, 'UTC'), open Decimal64(6), high Decimal64(6), low Decimal64(6), close Decimal64(6), volume Int64, volume_decimal String DEFAULT '', turnover Nullable(Decimal64(6)), completed Bool, source LowCardinality(String), version UInt64, data_version String) ENGINE = ReplacingMergeTree(version) PARTITION BY (market, toYYYYMM(timestamp)) ORDER BY (data_version, market, interval, adjustment, session, symbol, timestamp) TTL timestamp + INTERVAL 1825 DAY DELETE`,
 		`INSERT INTO ` + db + `.kline_1m SELECT multiIf(endsWith(symbol,'.HK'),'HK',endsWith(symbol,'.SH'),'SH',endsWith(symbol,'.SZ'),'SZ',endsWith(symbol,'.BINANCE'),'BINANCE','US'), symbol, '1m', 'raw', 'regular', timestamp, open, high, low, close, volume, volume_decimal, turnover, completed, source, toUInt64(greatest(sequence,0)) FROM ` + db + `.bars WHERE completed AND timestamp >= now() - INTERVAL 1825 DAY AND NOT EXISTS (SELECT 1 FROM ` + db + `.schema_migrations WHERE version=2)`,
 		`INSERT INTO ` + db + `.schema_migrations SELECT 2, now() WHERE NOT EXISTS (SELECT 1 FROM ` + db + `.schema_migrations WHERE version=2)`,
 		`CREATE TABLE IF NOT EXISTS ` + db + `.trades (symbol LowCardinality(String), timestamp DateTime64(3, 'UTC'), sequence Int64, stream_epoch String, payload String) ENGINE = MergeTree ORDER BY (symbol, timestamp, stream_epoch, sequence) TTL timestamp + INTERVAL 7 DAY DELETE`,

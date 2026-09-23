@@ -19,7 +19,7 @@ type HistoricalProviderDisabledError struct {
 
 func (e *HistoricalProviderDisabledError) Error() string {
 	if e.Provider == "Index" {
-		return "index historical provider is disabled; set GO_SERVER_INDEX_PROVIDER to longbridge, fmp, massive, or mock and restart go-server"
+		return "index historical provider is disabled; configure GO_SERVER_INDEX_ROUTES or GO_SERVER_INDEX_PROVIDER with longbridge, fmp, massive, or mock and restart go-server"
 	}
 	if e.Provider == "Longbridge" {
 		return fmt.Sprintf("Longbridge historical provider is not enabled for %s; set GO_SERVER_LONGBRIDGE_HISTORY_ENABLED=true and restart go-server", e.Venue)
@@ -39,8 +39,11 @@ func IsHistoricalProviderDisabled(err error) bool {
 }
 
 type Router struct {
-	US                Provider
-	Index             Provider
+	US    Provider
+	Index Provider
+	// An explicit nil entry disables that index, overriding the default.
+	IndexRoutes       map[string]Provider
+	IndexVersion      string
 	AShare            Provider
 	HK                Provider
 	Binance           Provider
@@ -112,7 +115,12 @@ func (r *Router) route(spec market.DatasetSpec) ([]routedSpec, error) {
 		if err != nil {
 			return nil, err
 		}
-		p, err := r.providerFor(venue)
+		p, explicit := r.IndexRoutes[symbol]
+		if venue != market.VenueIndex || !explicit {
+			p, err = r.providerFor(venue)
+		} else if p == nil {
+			err = &HistoricalProviderDisabledError{Provider: "Index", Venue: venue}
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -127,7 +135,12 @@ func (r *Router) route(spec market.DatasetSpec) ([]routedSpec, error) {
 		child.Symbols = item.symbols
 		result = append(result, routedSpec{provider: item.provider, spec: child})
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].provider.Name() < result[j].provider.Name() })
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].provider.Name() != result[j].provider.Name() {
+			return result[i].provider.Name() < result[j].provider.Name()
+		}
+		return strings.Join(result[i].spec.Symbols, ",") < strings.Join(result[j].spec.Symbols, ",")
+	})
 	return result, nil
 }
 
@@ -145,11 +158,24 @@ func (r *Router) Describe(spec market.DatasetSpec) (Description, error) {
 		names = append(names, description.Name)
 		versions = append(versions, description.DataVersion)
 	}
+	for _, symbol := range spec.Symbols {
+		if venue, _ := market.VenueOf(symbol); venue == market.VenueIndex && r.IndexVersion != "" {
+			versions = append(versions, r.IndexVersion)
+			break
+		}
+	}
 	return Description{Name: strings.Join(names, "+"), DataVersion: strings.Join(versions, "+")}, nil
 }
 
 func (r *Router) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar, error) {
 	return r.BarsWithForwardFactors(ctx, spec, nil)
+}
+
+func (r *Router) GroupedDaily(ctx context.Context, date string) ([]market.Bar, error) {
+	if r.US == nil {
+		return nil, &HistoricalProviderDisabledError{Provider: "US", Venue: market.VenueUS}
+	}
+	return GroupedDaily(ctx, r.US, date)
 }
 
 func (r *Router) Supports(spec market.DatasetSpec) bool {

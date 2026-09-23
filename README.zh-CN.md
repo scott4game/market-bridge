@@ -249,6 +249,8 @@ docker compose up -d
 
 ### 交互式 K 线与公式指标
 
+本地页面还提供 Massive 量能与资金流代理：成交额来自聚合 K 线 VWAP，资金方向按收盘价在高低区间的位置估算，并明确标记为代理而非真实主买/主卖。全市场 SIC 榜使用完成日线，最多 200 只股票的命名概念篮子只保存在本机 go-client SQLite，盘中缺失数据按配额后台补齐。
+
 go-client 内置并自行托管 KLineChart `10.0.2`，页面运行时不依赖外部 CDN。图表支持鼠标滚轮缩放、拖动平移、十字光标和 OHLC 提示；`1m` 周期会继续接收 Longbridge 实时 bar，其他周期只展示历史数据，避免混入错误周期的数据。页面不再要求选择起止时间：初次按周期分块加载，向左拖动时继续补更早历史，至少可追溯两年。Massive Stocks Basic 和 Mock 在两年边界停止；升级版 Massive、港股/A 股和 Binance 会继续加载，直到上游返回空数据。REST、SDK 和 CLI 的 `from/to` 参数保持不变。
 
 页面的“管理指标”支持创建主图或副图公式，直接粘贴通达信技术指标语法，先执行参数识别和当前 K 线预览，再保存。指标在独立 Web Worker 中计算，单次最多 250000 根 K 线并有 10 秒超时，不会阻塞图表交互。系统最多保存 50 个个人指标，同时启用 18 个；公式最大 64 KiB、参数最多 32 个。
@@ -312,6 +314,8 @@ docker compose --profile local up --build
 - 客户端可设置 `GO_CLIENT_CLICKHOUSE_ENABLED=true`。go-client 会自动探测服务端：服务端 CH 开启时只使用远端 CH，并将本地 CH 逻辑关闭；服务端明确未开启 CH 时才写本地 CH。两者不会自动双写。最近1825天进入唯一启用的 CH，超过1825天的数据绕过 CH、按需从 Provider 拉取并缓存到客户端 Redis。详细配置见 [go-client 本地数据接口与策略验证指南](docs/go-client-data-api.md#2-客户端-clickhouse-实时镜像)。
 
 ## 发布
+
+指数历史支持 `GO_SERVER_INDEX_ROUTES=I:HSI=longbridge,I:VIX=fmp,I:SPX=massive` 按指数覆盖默认历史源；未匹配指数使用 `GO_SERVER_INDEX_PROVIDER`。支持显式 `disabled`，不自动换源。修改后需重启；缓存按路由版本隔离，仅影响历史 K 线，不改变实时订阅。详见 [服务端运维说明](docs/server-operations.md)。
 
 推送 `vX.Y.Z` 签名 tag 后，GitHub Actions 会：
 

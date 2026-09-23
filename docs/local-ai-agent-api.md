@@ -52,6 +52,11 @@ Content-Type: application/json
 | GET | `/v1/market-history/adjustments/{symbol}` | 获取美股前复权累计因子及版本 |
 | GET | `/v1/options/contracts` | 查询美股期权合约目录；需要服务端启用Massive Options |
 | GET | `/v1/options/bars/{contract}` | 查询单个期权合约的日线OHLCV |
+| GET | `/v1/market-analytics/volume/{symbol}` | 查询20日/同时间桶量能指标 |
+| GET | `/v1/market-analytics/flow/{symbol}` | 查询Massive个股资金流代理 |
+| GET | `/v1/market-analytics/sector-flow` | 查询最近完成日线的SIC板块资金代理榜 |
+| POST | `/v1/market-analytics/basket-flow` | 聚合最多200只美股的资金流代理 |
+| GET/POST | `/v1/me/flow-baskets` | 读取或创建本机命名概念篮子 |
 | GET | `/v1/bars/{symbol}` | 查询单标的历史 K 线 |
 | GET | `/v1/live/trades/{symbol}?limit=100` | 查询 Longbridge 最近逐笔成交，最多 1000 笔 |
 | GET | `/v1/news?symbols=AAPL&limit=50` | 查询本地新闻镜像，默认返回最新 50 条 |
@@ -215,6 +220,45 @@ curl --fail --get 'http://127.0.0.1:17600/v1/bars/SNDK' \
 `clickhouse`、`go-server` 或混合来源；每根 bar 的 `source` 才表示原始行情供应商。
 `turnover` 未知时会缺省，不代表零。币圈应优先读取可能存在的精确字符串字段
 `volume_decimal`。
+
+### 5.1 量能与资金流代理
+
+资金流接口不是Massive提供的真实主买/主卖数据，而是固定的
+`massive_close_location_v1`代理：使用未复权K线的`VWAP × volume`作为成交额，再按收盘价
+在高低区间中的位置拆分流入和流出。响应始终包含`proxy:true`；不得把它描述为真实机构
+资金流。`high=low`时流入流出各占一半、净额为零，且始终满足
+`inflow + outflow = turnover`。
+
+```bash
+curl -fsS --get 'http://127.0.0.1:17600/v1/market-analytics/flow/NVDA' \
+  --data-urlencode 'from=2026-09-01T00:00:00Z' \
+  --data-urlencode 'to=2026-09-04T00:00:00Z' \
+  --data-urlencode 'interval=1d' \
+  --data-urlencode 'session=regular'
+
+curl -fsS --get 'http://127.0.0.1:17600/v1/market-analytics/volume/NVDA' \
+  --data-urlencode 'from=2026-09-01T00:00:00Z' \
+  --data-urlencode 'to=2026-09-04T00:00:00Z' \
+  --data-urlencode 'interval=1d' \
+  --data-urlencode 'session=regular' \
+  --data-urlencode 'adjustment=forward_adjusted'
+```
+
+日线量能与前20个完成交易日比较；盘中量能与前20个交易日相同纽约时间桶比较。样本不足
+时`baseline_complete=false`，基线和比率字段缺省。资金金额及比率均为十进制字符串。
+旧K线没有Massive VWAP成交额时接口会按需重拉，不使用典型价格估算；上游失败时不会返回
+猜测值。
+
+SIC榜默认读取最近完成交易日，也可显式传`date=YYYY-MM-DD`；默认按`net_flow`金额降序：
+
+```bash
+curl -fsS 'http://127.0.0.1:17600/v1/market-analytics/sector-flow?taxonomy=sic&limit=50'
+```
+
+本机概念篮子保存在go-client SQLite，不上传篮子名称。创建后读取
+`GET /v1/me/flow-baskets/{id}/flow?from=...&to=...&interval=...&session=regular`；冷缓存会先
+返回`complete=false`、`coverage`和`retry_after_seconds`并在后台补齐。Agent应按建议间隔
+重试同一请求，不能把缺失成员当作零资金流。
 
 ### SNDK 1 小时线注意事项
 

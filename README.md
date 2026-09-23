@@ -289,10 +289,13 @@ docker build --target go-client -t market-bridge-client:local .
 make docker
 ```
 
+The local UI also provides Massive volume and money-flow proxies. Turnover uses aggregate-bar VWAP; flow direction is estimated from the close's position within the high/low range, rather than actual buyer/seller-initiated trades. Market-wide SIC rankings use completed daily bars. Named concept baskets of up to 200 symbols remain in local go-client SQLite storage; missing intraday data is backfilled subject to quotas.
+
 ## Providers and symbols
 
 - `GO_SERVER_PROVIDER=massive` with `MASSIVE_API_KEY` enables US stocks and Massive futures history.
-- `GO_SERVER_INDEX_PROVIDER=longbridge|fmp|massive|mock` selects the independent `I:` index-history provider.
+- `GO_SERVER_INDEX_PROVIDER=longbridge|fmp|massive|mock` selects the default independent `I:` index-history provider.
+- `GO_SERVER_INDEX_ROUTES=I:HSI=longbridge,I:VIX=fmp,I:SPX=massive` overrides the history provider per index. Unmatched indexes use the default; explicit `disabled` is supported. Restart after changes. Cache versions isolate routes, with no automatic fallback or changes to live subscriptions.
 - `GO_SERVER_A_SHARE_PROVIDER=tushare` with `TUSHARE_TOKEN` enables Shanghai and Shenzhen daily, weekly, and monthly history.
 - `GO_SERVER_HK_PROVIDER=longbridge` enables Hong Kong history through Longbridge.
 - `GO_SERVER_NEWS_PROVIDER=fmp` with `FMP_API_KEY` enables stock news and press releases.
