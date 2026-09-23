@@ -69,7 +69,7 @@ func TestValidateIndexRoute(t *testing.T) {
 	for _, tc := range []struct {
 		name, symbol string
 		valid        bool
-	}{{"longbridge", "I:HSI", true}, {"longbridge", "I:VIX", false}, {"fmp", "I:VIX", true}, {"fmp", "I:HSTECH", false}, {"massive", "I:SPX", true}} {
+	}{{"longbridge", "I:HSI", true}, {"longbridge", "I:VIX", true}, {"longbridge", "I:NDX", true}, {"longbridge", "I:SPX", true}, {"longbridge", "I:UNKNOWN", false}, {"fmp", "I:VIX", true}, {"fmp", "I:HSTECH", false}, {"massive", "I:SPX", true}} {
 		if err := ValidateIndexRoute(tc.name, tc.symbol); (err == nil) != tc.valid {
 			t.Errorf("%+v err=%v", tc, err)
 		}

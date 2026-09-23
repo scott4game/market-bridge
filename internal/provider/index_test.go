@@ -36,22 +36,29 @@ func TestLongbridgeIndexMapsAndRestoresSymbol(t *testing.T) {
 	location, _ := time.LoadLocation("America/New_York")
 	from := time.Date(2026, 8, 24, 9, 30, 0, 0, location)
 	one := shopdecimal.NewFromInt(1)
-	stub := &indexLongbridgeStub{bar: &lbquote.Candlestick{Open: &one, High: &one, Low: &one, Close: &one, Volume: 7, Timestamp: from.Unix()}}
-	spec := market.DatasetSpec{Symbols: []string{"I:IXIC"}, Interval: "1m", From: from.UTC(), To: from.Add(time.Minute).UTC(), Adjustment: market.Raw}
-	bars, err := (&LongbridgeIndex{Quote: stub}).Bars(context.Background(), spec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stub.symbol != ".IXIC.US" || stub.adjust != lbquote.AdjustTypeNo || len(bars) != 1 || bars[0].Symbol != "I:IXIC" || bars[0].Source != "longbridge" {
-		t.Fatalf("request=%s adjust=%v bars=%+v", stub.symbol, stub.adjust, bars)
+	for _, tc := range []struct{ symbol, upstream string }{
+		{"I:IXIC", ".IXIC.US"}, {"I:DJI", ".DJI.US"},
+		{"I:NDX", ".NDX.US"}, {"I:SPX", ".SPX.US"}, {"I:VIX", ".VIX.US"},
+	} {
+		t.Run(tc.symbol, func(t *testing.T) {
+			stub := &indexLongbridgeStub{bar: &lbquote.Candlestick{Open: &one, High: &one, Low: &one, Close: &one, Volume: 7, Timestamp: from.Unix()}}
+			spec := market.DatasetSpec{Symbols: []string{tc.symbol}, Interval: "1m", From: from.UTC(), To: from.Add(time.Minute).UTC(), Adjustment: market.Raw}
+			bars, err := (&LongbridgeIndex{Quote: stub}).Bars(context.Background(), spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stub.symbol != tc.upstream || stub.adjust != lbquote.AdjustTypeNo || len(bars) != 1 || bars[0].Symbol != tc.symbol || bars[0].Source != "longbridge" {
+				t.Fatalf("request=%s adjust=%v bars=%+v", stub.symbol, stub.adjust, bars)
+			}
+		})
 	}
 }
 
 func TestLongbridgeIndexRejectsUnsupportedSymbol(t *testing.T) {
 	from := time.Now().Add(-time.Hour)
-	spec := market.DatasetSpec{Symbols: []string{"I:VIX"}, Interval: "1m", From: from, To: from.Add(time.Minute), Adjustment: market.Raw}
+	spec := market.DatasetSpec{Symbols: []string{"I:UNKNOWN"}, Interval: "1m", From: from, To: from.Add(time.Minute), Adjustment: market.Raw}
 	_, err := (&LongbridgeIndex{Quote: &indexLongbridgeStub{}}).Bars(context.Background(), spec)
-	if err == nil || !strings.Contains(err.Error(), "I:IXIC") || !strings.Contains(err.Error(), "does not support I:VIX") {
+	if err == nil || !strings.Contains(err.Error(), "I:IXIC") || !strings.Contains(err.Error(), "does not support I:UNKNOWN") {
 		t.Fatalf("err=%v", err)
 	}
 }

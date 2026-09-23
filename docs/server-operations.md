@@ -51,13 +51,17 @@ GO_SERVER_LIVE_PROVIDERS=longbridge,binance
 
 一个 dataset 不能把连续交易品种与 regular-session 品种混在一起。页面对美股显式发送 `forward_adjusted`；API 为兼容已有调用，省略 adjustment 或传 `auto` 时，美股仍解析为 `split_adjusted`。港股/A 股的 `auto` 为 `forward_adjusted`，指数、期货和 Binance 为 `raw`。
 
-指数对外统一使用 `I:` 代码，但各 Provider 会转换为自己的原生代码。Longbridge 支持 `I:IXIC/I:DJI/I:HSI/I:HSCEI/I:HSTECH`；FMP 支持 `I:VIX/I:NDX/I:SPX/I:IXIC/I:DJI/I:HSI`，并复用 `FMP_API_KEY/FMP_BASE_URL`。选择 FMP 不要求启用 FMP 新闻，选择 Longbridge 也不要求开启港股/A 股历史。未被所选 Provider 支持的指数会直接报错，不会换源或用 ETF 代替。
+指数对外统一使用 `I:` 代码，但各 Provider 会转换为自己的原生代码。Longbridge 支持 `I:NDX/I:SPX/I:VIX/I:IXIC/I:DJI/I:HSI/I:HSCEI/I:HSTECH`；FMP 支持 `I:VIX/I:NDX/I:SPX/I:IXIC/I:DJI/I:HSI`，并复用 `FMP_API_KEY/FMP_BASE_URL`。选择 FMP 不要求启用 FMP 新闻，选择 Longbridge 也不要求开启港股/A 股历史。未被所选 Provider 支持的指数会直接报错，不会换源或用 ETF 代替。
+
+长桥美国指数原生代码带前导点：`I:NDX`（纳斯达克 100）映射为 `.NDX.US`，`I:SPX`（标普 500）映射为 `.SPX.US`，`I:VIX` 映射为 `.VIX.US`。`I:IXIC` 是纳斯达克综合指数，与纳斯达克 100 不同。客户端仍使用 `I:` 代码，服务端统一转换；指数使用 `raw`，无须复权。部分指数的成交额或成交量可能为零，不应视为行情缺失。
+
+`go-server` 要求配置 `LONGBRIDGE_APP_KEY/LONGBRIDGE_APP_SECRET/LONGBRIDGE_ACCESS_TOKEN`，不会读取 `longbridge auth login` 保存的 CLI OAuth 登录。CLI 验证时，当前目录 `.env` 中的空长桥凭据可能导致 `401001: token empty`；可从不含该 `.env` 的目录运行 CLI。CLI 调用成功不代表服务端凭据已配置。
 
 可通过 `GO_SERVER_INDEX_ROUTES` 为单个指数指定历史源，例如：
 
 ```dotenv
 GO_SERVER_INDEX_PROVIDER=disabled
-GO_SERVER_INDEX_ROUTES=I:HSI=longbridge,I:HSCEI=longbridge,I:HSTECH=longbridge,I:IXIC=longbridge,I:DJI=longbridge,I:VIX=fmp,I:NDX=fmp,I:SPX=fmp
+GO_SERVER_INDEX_ROUTES=I:HSI=longbridge,I:HSCEI=longbridge,I:HSTECH=longbridge,I:IXIC=longbridge,I:DJI=longbridge,I:VIX=longbridge,I:NDX=longbridge,I:SPX=longbridge
 ```
 
 精确配置优先于默认来源，未匹配指数使用 `GO_SERVER_INDEX_PROVIDER`；默认关闭时未匹配指数报错。路由值支持 `longbridge/fmp/massive/mock/disabled`，显式 `disabled` 可覆盖已启用的默认源。代码和来源忽略大小写及两端空白；重复代码、非法代码、未知来源以及长桥/FMP适配器不支持的显式映射会使服务启动失败。所有被引用的来源均需提供凭据，长桥连接和 Massive 配额统计与现有功能共享。权限不足、限流或上游故障不会触发换源。

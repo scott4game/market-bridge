@@ -30,6 +30,9 @@ type longbridgeIndexRoute struct {
 }
 
 var longbridgeIndexRoutes = map[string]longbridgeIndexRoute{
+	"I:NDX":    {symbol: ".NDX.US", timezone: "America/New_York"},
+	"I:SPX":    {symbol: ".SPX.US", timezone: "America/New_York"},
+	"I:VIX":    {symbol: ".VIX.US", timezone: "America/New_York"},
 	"I:IXIC":   {symbol: ".IXIC.US", timezone: "America/New_York"},
 	"I:DJI":    {symbol: ".DJI.US", timezone: "America/New_York"},
 	"I:HSI":    {symbol: "HSI.HK", timezone: "Asia/Hong_Kong"},

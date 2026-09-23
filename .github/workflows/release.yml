@@ -112,6 +112,9 @@ jobs:
           target: ${{ matrix.target }}
           platforms: linux/amd64,linux/arm64
           push: true
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
           tags: |
             ${{ startsWith(github.ref, 'refs/tags/v') && format('docker.io/{0}/{1}:{2}', vars.DOCKERHUB_USERNAME, matrix.image, github.ref_name) || '' }}
             docker.io/${{ vars.DOCKERHUB_USERNAME }}/${{ matrix.image }}:latest
