@@ -256,3 +256,35 @@ func TestLegacyDatasetFailureFallsBackToPartialHistory(t *testing.T) {
 		t.Fatalf("bars=%v source=%s warning=%v", bars, source, warning)
 	}
 }
+
+func TestUSTailBypassesLocalDatasetCache(t *testing.T) {
+	historyCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/storage/capabilities":
+			_ = json.NewEncoder(w).Encode(map[string]any{"us_tail": map[string]any{"enabled": true, "window_seconds": 1800}})
+		case "/v1/history/bars":
+			historyCalls++
+			_ = json.NewEncoder(w).Encode(map[string]any{"source": "provider+longbridge-tail", "bars": []market.Bar{}})
+		default:
+			t.Errorf("unexpected durable dataset path %s", r.URL.Path)
+			http.Error(w, "unexpected", 500)
+		}
+	}))
+	defer upstream.Close()
+	cache, err := localclient.NewCache(config.Client{CacheDir: t.TempDir(), ServerURL: upstream.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cache.Close()
+	now := time.Now().UTC()
+	spec := market.DatasetSpec{Symbols: []string{"AAPL"}, Interval: "4h", From: now.Add(-time.Hour * 8), To: now, Session: market.ExtendedSession, Adjustment: market.Raw}
+	for i := 0; i < 2; i++ {
+		if _, _, err := cache.Bars(context.Background(), spec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if historyCalls != 2 {
+		t.Fatalf("history calls=%d", historyCalls)
+	}
+}

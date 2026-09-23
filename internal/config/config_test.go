@@ -343,3 +343,24 @@ func TestClientMCPEnabledEnvironment(t *testing.T) {
 		t.Fatal("Docker MCP access should be enabled")
 	}
 }
+
+func TestUSTailConfiguration(t *testing.T) {
+	t.Setenv("GO_SERVER_PROVIDER", "massive")
+	t.Setenv("MASSIVE_API_KEY", "test")
+	t.Setenv("GO_SERVER_US_TAIL_ENABLED", "true")
+	t.Setenv("GO_SERVER_US_TAIL_WINDOW", "30m")
+	t.Setenv("LONGBRIDGE_APP_KEY", "")
+	if err := ServerFromEnv().Validate(); err == nil || !strings.Contains(err.Error(), "LONGBRIDGE_APP_KEY") {
+		t.Fatalf("credentials: %v", err)
+	}
+	t.Setenv("LONGBRIDGE_APP_KEY", "test")
+	t.Setenv("LONGBRIDGE_APP_SECRET", "test")
+	t.Setenv("LONGBRIDGE_ACCESS_TOKEN", "test")
+	if err := ServerFromEnv().Validate(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GO_SERVER_US_TAIL_WINDOW", "2h")
+	if err := ServerFromEnv().Validate(); err == nil {
+		t.Fatal("accepted oversized tail")
+	}
+}

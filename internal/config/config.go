@@ -42,6 +42,8 @@ type Server struct {
 	NewsRetention             time.Duration
 	LiveProvider              string
 	LiveProviders             []string
+	USTailEnabled             bool
+	USTailWindow              time.Duration
 	LongbridgeHistoryEnabled  bool
 	LongbridgeDepthEnabled    bool
 	LongbridgeAppKey          string
@@ -91,6 +93,7 @@ func ServerFromEnv() Server {
 		TushareToken: os.Getenv("TUSHARE_TOKEN"), TushareBaseURL: env("TUSHARE_BASE_URL", "https://api.tushare.pro"), TusharePerMinute: integer("TUSHARE_REQUESTS_PER_MINUTE", 200), TushareHistoryMaxYears: integer("TUSHARE_HISTORY_MAX_YEARS", 5),
 		NewsProvider: env("GO_SERVER_NEWS_PROVIDER", "disabled"), FMPAPIKey: os.Getenv("FMP_API_KEY"), FMPBaseURL: env("FMP_BASE_URL", "https://financialmodelingprep.com"), FMPNewsPollInterval: duration("FMP_NEWS_POLL_INTERVAL", time.Minute), FMPHistoryMaxYears: integer("FMP_HISTORY_MAX_YEARS", 5), NewsRetention: duration("GO_SERVER_NEWS_RETENTION", 30*24*time.Hour),
 		LiveProvider: env("GO_SERVER_LIVE_PROVIDER", "mock"), LiveProviders: split(os.Getenv("GO_SERVER_LIVE_PROVIDERS")),
+		USTailEnabled: boolean("GO_SERVER_US_TAIL_ENABLED", false), USTailWindow: duration("GO_SERVER_US_TAIL_WINDOW", 30*time.Minute),
 		LongbridgeHistoryEnabled: legacyLongbridgeHistory, LongbridgeDepthEnabled: boolean("GO_SERVER_LONGBRIDGE_DEPTH_ENABLED", false),
 		LongbridgeAppKey: os.Getenv("LONGBRIDGE_APP_KEY"), LongbridgeAppSecret: os.Getenv("LONGBRIDGE_APP_SECRET"), LongbridgeAccessToken: os.Getenv("LONGBRIDGE_ACCESS_TOKEN"), LongbridgeHistoryMaxYears: integer("LONGBRIDGE_HISTORY_MAX_YEARS", 5),
 		BinanceEnabled: boolean("GO_SERVER_BINANCE_ENABLED", false), BinanceRESTURL: env("BINANCE_REST_BASE_URL", "https://data-api.binance.vision"), BinanceWSURL: env("BINANCE_WS_URL", "wss://data-stream.binance.vision"), BinanceHistoryMaxYears: integer("BINANCE_HISTORY_MAX_YEARS", 5), MockHistoryMaxYears: integer("MOCK_HISTORY_MAX_YEARS", 5),
@@ -127,6 +130,10 @@ func (s Server) Validate() error {
 	if _, err := s.ParsedIndexRoutes(); err != nil {
 		return err
 	}
+	if s.USTailEnabled && (s.Provider != "massive" || s.USTailWindow <= 0 || s.USTailWindow > time.Hour) {
+		return fmt.Errorf("US tail requires Massive and GO_SERVER_US_TAIL_WINDOW in (0, 1h]")
+	}
+
 	for name, years := range s.HistoryMaxYears() {
 		if years < 1 || years > 50 {
 			return fmt.Errorf("%s_HISTORY_MAX_YEARS must be between 1 and 50", strings.ToUpper(name))
@@ -176,7 +183,7 @@ func (s Server) Validate() error {
 			return fmt.Errorf("mock live provider cannot be combined with real providers")
 		}
 	}
-	if s.AShareProvider == "longbridge" || s.HKProvider == "longbridge" || s.UsesIndexProvider("longbridge") || containsString(liveProviders, "longbridge") {
+	if s.USTailEnabled || s.AShareProvider == "longbridge" || s.HKProvider == "longbridge" || s.UsesIndexProvider("longbridge") || containsString(liveProviders, "longbridge") {
 		values := []struct{ name, value string }{
 			{"LONGBRIDGE_APP_KEY", s.LongbridgeAppKey},
 			{"LONGBRIDGE_APP_SECRET", s.LongbridgeAppSecret},

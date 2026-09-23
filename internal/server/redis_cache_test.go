@@ -104,7 +104,9 @@ func TestStorageCapabilitiesExposeRemoteRedis(t *testing.T) {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 	var payload struct {
-		Redis struct {
+		ServerVersion string `json:"server_version"`
+		BuildRevision string `json:"build_revision"`
+		Redis         struct {
 			Enabled bool `json:"enabled"`
 			Healthy bool `json:"healthy"`
 		} `json:"redis"`
@@ -114,6 +116,9 @@ func TestStorageCapabilitiesExposeRemoteRedis(t *testing.T) {
 	}
 	if !payload.Redis.Enabled || !payload.Redis.Healthy {
 		t.Fatalf("redis capability=%+v", payload.Redis)
+	}
+	if payload.ServerVersion == "" || payload.BuildRevision == "" {
+		t.Fatalf("build identity is missing: version=%q revision=%q", payload.ServerVersion, payload.BuildRevision)
 	}
 }
 

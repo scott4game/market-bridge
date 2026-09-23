@@ -79,7 +79,7 @@ func main() {
 		usProvider = &provider.Mock{Version: cfg.DataVersion}
 	}
 	liveProviders := cfg.EffectiveLiveProviders()
-	longbridgeNeeded := cfg.AShareProvider == "longbridge" || cfg.HKProvider == "longbridge" || cfg.UsesIndexProvider("longbridge") || contains(liveProviders, "longbridge")
+	longbridgeNeeded := cfg.USTailEnabled || cfg.AShareProvider == "longbridge" || cfg.HKProvider == "longbridge" || cfg.UsesIndexProvider("longbridge") || contains(liveProviders, "longbridge")
 	var longbridgeQuote *lbquote.QuoteContext
 	if longbridgeNeeded {
 		longbridgeConfig, err := lbconfig.New()
@@ -206,6 +206,11 @@ func main() {
 		log.Fatal(err)
 	}
 	defer historyCatalog.Close()
+	if cfg.USTailEnabled {
+		if err := historyCatalog.InvalidateRecentUSCoverage(ctx, time.Now(), cfg.USTailWindow); err != nil {
+			log.Fatal(err)
+		}
+	}
 	go historyCatalog.RunCleanup(ctx, cfg.ClickHouseRetention)
 	go store.RunCleanup(ctx, cfg.DatasetTTL)
 	var sink live.Sink = live.NopSink{}
@@ -317,9 +322,13 @@ func main() {
 	if longbridgeQuote != nil {
 		recentTrades = longbridgeQuote
 	}
+	var usTail *provider.USTail
+	if cfg.USTailEnabled {
+		usTail = &provider.USTail{Quote: longbridgeQuote, Window: cfg.USTailWindow}
+	}
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           (&marketserver.HTTP{Store: store, Token: cfg.BearerToken, Access: auth, Limiter: limiter, Live: hub, Usage: usage, OptionsUsage: optionsUsage, Options: optionsCatalog, ProviderStatus: providerStatus, ClickHouseEnabled: cfg.ClickHouseEnabled, ClickHouse: historicalClickHouse, RedisEnabled: cfg.RedisEnabled, Redis: redisCache, HistoryCatalog: historyCatalog, DataVersion: historyDataVersion, EmptyCoverageTTL: cfg.EmptyCoverageTTL, HistoryRetention: cfg.ClickHouseRetention, RecentTrades: recentTrades, News: newsService, SecurityProfiles: securityProfiles, Analytics: marketAnalytics}).Handler(),
+		Handler:           (&marketserver.HTTP{USTail: usTail, Store: store, Token: cfg.BearerToken, Access: auth, Limiter: limiter, Live: hub, Usage: usage, OptionsUsage: optionsUsage, Options: optionsCatalog, ProviderStatus: providerStatus, ClickHouseEnabled: cfg.ClickHouseEnabled, ClickHouse: historicalClickHouse, RedisEnabled: cfg.RedisEnabled, Redis: redisCache, HistoryCatalog: historyCatalog, DataVersion: historyDataVersion, EmptyCoverageTTL: cfg.EmptyCoverageTTL, HistoryRetention: cfg.ClickHouseRetention, RecentTrades: recentTrades, News: newsService, SecurityProfiles: securityProfiles, Analytics: marketAnalytics}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    1 << 20,

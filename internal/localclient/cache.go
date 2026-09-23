@@ -23,6 +23,7 @@ import (
 	"github.com/scott4game/market-bridge/internal/config"
 	"github.com/scott4game/market-bridge/internal/coverage"
 	"github.com/scott4game/market-bridge/internal/market"
+	"github.com/scott4game/market-bridge/internal/provider"
 	_ "modernc.org/sqlite"
 )
 
@@ -60,6 +61,10 @@ type HistoricalClickHouse interface {
 }
 
 type StorageCapability struct {
+	USTail struct {
+		Enabled       bool    `json:"enabled"`
+		WindowSeconds float64 `json:"window_seconds"`
+	} `json:"us_tail"`
 	ClickHouse struct {
 		Enabled bool   `json:"enabled"`
 		Healthy bool   `json:"healthy"`
@@ -211,6 +216,12 @@ func (c *Cache) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar
 		return nil, "", err
 	}
 	capability, capabilityErr := c.storageCapability(ctx)
+	// Tail responses are provisional and must bypass local durable coverage and
+	// all local caches. The server shares a short-lived minute cache across clients.
+	if capabilityErr == nil && capability.USTail.Enabled && provider.USTailEligible(spec, time.Now(), time.Duration(capability.USTail.WindowSeconds*float64(time.Second))) {
+		return c.remoteHistoryBars(ctx, spec, false)
+	}
+
 	cutoff := time.Now().UTC().Add(-c.clickhouseRetention())
 	if capabilityErr == nil && (capability.Redis.Enabled || spec.From.Before(cutoff) || spec.Interval == "1m" && (capability.ClickHouse.Enabled || c.clickhouse != nil)) {
 		return c.routedBars(ctx, spec, capability)

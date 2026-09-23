@@ -218,7 +218,7 @@ func (s *Store) ProviderBarsFresh(ctx context.Context, spec market.DatasetSpec) 
 		bars = []market.Bar{}
 	}
 	if s.barCache != nil {
-		key, keyErr := spec.Hash(market.SchemaVersion, "provider:"+described.DataVersion)
+		key, keyErr := spec.Hash(market.SchemaVersion, "provider:mutable-v2:"+described.DataVersion)
 		if keyErr == nil {
 			_ = s.barCache.Set(ctx, "provider:"+key, bars, s.barCacheTTL(spec, bars))
 		}
@@ -243,7 +243,7 @@ func (s *Store) ProviderBarsCached(ctx context.Context, spec market.DatasetSpec)
 }
 
 func (s *Store) providerBarsCached(ctx context.Context, spec market.DatasetSpec, dataVersion string, curves map[string]market.ForwardFactors) ([]market.Bar, bool, error) {
-	key, err := spec.Hash(market.SchemaVersion, "provider:"+dataVersion)
+	key, err := spec.Hash(market.SchemaVersion, "provider:mutable-v2:"+dataVersion)
 	if err != nil {
 		return nil, false, err
 	}
@@ -316,6 +316,11 @@ func (s *Store) SemanticDataVersion(ctx context.Context, spec market.DatasetSpec
 
 func (s *Store) barCacheTTL(spec market.DatasetSpec, bars []market.Bar) time.Duration {
 	ttl := s.cacheTTL
+	if step := market.IntervalDuration(spec.Interval); step >= time.Minute && step <= 4*time.Hour && spec.To.After(time.Now().Add(-24*time.Hour)) {
+		if ttl <= 0 || ttl > 15*time.Second {
+			ttl = 15 * time.Second
+		}
+	}
 	if len(bars) != 0 {
 		return ttl
 	}

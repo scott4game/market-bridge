@@ -17,14 +17,22 @@ COPY --from=build-web /src/internal/localclient/ui/formula-worker.js ./internal/
 FROM build-base AS build-server
 ARG TARGETOS
 ARG TARGETARCH
+ARG MARKET_BRIDGE_VERSION=dev
+ARG MARKET_BRIDGE_REVISION=unknown
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags="-s -w" -o /out/go-server ./cmd/go-server
+    go build -trimpath \
+    -ldflags="-s -w -X github.com/scott4game/market-bridge/internal/buildinfo.Version=${MARKET_BRIDGE_VERSION} -X github.com/scott4game/market-bridge/internal/buildinfo.Revision=${MARKET_BRIDGE_REVISION}" \
+    -o /out/go-server ./cmd/go-server
 
 FROM build-base AS build-client
 ARG TARGETOS
 ARG TARGETARCH
+ARG MARKET_BRIDGE_VERSION=dev
+ARG MARKET_BRIDGE_REVISION=unknown
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags="-s -w" -o /out/go-client ./cmd/go-client
+    go build -trimpath \
+    -ldflags="-s -w -X github.com/scott4game/market-bridge/internal/buildinfo.Version=${MARKET_BRIDGE_VERSION} -X github.com/scott4game/market-bridge/internal/buildinfo.Revision=${MARKET_BRIDGE_REVISION}" \
+    -o /out/go-client ./cmd/go-client
 
 FROM alpine:3.21 AS runtime
 RUN apk add --no-cache ca-certificates tzdata && \

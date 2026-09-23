@@ -387,3 +387,40 @@ MCP 会校验实际来源、Host 与 Origin。原生运行仅接受 loopback 来
 设置 `GO_CLIENT_MCP_ALLOW_DOCKER=true`，仅在 Host 仍为 `localhost` 或 loopback 地址时接受
 私网 Docker 网关来源，映射端口仍只绑定宿主机 loopback。该版本不支持跨机器连接、实时
 订阅或缓存/自选股写入操作。
+
+### 使用 Longbridge 补齐 Massive 延迟尾部
+
+当 Massive 套餐的最新行情延迟时，可在服务端配置：
+
+```dotenv
+GO_SERVER_PROVIDER=massive
+GO_SERVER_US_TAIL_ENABLED=true
+GO_SERVER_US_TAIL_WINDOW=30m
+```
+
+同时配置已有的 `LONGBRIDGE_APP_KEY`、`LONGBRIDGE_APP_SECRET` 和
+`LONGBRIDGE_ACCESS_TOKEN`，重启服务端并使用更新后的客户端。功能默认关闭；
+窗口允许大于 0 且不超过 1 小时。客户端能力缓存最多需要 5 分钟刷新，也可重启客户端。
+
+`/v1/history/bars` 查询美股 `1m/3m/5m/10m/15m/30m/1h/2h/3h/4h` 时，
+最近窗口内的 K 线由 Longbridge 分钟数据重建。`regular` 使用正常交易时段；
+`extended` 包含纽约时间 04:00–20:00 的盘前、正常交易及盘后，不包含夜盘。
+小时线重建会向前取到整根 K 线起点，而非只聚合最后 30 分钟。
+日周月线、后台全市场同步、不可变数据集导出及实时推送协议不使用此覆盖。
+
+临时行情只保存在服务端内存中，成功缓存最多 15 秒（分钟切换时刷新），失败退避 5 秒；
+各周期共享分钟缓存。临时结果不写入服务端或客户端 ClickHouse、Parquet、永久 coverage。
+客户端对窗口内请求直接访问服务端历史接口，避免本地长期缓存阻止更新。
+开启后启动时只清理最近一天的美股日内 coverage 元数据并刷新缓存版本，保留历史 K 线。
+Massive 尚未成熟的尾部继续保持可刷新，之后由 Massive 数据自然接管。
+
+响应增加 `tail` 元数据，含覆盖区间、获取/过期时间、最新分钟时间和 `fresh/degraded` 状态；
+每根临时 K 线的 `source` 为 `longbridge-tail`，未结束的 K 线 `completed=false`。
+Longbridge 失败时保留可用历史并返回 `warning`，无任何可用结果时返回上游错误。
+`/v1/storage/capabilities` 的 `us_tail.stats` 提供请求、失败和缓存命中计数。
+`fresh` 表示本次获取成功，不保证证券每分钟有成交或账户行情一定无延迟。
+该接口还返回 `server_version` 和 `build_revision`，可用于确认容器实际运行的
+发布版本和 Git commit；`data_version` 仍只表示行情数据语义版本。
+
+上线前应使用少量股票核对账户 OpenAPI 权限、标的配额、盘前盘后最新时间及重叠区间 OHLCV。
+关闭 `GO_SERVER_US_TAIL_ENABLED` 并重启服务端即可停用；无需删除历史数据。

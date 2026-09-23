@@ -319,3 +319,28 @@ Additional documentation is currently maintained in Chinese:
 - [Local go-client data API and strategy guide](docs/go-client-data-api.md)
 - [Local AI Agent API](docs/local-ai-agent-api.md)
 - [Server operations and troubleshooting](docs/server-operations.md)
+
+### Longbridge US intraday tail overlay
+
+Set `GO_SERVER_US_TAIL_ENABLED=true` with `GO_SERVER_PROVIDER=massive` and the
+existing Longbridge credentials to provisionally fill the latest 30 minutes.
+`GO_SERVER_US_TAIL_WINDOW=30m` is the default (maximum `1h`). Restart the server
+and use the updated client. This feature is disabled by default.
+
+Historical bar queries support minute/hour intervals through `4h`, including
+pre/post-market with `session=extended` (04:00–20:00 New York, excluding overnight).
+Affected candles are rebuilt from minute data starting at their full bucket
+boundary. The shared in-memory minute cache lasts up to 15 seconds; failures
+back off for 5 seconds. Overlay candles never enter durable history or coverage.
+The client bypasses local history caches for eligible queries. Startup clears
+only recent US intraday coverage metadata to retire previously cached partial
+bars; older coverage and stored candles remain intact.
+
+Responses include optional `tail` freshness metadata and `longbridge-tail` bar
+sources. Failures preserve available history with a warning. Activity counters
+are exposed under `us_tail.stats` in `/v1/storage/capabilities`. Daily/longer
+intervals, immutable dataset exports, background universe sync and live stream
+protocols are unchanged. Validate account permissions and real market freshness
+on a few symbols before enabling broadly. See the Chinese README for details.
+The capability response also exposes `server_version` and `build_revision` to
+identify the running image; `data_version` remains the market-data schema ID.

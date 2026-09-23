@@ -16,6 +16,7 @@ import (
 	"github.com/coder/websocket"
 	lbquote "github.com/longbridge/openapi-go/quote"
 	"github.com/scott4game/market-bridge/internal/access"
+	"github.com/scott4game/market-bridge/internal/buildinfo"
 	"github.com/scott4game/market-bridge/internal/coverage"
 	"github.com/scott4game/market-bridge/internal/market"
 	"github.com/scott4game/market-bridge/internal/news"
@@ -57,6 +58,7 @@ type RecentTradesReader interface {
 }
 
 type HTTP struct {
+	USTail            *provider.USTail
 	Store             *Store
 	Token             string
 	Access            *access.Store
@@ -245,6 +247,7 @@ func (h *HTTP) historyUniverse(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) storageCapabilities(w http.ResponseWriter, r *http.Request) {
+	build := buildinfo.Current()
 	revision := uint64(0)
 	updated := time.Unix(0, 0).UTC()
 	if h.HistoryCatalog != nil {
@@ -273,8 +276,11 @@ func (h *HTTP) storageCapabilities(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, 200, map[string]any{
+		"server_version":   build.Version,
+		"build_revision":   build.Revision,
 		"clickhouse":       map[string]any{"enabled": h.ClickHouseEnabled, "healthy": healthy, "error": healthError},
 		"redis":            map[string]any{"enabled": h.RedisEnabled, "healthy": redisHealthy, "error": redisHealthError},
+		"us_tail":          h.tailCapability(),
 		"history_revision": revision, "data_version": h.DataVersion, "updated_at": updated,
 	})
 }
@@ -309,17 +315,21 @@ func (h *HTTP) historyBars(w http.ResponseWriter, r *http.Request) {
 		bars, cached, err := h.Store.ProviderBarsCached(r.Context(), spec)
 		if err != nil {
 			if len(bars) > 0 {
-				writeJSON(w, 200, map[string]any{"source": "provider-partial", "bars": nonNilBars(bars), "warning": err.Error()})
+				h.writeHistory(w, r, spec, map[string]any{"source": "provider-partial", "bars": nonNilBars(bars), "warning": err.Error()})
 				return
 			}
-			writeProviderError(w, err)
+			if h.USTail == nil || !h.USTail.Eligible(spec) {
+				writeProviderError(w, err)
+				return
+			}
+			h.writeHistory(w, r, spec, map[string]any{"bars": []market.Bar{}, "source": "provider", "warning": err.Error()})
 			return
 		}
 		source := "provider"
 		if cached {
 			source = "server-redis"
 		}
-		writeJSON(w, 200, map[string]any{"source": source, "bars": nonNilBars(bars)})
+		h.writeHistory(w, r, spec, map[string]any{"source": source, "bars": nonNilBars(bars)})
 		return
 	}
 	storageSpec := spec
@@ -346,7 +356,7 @@ func (h *HTTP) historyBars(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.RedisEnabled && h.Redis != nil {
 		if bars, ok, cacheErr := h.Redis.Get(r.Context(), "clickhouse:"+cacheKey); cacheErr == nil && ok {
-			writeJSON(w, 200, map[string]any{"source": "server-redis", "bars": nonNilBars(bars)})
+			h.writeHistory(w, r, spec, map[string]any{"source": "server-redis", "bars": nonNilBars(bars)})
 			return
 		}
 	}
@@ -410,12 +420,16 @@ func (h *HTTP) historyBars(w http.ResponseWriter, r *http.Request) {
 	payload := map[string]any{"source": source, "bars": nonNilBars(bars)}
 	if providerWarning != nil {
 		if len(bars) == 0 {
-			writeProviderError(w, providerWarning)
+			if h.USTail == nil || !h.USTail.Eligible(spec) {
+				writeProviderError(w, providerWarning)
+				return
+			}
+			h.writeHistory(w, r, spec, map[string]any{"bars": []market.Bar{}, "source": source, "warning": providerWarning.Error()})
 			return
 		}
 		payload["warning"] = providerWarning.Error()
 	}
-	writeJSON(w, 200, payload)
+	h.writeHistory(w, r, spec, payload)
 }
 
 func writeProviderError(w http.ResponseWriter, err error) {
@@ -471,10 +485,13 @@ func (h *HTTP) persistHistory(ctx context.Context, spec market.DatasetSpec, bars
 	}
 	if h.HistoryCatalog != nil {
 		ttl := h.EmptyCoverageTTL
+		if h.USTail != nil && h.USTail.Eligible(spec) {
+			ttl = 15 * time.Second
+		}
 		if ttl <= 0 {
 			ttl = 15 * time.Minute
 		}
-		if err := h.HistoryCatalog.RecordCoverage(ctx, spec, coverageVersion, bars, ttl); err != nil {
+		if err := h.HistoryCatalog.recordMatureCoverage(ctx, spec, coverageVersion, bars, ttl, h.tailWindow()); err != nil {
 			return err
 		}
 		if len(bars) > 0 {

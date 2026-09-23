@@ -51,7 +51,9 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           mkdir -p out dist
-          go build -trimpath -ldflags="-s -w" -o "out/market-${{ matrix.component }}" "./cmd/go-${{ matrix.component }}"
+          go build -trimpath \
+            -ldflags="-s -w -X github.com/scott4game/market-bridge/internal/buildinfo.Version=${GITHUB_REF_NAME} -X github.com/scott4game/market-bridge/internal/buildinfo.Revision=${GITHUB_SHA}" \
+            -o "out/market-${{ matrix.component }}" "./cmd/go-${{ matrix.component }}"
           tar -C out -czf "dist/market-${{ matrix.component }}_${{ matrix.os }}_${{ matrix.arch }}.tar.gz" "market-${{ matrix.component }}"
       - uses: actions/upload-artifact@v4
         with:
@@ -105,6 +107,16 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve build version
+        id: build-version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            version="$GITHUB_REF_NAME"
+          else
+            version="${GITHUB_REF_NAME}-${GITHUB_SHA:0:12}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Build and push images
         uses: docker/build-push-action@v7
         with:
@@ -112,6 +124,9 @@ jobs:
           target: ${{ matrix.target }}
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: |
+            MARKET_BRIDGE_VERSION=${{ steps.build-version.outputs.version }}
+            MARKET_BRIDGE_REVISION=${{ github.sha }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
