@@ -16,7 +16,7 @@ dataset 生命周期和策略验证细节。
         v
     go-client
         |
-        +-- Redis 热缓存
+        +-- Redis 热缓存（可选）
         +-- Parquet 本地缓存
         +-- ClickHouse 实时镜像（可选）
         +-- go-server（缓存未命中时）
@@ -50,6 +50,9 @@ curl -fsS http://127.0.0.1:17600/v1/providers/status
 不要直接暴露到公网。
 
 ## 2. 客户端 ClickHouse 实时镜像
+
+go-client 默认关闭本地 Redis 和 ClickHouse，只使用 Parquet 本地缓存及 go-server 提供的
+远端能力。以下配置仅用于需要在客户端额外启用本地存储的场景。
 
 远端服务器内存不足时，不需要在 `go-server` 所在机器部署 ClickHouse。客户端可以
 独立运行 Redis、go-client 和 ClickHouse。go-client 每5分钟探测一次服务端能力，

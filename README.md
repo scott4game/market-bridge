@@ -141,31 +141,30 @@ docker compose up -d
 docker compose ps
 ```
 
-The default stack starts go-client, Redis, and a local ClickHouse instance. At minimum, review these values:
+By default, the stack starts only go-client. Local Redis and ClickHouse are disabled. Set these required values:
 
 ```dotenv
 GO_CLIENT_SERVER_URL=https://stock.example.com
 GO_CLIENT_SERVER_TOKEN=complete_personal_API_key
+```
+
+To opt in to local Redis and ClickHouse, configure them explicitly:
+
+```dotenv
 COMPOSE_PROFILES=local-redis,clickhouse
 GO_CLIENT_REDIS_ENABLED=true
 GO_CLIENT_CLICKHOUSE_ENABLED=true
+REDIS_PASSWORD=replace-with-a-long-random-password
+CLICKHOUSE_PASSWORD=replace-with-a-long-random-password
 REDIS_MAXMEMORY=1gb
 CLICKHOUSE_MEMORY_LIMIT=2g
 CLICKHOUSE_CPUS=2
 ```
 
-If go-server already provides both Redis and ClickHouse, disable the local instances:
-
-```dotenv
-COMPOSE_PROFILES=
-GO_CLIENT_REDIS_ENABLED=false
-GO_CLIENT_CLICKHOUSE_ENABLED=false
-```
-
 Open <http://127.0.0.1:17600> after startup. Check logs and the active storage topology with:
 
 ```bash
-docker compose logs -f go-client clickhouse
+docker compose logs -f go-client
 curl -fsS http://127.0.0.1:17600/v1/storage/status
 ```
 

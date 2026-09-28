@@ -155,7 +155,7 @@ sudo ./scripts/uninstall-server.sh --purge-data  # 同时删除配置和 Docker 
 
 ### go-client
 
-推荐在笔记本或其他客户端机器上安装 Docker Desktop（或 Docker Engine + Compose v2），创建空目录后通过部署准备脚本生成 `compose.yaml`、`.env.example` 和 `.env`。默认会同时启动 go-client、Redis 和本地 ClickHouse，并自动选择与机器匹配的 `linux/amd64` 或 `linux/arm64` 镜像：
+推荐在笔记本或其他客户端机器上安装 Docker Desktop（或 Docker Engine + Compose v2），创建空目录后通过部署准备脚本生成 `compose.yaml`、`.env.example` 和 `.env`。默认只启动 go-client，Redis 和本地 ClickHouse 均关闭；镜像会自动选择与机器匹配的 `linux/amd64` 或 `linux/arm64` 架构：
 
 ```bash
 mkdir -p market-bridge-client-deploy && cd market-bridge-client-deploy
@@ -169,25 +169,24 @@ docker compose up -d
 docker compose ps
 ```
 
-准备脚本会下载客户端 Compose 和配置模板，并自动生成 Redis、ClickHouse 随机密码。至少需要修改：
+准备脚本会下载客户端 Compose 和配置模板。默认只需填写：
 
 ```dotenv
 GO_CLIENT_SERVER_URL=https://stock.example.com
 GO_CLIENT_SERVER_TOKEN=管理员为当前用户签发的完整_API_Key
+```
+
+如需在客户端启用本地 Redis 和 ClickHouse，再显式配置：
+
+```dotenv
 COMPOSE_PROFILES=local-redis,clickhouse
 GO_CLIENT_REDIS_ENABLED=true
 GO_CLIENT_CLICKHOUSE_ENABLED=true
+REDIS_PASSWORD=替换为随机长密码
+CLICKHOUSE_PASSWORD=替换为随机长密码
 REDIS_MAXMEMORY=1gb
 CLICKHOUSE_MEMORY_LIMIT=2g
 CLICKHOUSE_CPUS=2
-```
-
-如果服务端已经同时提供 Redis 和 ClickHouse，可完全关闭客户端两个容器：
-
-```dotenv
-COMPOSE_PROFILES=
-GO_CLIENT_REDIS_ENABLED=false
-GO_CLIENT_CLICKHOUSE_ENABLED=false
 ```
 
 使用客户端本地 ClickHouse 时，服务端应设置 `GO_SERVER_CLICKHOUSE_ENABLED=false`；如果服务端已经启用 ClickHouse，go-client 会自动停止本地 ClickHouse 的业务读写，避免两侧双写。客户端仅在页面或 API 存在活跃订阅时接收并保存实时数据。
@@ -195,7 +194,7 @@ GO_CLIENT_CLICKHOUSE_ENABLED=false
 启动成功后打开 <http://127.0.0.1:17600>，也可以检查容器日志和实际存储模式：
 
 ```bash
-docker compose logs -f go-client clickhouse
+docker compose logs -f go-client
 curl -fsS http://127.0.0.1:17600/v1/storage/status
 ```
 
