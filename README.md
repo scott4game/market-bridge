@@ -1,6 +1,6 @@
 # market-bridge
 
-**English** | [简体中文](README.zh-CN.md)
+**English** | [简体中文](README.zh-CN.md) | [Changelog](CHANGELOG.md)
 
 A market-data caching gateway for quantitative research, chart analysis, and local backtesting.
 

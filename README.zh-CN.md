@@ -1,6 +1,6 @@
 # market-bridge
 
-[English](README.md) | **简体中文**
+[English](README.md) | **简体中文** | [更新日志](CHANGELOG.md)
 
 面向量化研究、行情分析与本地回测的数据缓存网关。
 
