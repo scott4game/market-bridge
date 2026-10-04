@@ -428,10 +428,15 @@ func TestMassiveStocksStarterClampsHistoryToFiveYears(t *testing.T) {
 	if _, err := (&Massive{APIKey: "test", PlanName: "stocks_starter", BaseURL: server.URL, HTTP: server.Client()}).Bars(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
-	if len(ranges) != 5 || !ranges[len(ranges)-1][0].Equal(want) {
+	// To extends an hour into the future; around New York midnight this can
+	// require a sixth, partial yearly window. Verify coverage, not a clock-dependent count.
+	if len(ranges) < 5 || len(ranges) > 6 || !ranges[len(ranges)-1][0].Equal(want) {
 		t.Fatalf("ranges=%v want_start=%v", ranges, want)
 	}
 	for index := 1; index < len(ranges); index++ {
+		if !ranges[index][1].Equal(ranges[index-1][0]) {
+			t.Fatalf("Massive ranges must be contiguous: %v", ranges)
+		}
 		if !ranges[index][0].Before(ranges[index-1][0]) {
 			t.Fatalf("Massive ranges must be fetched newest first: %v", ranges)
 		}

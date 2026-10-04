@@ -364,3 +364,34 @@ func TestUSTailConfiguration(t *testing.T) {
 		t.Fatal("accepted oversized tail")
 	}
 }
+
+func TestOptionsLiveConfiguration(t *testing.T) {
+	t.Setenv("GO_SERVER_OPTIONS_LIVE_PROVIDER", "")
+	cfg := ServerFromEnv()
+	if cfg.OptionsLiveProvider != "disabled" {
+		t.Fatal(cfg.OptionsLiveProvider)
+	}
+	t.Setenv("GO_SERVER_OPTIONS_LIVE_PROVIDER", "longbridge")
+	t.Setenv("GO_SERVER_OPTIONS_PROVIDER", "disabled")
+	t.Setenv("LONGBRIDGE_APP_KEY", "")
+	cfg = ServerFromEnv()
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "LONGBRIDGE_APP_KEY") {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"LONGBRIDGE_APP_KEY", "LONGBRIDGE_APP_SECRET", "LONGBRIDGE_ACCESS_TOKEN"} {
+		t.Setenv(k, "test")
+	}
+	cfg = ServerFromEnv()
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GO_SERVER_OPTIONS_PROVIDER", "massive")
+	t.Setenv("MASSIVE_OPTIONS_API_KEY", "test")
+	if err := ServerFromEnv().Validate(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GO_SERVER_OPTIONS_LIVE_PROVIDER", "unknown")
+	if err := ServerFromEnv().Validate(); err == nil {
+		t.Fatal("accepted unknown provider")
+	}
+}

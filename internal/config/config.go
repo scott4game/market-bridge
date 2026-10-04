@@ -23,6 +23,7 @@ type Server struct {
 	MassivePerMinute          int
 	MassivePerMonth           int
 	OptionsProvider           string
+	OptionsLiveProvider       string
 	MassiveOptionsAPIKey      string
 	MassiveOptionsPlanName    string
 	MassiveOptionsPerMinute   int
@@ -88,7 +89,8 @@ func ServerFromEnv() Server {
 		IndexRoutes: os.Getenv("GO_SERVER_INDEX_ROUTES"),
 		BearerToken: os.Getenv("GO_SERVER_TOKEN"), MassiveAPIKey: os.Getenv("MASSIVE_API_KEY"), MassiveBaseURL: env("MASSIVE_BASE_URL", "https://api.massive.com"),
 		MassivePlanName: env("MASSIVE_PLAN_NAME", "stocks_basic"), MassivePerMinute: integer("MASSIVE_REQUESTS_PER_MINUTE", 5), MassivePerMonth: integer("MASSIVE_REQUESTS_PER_MONTH", 0), MassiveHistoryMaxYears: integer("MASSIVE_HISTORY_MAX_YEARS", 5),
-		OptionsProvider: env("GO_SERVER_OPTIONS_PROVIDER", "disabled"), MassiveOptionsAPIKey: os.Getenv("MASSIVE_OPTIONS_API_KEY"), MassiveOptionsPlanName: env("MASSIVE_OPTIONS_PLAN_NAME", "options_basic"), MassiveOptionsPerMinute: integer("MASSIVE_OPTIONS_REQUESTS_PER_MINUTE", 5), MassiveOptionsPerMonth: integer("MASSIVE_OPTIONS_REQUESTS_PER_MONTH", 0),
+		OptionsLiveProvider: env("GO_SERVER_OPTIONS_LIVE_PROVIDER", "disabled"),
+		OptionsProvider:     env("GO_SERVER_OPTIONS_PROVIDER", "disabled"), MassiveOptionsAPIKey: os.Getenv("MASSIVE_OPTIONS_API_KEY"), MassiveOptionsPlanName: env("MASSIVE_OPTIONS_PLAN_NAME", "options_basic"), MassiveOptionsPerMinute: integer("MASSIVE_OPTIONS_REQUESTS_PER_MINUTE", 5), MassiveOptionsPerMonth: integer("MASSIVE_OPTIONS_REQUESTS_PER_MONTH", 0),
 		AShareProvider: historyProvider("GO_SERVER_A_SHARE_PROVIDER", legacyLongbridgeHistory), HKProvider: historyProvider("GO_SERVER_HK_PROVIDER", legacyLongbridgeHistory),
 		TushareToken: os.Getenv("TUSHARE_TOKEN"), TushareBaseURL: env("TUSHARE_BASE_URL", "https://api.tushare.pro"), TusharePerMinute: integer("TUSHARE_REQUESTS_PER_MINUTE", 200), TushareHistoryMaxYears: integer("TUSHARE_HISTORY_MAX_YEARS", 5),
 		NewsProvider: env("GO_SERVER_NEWS_PROVIDER", "disabled"), FMPAPIKey: os.Getenv("FMP_API_KEY"), FMPBaseURL: env("FMP_BASE_URL", "https://financialmodelingprep.com"), FMPNewsPollInterval: duration("FMP_NEWS_POLL_INTERVAL", time.Minute), FMPHistoryMaxYears: integer("FMP_HISTORY_MAX_YEARS", 5), NewsRetention: duration("GO_SERVER_NEWS_RETENTION", 30*24*time.Hour),
@@ -165,6 +167,9 @@ func (s Server) Validate() error {
 	if (s.Provider == "massive" || s.UsesIndexProvider("massive")) && strings.TrimSpace(s.MassiveAPIKey) == "" {
 		return fmt.Errorf("MASSIVE_API_KEY is required when a Massive provider is enabled")
 	}
+	if s.OptionsLiveProvider != "" && s.OptionsLiveProvider != "disabled" && s.OptionsLiveProvider != "longbridge" {
+		return fmt.Errorf("unsupported options live provider %q", s.OptionsLiveProvider)
+	}
 	if s.OptionsProvider != "disabled" && s.OptionsProvider != "massive" {
 		return fmt.Errorf("unsupported options provider %q", s.OptionsProvider)
 	}
@@ -183,7 +188,7 @@ func (s Server) Validate() error {
 			return fmt.Errorf("mock live provider cannot be combined with real providers")
 		}
 	}
-	if s.USTailEnabled || s.AShareProvider == "longbridge" || s.HKProvider == "longbridge" || s.UsesIndexProvider("longbridge") || containsString(liveProviders, "longbridge") {
+	if s.OptionsLiveProvider == "longbridge" || s.USTailEnabled || s.AShareProvider == "longbridge" || s.HKProvider == "longbridge" || s.UsesIndexProvider("longbridge") || containsString(liveProviders, "longbridge") {
 		values := []struct{ name, value string }{
 			{"LONGBRIDGE_APP_KEY", s.LongbridgeAppKey},
 			{"LONGBRIDGE_APP_SECRET", s.LongbridgeAppSecret},
@@ -191,7 +196,7 @@ func (s Server) Validate() error {
 		}
 		for _, item := range values {
 			if strings.TrimSpace(item.value) == "" {
-				return fmt.Errorf("%s is required when Longbridge history, index, or live data is enabled", item.name)
+				return fmt.Errorf("%s is required when Longbridge history, index, live data, or options live data is enabled", item.name)
 			}
 		}
 	}

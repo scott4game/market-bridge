@@ -71,6 +71,7 @@ func bindMCP[I any](s *mcp.Server, name, description string, call func(context.C
 
 func (h *HTTP) mcpHandler() http.Handler {
 	s := mcp.NewServer(&mcp.Implementation{Name: "market-bridge", Version: "1.0.0"}, nil)
+	h.bindOptionsLiveMCP(s)
 	bindMCP(s, "get_bars", "Query historical bars. Cache misses may fetch and cache upstream data. Returns the latest limited rows within the explicit time range, not a complete history when truncated.", h.mcpBars)
 	bindMCP(s, "get_recent_trades", "Query recent Longbridge trades; requires the upstream live provider.", h.mcpTrades)
 	bindMCP(s, "get_news", "Query locally stored news using sequence pagination.", h.mcpNews)

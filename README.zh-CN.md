@@ -423,3 +423,39 @@ Longbridge 失败时保留可用历史并返回 `warning`，无任何可用结�
 
 上线前应使用少量股票核对账户 OpenAPI 权限、标的配额、盘前盘后最新时间及重叠区间 OHLCV。
 关闭 `GO_SERVER_US_TAIL_ENABLED` 并重启服务端即可停用；无需删除历史数据。
+
+### 长桥美股期权行情
+
+设置独立开关即可查询当前期权到期日、期权链、报价和 Greeks，无须启用股票行情或 Massive：
+
+```dotenv
+GO_SERVER_OPTIONS_LIVE_PROVIDER=longbridge
+LONGBRIDGE_APP_KEY=...
+LONGBRIDGE_APP_SECRET=...
+LONGBRIDGE_ACCESS_TOKEN=...
+```
+
+该开关默认 `disabled`。`GO_SERVER_OPTIONS_PROVIDER` 仍只支持 `disabled` / `massive`，负责原有历史合约和日线；不要将它改成 `longbridge`。两者可以同时启用。修改实际使用的环境文件后重新创建服务容器，使 Compose 注入新变量；无需数据迁移，回滚时关闭新开关即可。
+
+先验证账户行情权限（只读，不下单；明确指定的环境文件仅覆盖探测进程的环境变量）：
+
+```bash
+go run ./cmd/options-probe -env-file .env.server -underlying AAPL.US
+```
+
+探测动态选择最近未到期的标准 Call/Put 合约，输出各阶段数据、行情时间和字段完整性；失败或缺少必需字段时返回非零退出码。缺少 Greeks 不会被填成零。休市时可验证连通性，实时性需交易时段核验；该命令不验证交易权限。
+
+新接口由服务端和本地客户端共同提供，需要服务端令牌拥有 `live:read`：
+
+| HTTP GET | 查询参数 | MCP 工具 |
+|---|---|---|
+| `/v1/options/expirations` | `underlying=AAPL` | `get_option_expirations` |
+| `/v1/options/chain` | `underlying=AAPL&expiration=YYYY-MM-DD` | `get_option_chain` |
+| `/v1/options/quotes` | `symbols=合约代码1,合约代码2` | `get_option_quotes` |
+| `/v1/options/greeks` | `symbols=合约代码1,合约代码2` | `get_option_greeks` |
+
+期权链要求明确到期日，支持 `type=call/put`、十进制字符串 `strike_gte` / `strike_lte`、`offset` 和 `limit`（默认 100、最大 500），按行权价、方向、代码排序并返回 `total`。使用返回的长桥原生 `symbol` 查询报价，不接受 Massive 的 `O:` 代码。MCP 报价/Greeks 参数 `symbols` 是字符串数组；每次最多 100 个代码。
+
+响应带 `provider`、`cache_hit` 和 `fetched_at`。期权链/到期日缓存 5 分钟，报价/Greeks 缓存 2 秒；缓存仅在服务进程内、最多 1,000 项。报价 `timestamp` 是上游行情时间，Greeks 没有上游计算时间，不能将 `fetched_at` 当作计算时间。小数以字符串返回，缺失值为 `null`，批量未返回的合约列在 `missing_symbols`；合约乘数和规模取上游实际值，不固定为 100。
+
+`/v1/providers/status` 的 `options_live` 报告配置状态、最近成功查询时间及最近错误。`configured` 不表示已经获得行情权限。未启用返回 503，参数错误 400，行情无权限 403，上游限流 429，超时 504，其他上游错误 502；不自动切换 Massive。首期不提供期权交易、WebSocket 推送或期权历史 K 线回补。

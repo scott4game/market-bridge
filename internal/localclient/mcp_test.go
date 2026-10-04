@@ -115,7 +115,7 @@ func TestMCPQueryTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list.Tools) != 6 {
+	if len(list.Tools) != 10 {
 		t.Fatalf("tools=%d", len(list.Tools))
 	}
 	for _, tool := range list.Tools {
@@ -269,6 +269,55 @@ func TestMCPEmptyNewsAndSchema(t *testing.T) {
 		result, err := s.CallTool(context.Background(), &mcp.CallToolParams{Name: "get_recent_trades", Arguments: args})
 		if err == nil && !result.IsError {
 			t.Fatal("invalid schema accepted")
+		}
+	}
+}
+
+func TestMCPAndProxyLiveOptions(t *testing.T) {
+	h := mcpTestHTTP(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-secret" {
+			t.Error("missing authentication")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/options/expirations":
+			if r.URL.Query().Get("underlying") != "AAPL" {
+				t.Error("missing underlying")
+			}
+			w.Write([]byte(`{"provider":"longbridge","expirations":["2026-10-16"]}`))
+		case "/v1/options/chain":
+			if r.URL.Query().Get("expiration") != "2026-10-16" || r.URL.Query().Get("type") != "put" || r.URL.Query().Get("limit") != "100" {
+				t.Error("incorrect chain query")
+			}
+			w.Write([]byte(`{"provider":"longbridge","contracts":[],"total":0}`))
+		case "/v1/options/quotes", "/v1/options/greeks":
+			if r.URL.Query().Get("symbols") != "AAPL261016C200000.US" {
+				t.Error("missing symbols")
+			}
+			w.Write([]byte(`{"provider":"longbridge","missing_symbols":[]}`))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	session := mcpTestSession(t, h)
+	for _, tc := range []struct {
+		name, path string
+		args       map[string]any
+	}{
+		{"get_option_expirations", "expirations?underlying=AAPL", map[string]any{"underlying": "AAPL"}},
+		{"get_option_chain", "chain?underlying=AAPL&expiration=2026-10-16&type=put&limit=100", map[string]any{"underlying": "AAPL", "expiration": "2026-10-16", "type": "put"}},
+		{"get_option_quotes", "quotes?symbols=AAPL261016C200000.US", map[string]any{"symbols": []string{"AAPL261016C200000.US"}}},
+		{"get_option_greeks", "greeks?symbols=AAPL261016C200000.US", map[string]any{"symbols": []string{"AAPL261016C200000.US"}}},
+	} {
+		out := mcpCall(t, session, tc.name, tc.args, false)
+		if out["provider"] != "longbridge" {
+			t.Fatal(out)
+		}
+		w := httptest.NewRecorder()
+		h.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/v1/options/"+tc.path, nil))
+		if w.Code != 200 {
+			t.Fatalf("proxy: %d %s", w.Code, w.Body.String())
 		}
 	}
 }

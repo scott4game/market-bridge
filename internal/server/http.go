@@ -67,6 +67,7 @@ type HTTP struct {
 	Usage             UsageReader
 	OptionsUsage      UsageReader
 	Options           *OptionCatalog
+	OptionsLive       *OptionLiveService
 	ProviderStatus    func() any
 	ClickHouseEnabled bool
 	ClickHouse        HistoricalClickHouse
@@ -102,6 +103,10 @@ func (h *HTTP) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/market-history/universe", h.auth("history:read", h.historyUniverse))
 	mux.HandleFunc("GET /v1/market-history/security-profiles", h.auth("history:read", h.historySecurityProfiles))
 	mux.HandleFunc("GET /v1/market-history/adjustments/{symbol}", h.auth("history:read", h.historyAdjustments))
+	mux.HandleFunc("GET /v1/options/expirations", h.auth("live:read", h.optionLive))
+	mux.HandleFunc("GET /v1/options/chain", h.auth("live:read", h.optionLive))
+	mux.HandleFunc("GET /v1/options/quotes", h.auth("live:read", h.optionLive))
+	mux.HandleFunc("GET /v1/options/greeks", h.auth("live:read", h.optionLive))
 	mux.HandleFunc("GET /v1/options/contracts", h.auth("history:read", h.optionContracts))
 	mux.HandleFunc("GET /v1/options/bars/{contract}", h.auth("history:read", h.optionBars))
 	mux.HandleFunc("GET /v1/market-analytics/volume/{symbol}", h.auth("history:read", h.analyticsVolume))

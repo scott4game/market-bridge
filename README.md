@@ -343,3 +343,39 @@ protocols are unchanged. Validate account permissions and real market freshness
 on a few symbols before enabling broadly. See the Chinese README for details.
 The capability response also exposes `server_version` and `build_revision` to
 identify the running image; `data_version` remains the market-data schema ID.
+
+### Longbridge US options market data
+
+Enable current option expirations, chains, quotes and Greeks independently of stock data or Massive:
+
+```dotenv
+GO_SERVER_OPTIONS_LIVE_PROVIDER=longbridge
+LONGBRIDGE_APP_KEY=...
+LONGBRIDGE_APP_SECRET=...
+LONGBRIDGE_ACCESS_TOKEN=...
+```
+
+The new switch defaults to `disabled`. Keep `GO_SERVER_OPTIONS_PROVIDER=massive` if historical option contracts and daily bars are needed; that existing setting still accepts only `disabled` or `massive`. Recreate the server container after changing its environment file. No data migration is needed; disable the new switch to roll back.
+
+Run the read-only account probe:
+
+```bash
+go run ./cmd/options-probe -env-file .env.server -underlying AAPL.US
+```
+
+The explicit file overrides environment values for this process only. The probe selects a currently unexpired standard call/put pair from the returned chain, prints quote timestamps and field completeness, and exits nonzero on errors or incomplete required data. It never submits orders or verifies trading permissions. Verify freshness during market hours separately.
+
+Server and local-client GET routes (server token requires `live:read`):
+
+| Route | Parameters | MCP tool |
+|---|---|---|
+| `/v1/options/expirations` | `underlying` | `get_option_expirations` |
+| `/v1/options/chain` | `underlying`, `expiration=YYYY-MM-DD` | `get_option_chain` |
+| `/v1/options/quotes` | comma-separated `symbols` | `get_option_quotes` |
+| `/v1/options/greeks` | comma-separated `symbols` | `get_option_greeks` |
+
+Chains support `type=call/put`, decimal-string `strike_gte` / `strike_lte`, `offset`, and `limit` (default 100, max 500). Results sort by strike, type and symbol and include `total`. Quote/Greek requests accept up to 100 native Longbridge symbols returned by the chain, not Massive `O:` identifiers. MCP takes `symbols` as a string array.
+
+Responses include `provider`, `cache_hit`, and `fetched_at`. Expirations/chains cache for five minutes; quotes/Greeks for two seconds, in a separate in-memory cache capped at 1,000 entries. Quote `timestamp` is upstream market time; Greek calculation time is not supplied. Decimal values are nullable strings; absent data is never replaced with zero. Batch responses list `missing_symbols`. Contract multipliers/sizes use upstream values, never a fixed 100.
+
+Provider status adds `options_live`, showing configuration, last successful query time and last error. Configured does not mean the account has quote permissions. HTTP errors distinguish disabled (503), invalid input (400), quote permission (403), rate limit (429), timeout (504) and other upstream failures (502). No automatic Massive fallback. Trading, streaming, UI and historical option backfill are outside this feature.

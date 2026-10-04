@@ -79,7 +79,7 @@ func main() {
 		usProvider = &provider.Mock{Version: cfg.DataVersion}
 	}
 	liveProviders := cfg.EffectiveLiveProviders()
-	longbridgeNeeded := cfg.USTailEnabled || cfg.AShareProvider == "longbridge" || cfg.HKProvider == "longbridge" || cfg.UsesIndexProvider("longbridge") || contains(liveProviders, "longbridge")
+	longbridgeNeeded := cfg.OptionsLiveProvider == "longbridge" || cfg.USTailEnabled || cfg.AShareProvider == "longbridge" || cfg.HKProvider == "longbridge" || cfg.UsesIndexProvider("longbridge") || contains(liveProviders, "longbridge")
 	var longbridgeQuote *lbquote.QuoteContext
 	if longbridgeNeeded {
 		longbridgeConfig, err := lbconfig.New()
@@ -92,6 +92,10 @@ func main() {
 			log.Fatal(err)
 		}
 		defer longbridgeQuote.Close()
+	}
+	var optionsLive *marketserver.OptionLiveService
+	if cfg.OptionsLiveProvider == "longbridge" {
+		optionsLive = marketserver.NewOptionLiveService(&provider.LongbridgeOptions{Quote: longbridgeQuote})
 	}
 	var longbridgeHistory provider.Provider
 	if cfg.AShareProvider == "longbridge" || cfg.HKProvider == "longbridge" {
@@ -291,6 +295,7 @@ func main() {
 		status["hk"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[hkEnabled], "provider": cfg.HKProvider, "history_enabled": hkEnabled}
 		status["massive"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[cfg.Provider == "massive" || cfg.UsesIndexProvider("massive")], "plan": cfg.MassivePlanName}
 		status["options"] = map[string]any{"state": map[bool]string{true: "enabled", false: "disabled"}[cfg.OptionsProvider == "massive"], "provider": cfg.OptionsProvider, "plan": cfg.MassiveOptionsPlanName, "history_enabled": cfg.OptionsProvider == "massive"}
+		status["options_live"] = optionsLive.Status()
 		status["history_policy"] = map[string]any{
 			"cooldown_seconds": 600,
 			"providers":        cfg.HistoryMaxYears(),
@@ -328,7 +333,7 @@ func main() {
 	}
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           (&marketserver.HTTP{USTail: usTail, Store: store, Token: cfg.BearerToken, Access: auth, Limiter: limiter, Live: hub, Usage: usage, OptionsUsage: optionsUsage, Options: optionsCatalog, ProviderStatus: providerStatus, ClickHouseEnabled: cfg.ClickHouseEnabled, ClickHouse: historicalClickHouse, RedisEnabled: cfg.RedisEnabled, Redis: redisCache, HistoryCatalog: historyCatalog, DataVersion: historyDataVersion, EmptyCoverageTTL: cfg.EmptyCoverageTTL, HistoryRetention: cfg.ClickHouseRetention, RecentTrades: recentTrades, News: newsService, SecurityProfiles: securityProfiles, Analytics: marketAnalytics}).Handler(),
+		Handler:           (&marketserver.HTTP{USTail: usTail, Store: store, Token: cfg.BearerToken, Access: auth, Limiter: limiter, Live: hub, Usage: usage, OptionsUsage: optionsUsage, Options: optionsCatalog, OptionsLive: optionsLive, ProviderStatus: providerStatus, ClickHouseEnabled: cfg.ClickHouseEnabled, ClickHouse: historicalClickHouse, RedisEnabled: cfg.RedisEnabled, Redis: redisCache, HistoryCatalog: historyCatalog, DataVersion: historyDataVersion, EmptyCoverageTTL: cfg.EmptyCoverageTTL, HistoryRetention: cfg.ClickHouseRetention, RecentTrades: recentTrades, News: newsService, SecurityProfiles: securityProfiles, Analytics: marketAnalytics}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    1 << 20,
