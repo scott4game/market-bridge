@@ -210,7 +210,20 @@ func (c *Cache) RedisHealthy(ctx context.Context) error {
 	return c.redis.Ping(ctx).Err()
 }
 
+func (c *Cache) redactError(err error) error {
+	if err == nil {
+		return nil
+	}
+	detail := market.ErrorDetails(err)
+	detail.Message = market.SafeErrorMessage(detail.Message, c.cfg.ServerToken)
+	detail.Cause = err
+	return detail
+}
 func (c *Cache) Bars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar, string, error) {
+	bars, source, err := c.bars(ctx, spec)
+	return bars, source, c.redactError(err)
+}
+func (c *Cache) bars(ctx context.Context, spec market.DatasetSpec) ([]market.Bar, string, error) {
 	spec, err := spec.Normalize()
 	if err != nil {
 		return nil, "", err
@@ -591,12 +604,13 @@ func (c *Cache) remoteHistoryBars(ctx context.Context, spec market.DatasetSpec, 
 	}
 	defer resp.Body.Close()
 	var payload struct {
-		Source  string       `json:"source"`
-		Bars    []market.Bar `json:"bars"`
-		Error   string       `json:"error"`
-		Warning string       `json:"warning"`
+		Source         string            `json:"source"`
+		Bars           []market.Bar      `json:"bars"`
+		Error          string            `json:"error"`
+		Warning        string            `json:"warning"`
+		WarningDetails *market.DataError `json:"warning_details"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := market.DecodeHTTPJSON(resp, &payload); err != nil {
 		return nil, "", err
 	}
 	if resp.StatusCode/100 != 2 {
@@ -606,7 +620,7 @@ func (c *Cache) remoteHistoryBars(ctx context.Context, spec market.DatasetSpec, 
 		payload.Bars = []market.Bar{}
 	}
 	if payload.Warning != "" {
-		return payload.Bars, payload.Source, errors.New(payload.Warning)
+		return payload.Bars, payload.Source, market.WarningError(payload.Warning, payload.WarningDetails)
 	}
 	return payload.Bars, payload.Source, nil
 }
@@ -801,7 +815,7 @@ func (c *Cache) download(ctx context.Context, key string, spec market.DatasetSpe
 		return market.Manifest{}, err
 	}
 	var st market.DatasetStatus
-	err = json.NewDecoder(resp.Body).Decode(&st)
+	err = market.DecodeHTTPJSON(resp, &st)
 	resp.Body.Close()
 	if err != nil {
 		return market.Manifest{}, err
@@ -893,11 +907,7 @@ func (c *Cache) getJSON(ctx context.Context, path string, v any) error {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode/100 != 2 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("go-server returned %d: %s", resp.StatusCode, b)
-	}
-	return json.NewDecoder(resp.Body).Decode(v)
+	return c.redactError(market.DecodeHTTPJSON(resp, v))
 }
 
 func (c *Cache) ProviderUsage(ctx context.Context) (json.RawMessage, error) {
@@ -1001,8 +1011,12 @@ func (c *Cache) serverJSON(ctx context.Context, client *http.Client, method, pat
 	if resp.StatusCode == http.StatusNoContent && len(raw) == 0 {
 		return nil, resp.StatusCode, nil
 	}
+	if resp.StatusCode/100 != 2 {
+		safe, _ := json.Marshal(market.ErrorPayload(market.HTTPDataError(resp, raw, c.cfg.ServerToken)))
+		return safe, resp.StatusCode, nil
+	}
 	if !json.Valid(raw) {
-		return nil, resp.StatusCode, fmt.Errorf("go-server returned invalid JSON (status %d)", resp.StatusCode)
+		return nil, resp.StatusCode, &market.DataError{Code: "invalid_upstream_json", Message: fmt.Sprintf("go-server returned invalid JSON (status %d): %s", resp.StatusCode, market.SafeErrorMessage(string(raw))), UpstreamStatus: resp.StatusCode, Retryable: true, RetryAfterSeconds: 30}
 	}
 	return json.RawMessage(raw), resp.StatusCode, nil
 }

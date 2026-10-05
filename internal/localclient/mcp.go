@@ -134,7 +134,7 @@ func (h *HTTP) mcpBars(ctx context.Context, in mcpBarsInput) (map[string]any, er
 	}
 	bars, source, fetchErr := h.Cache.Bars(ctx, spec)
 	if fetchErr != nil && len(bars) == 0 {
-		return nil, errors.New("historical bars unavailable; check client and provider status")
+		return nil, fmt.Errorf("historical bars unavailable: %s", market.SafeErrorMessage(fetchErr.Error()))
 	}
 	sort.Slice(bars, func(i, j int) bool { return bars[i].Timestamp.Before(bars[j].Timestamp) })
 	total := len(bars)
@@ -146,7 +146,7 @@ func (h *HTTP) mcpBars(ctx context.Context, in mcpBarsInput) (map[string]any, er
 	}
 	out := map[string]any{"bars": bars, "source": source, "count": len(bars), "total_count": total, "truncated": total > limit, "spec": spec}
 	if fetchErr != nil {
-		out["warning"] = "Partial data returned: some requested history is unavailable"
+		out = market.WithDataWarning(out, fetchErr)
 	}
 	return out, nil
 }

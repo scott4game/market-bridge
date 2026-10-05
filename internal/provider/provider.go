@@ -370,18 +370,13 @@ func (m *Massive) fetchBars(ctx context.Context, spec market.DatasetSpec) ([]mar
 						return bars, readErr
 					}
 					finish(resp.StatusCode, nil)
-					var failure struct {
-						Error string `json:"error"`
-					}
-					_ = json.Unmarshal(body, &failure)
-					message := strings.TrimSpace(string(body))
-					if failure.Error != "" {
-						message = failure.Error
-					}
+					providerErr := market.HTTPDataError(resp, body, m.APIKey)
 					if strings.HasPrefix(symbol, "I:") && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
-						message += "; index access requires a separately enabled Massive Indices plan (Indices Basic is free)"
+						detail := market.ErrorDetails(providerErr)
+						detail.Message += "; index access requires a separately enabled Massive Indices plan (Indices Basic is free)"
+						providerErr = detail
 					}
-					return bars, fmt.Errorf("massive: status %d: %s", resp.StatusCode, message)
+					return bars, fmt.Errorf("massive: %w", providerErr)
 				}
 				var payload struct {
 					Status  string `json:"status"`
@@ -470,14 +465,14 @@ func (m *Massive) doRequest(ctx context.Context, client *http.Client, request *h
 		status := 0
 		if resp != nil {
 			status = resp.StatusCode
-			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 			_ = resp.Body.Close()
-			lastErr = fmt.Errorf("massive transient status %d", status)
+			lastErr = market.HTTPDataError(resp, body, m.APIKey)
 		} else {
 			lastErr = err
 		}
 		finish(status, err)
-		if attempt == 2 || ctx.Err() != nil {
+		if attempt == 2 || ctx.Err() != nil || status == http.StatusTooManyRequests {
 			break
 		}
 		timer := time.NewTimer(time.Duration(250*(1<<attempt)) * time.Millisecond)
@@ -833,15 +828,8 @@ func (m *Massive) fetchDividendFactors(ctx context.Context, client *http.Client,
 		}
 		if resp.StatusCode/100 != 2 {
 			finish(resp.StatusCode, nil)
-			var failure struct {
-				Error string `json:"error"`
-			}
-			_ = json.Unmarshal(body, &failure)
-			message := strings.TrimSpace(string(body))
-			if failure.Error != "" {
-				message = failure.Error
-			}
-			return nil, fmt.Errorf("massive dividends: status %d: %s", resp.StatusCode, message)
+
+			return nil, fmt.Errorf("massive dividends: %w", market.HTTPDataError(resp, body, m.APIKey))
 		}
 		var payload struct {
 			Status  string `json:"status"`

@@ -355,12 +355,21 @@ func (h *HTTP) proxyServerJSON(w http.ResponseWriter, r *http.Request) {
 	}
 	raw, status, err := h.Cache.ServerJSON(r.Context(), r.Method, path, body)
 	if err != nil {
-		jsonResponse(w, 502, map[string]string{"error": err.Error()})
+		market.SetRetryAfter(w, err)
+		jsonResponse(w, 502, market.ErrorPayload(err))
 		return
 	}
 	if status == http.StatusNoContent {
 		w.WriteHeader(status)
 		return
+	}
+	if status/100 != 2 {
+		var detail struct {
+			Details *market.DataError `json:"error_details"`
+		}
+		if json.Unmarshal(raw, &detail) == nil && detail.Details != nil {
+			market.SetRetryAfter(w, detail.Details)
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -369,7 +378,8 @@ func (h *HTTP) proxyServerJSON(w http.ResponseWriter, r *http.Request) {
 func (h *HTTP) providerUsage(w http.ResponseWriter, r *http.Request) {
 	raw, err := h.Cache.ProviderUsage(r.Context())
 	if err != nil {
-		jsonResponse(w, 502, map[string]string{"error": err.Error()})
+		market.SetRetryAfter(w, err)
+		jsonResponse(w, 502, market.ErrorPayload(err))
 		return
 	}
 	jsonResponse(w, 200, raw)
@@ -419,10 +429,12 @@ func (h *HTTP) ensure(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if len(bars) > 0 {
 			w.Header().Set("X-Cache-Source", source)
-			jsonResponse(w, 200, map[string]any{"source": source, "count": len(bars), "bars": bars, "warning": err.Error()})
+			market.SetRetryAfter(w, err)
+			jsonResponse(w, 200, market.WithDataWarning(map[string]any{"source": source, "count": len(bars), "bars": bars}, err))
 			return
 		}
-		jsonResponse(w, 502, map[string]string{"error": err.Error()})
+		market.SetRetryAfter(w, err)
+		jsonResponse(w, 502, market.ErrorPayload(err))
 		return
 	}
 	w.Header().Set("X-Cache-Source", source)
@@ -445,10 +457,12 @@ func (h *HTTP) bars(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if len(bars) > 0 {
 			w.Header().Set("X-Cache-Source", source)
-			jsonResponse(w, 200, map[string]any{"source": source, "bars": bars, "warning": err.Error()})
+			market.SetRetryAfter(w, err)
+			jsonResponse(w, 200, market.WithDataWarning(map[string]any{"source": source, "bars": bars}, err))
 			return
 		}
-		jsonResponse(w, 502, map[string]string{"error": err.Error()})
+		market.SetRetryAfter(w, err)
+		jsonResponse(w, 502, market.ErrorPayload(err))
 		return
 	}
 	w.Header().Set("X-Cache-Source", source)

@@ -58,19 +58,23 @@ func (h *HTTP) writeHistory(w http.ResponseWriter, r *http.Request, spec market.
 			payload["source"] = payload["source"].(string) + "+longbridge-tail"
 		}
 		if err != nil {
-			warning, _ := payload["warning"].(string)
-			if warning != "" {
-				warning += "; "
+			if warning, ok := payload["warning"].(string); ok && warning != "" {
+				detail, _ := payload["warning_details"].(*market.DataError)
+				err = errors.Join(market.WarningError(warning, detail), err)
 			}
-			payload["warning"] = warning + err.Error()
+			payload = market.WithDataWarning(payload, err)
 		}
 		w.Header().Set("Cache-Control", "no-store")
 	}
 	if len(bars) == 0 {
 		if warning, ok := payload["warning"].(string); ok && warning != "" {
-			writeProviderError(w, errors.New(warning))
+			detail, _ := payload["warning_details"].(*market.DataError)
+			writeProviderError(w, market.WarningError(warning, detail))
 			return
 		}
+	}
+	if detail, ok := payload["warning_details"].(*market.DataError); ok {
+		market.SetRetryAfter(w, detail)
 	}
 	writeJSON(w, http.StatusOK, payload)
 }

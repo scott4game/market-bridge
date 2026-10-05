@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -242,6 +243,11 @@ func (r *Router) routeHistoryBars(ctx context.Context, p Provider, spec market.D
 		normalized.From = floor
 	}
 	key := historyFailureKey(p, normalized)
+	for _, symbol := range normalized.Symbols {
+		if curve, ok := curves[symbol]; ok {
+			key += "|" + symbol + "=" + curve.Version
+		}
+	}
 	if bars, failureErr, ok := r.cachedHistoryFailure(key, normalized, now); ok {
 		return bars, failureErr
 	}
@@ -297,7 +303,7 @@ func (r *Router) maxHistoryYears(p Provider) int {
 func historyFailureKey(p Provider, spec market.DatasetSpec) string {
 	symbols := append([]string(nil), spec.Symbols...)
 	sort.Strings(symbols)
-	return strings.Join([]string{canonicalProviderName(p.Name()), strings.Join(symbols, ","), spec.Interval, string(spec.Session), string(spec.Adjustment)}, "|")
+	return strings.Join([]string{canonicalProviderName(p.Name()), strings.Join(symbols, ","), spec.Interval, string(spec.Session), string(spec.Adjustment), spec.From.UTC().Format(time.RFC3339Nano), spec.To.UTC().Format(time.RFC3339Nano), p.DataVersion()}, "|")
 }
 
 func (r *Router) cachedHistoryFailure(key string, spec market.DatasetSpec, now time.Time) ([]market.Bar, error, bool) {
@@ -312,13 +318,25 @@ func (r *Router) cachedHistoryFailure(key string, spec market.DatasetSpec, now t
 		return nil, nil, false
 	}
 	bars := filterRequestedRange(append([]market.Bar(nil), failure.bars...), spec.From, spec.To)
-	return bars, fmt.Errorf("history fetch cooling down until %s: %w", failure.expiresAt.UTC().Format(time.RFC3339), failure.err), true
+	detail := market.ErrorDetails(failure.err)
+	detail.Code = "history_cooldown"
+	detail.Message = fmt.Sprintf("history fetch cooling down until %s: %s", failure.expiresAt.UTC().Format(time.RFC3339), market.SafeErrorMessage(failure.err.Error()))
+	detail.RetryAfterSeconds = int(math.Ceil(failure.expiresAt.Sub(now).Seconds()))
+	detail.Cause = failure.err
+	return bars, detail, true
 }
 
 func (r *Router) storeHistoryFailure(key string, bars []market.Bar, err error, now time.Time) {
+	if errors.Is(err, context.Canceled) {
+		return
+	}
 	ttl := r.HistoryCooldown
 	if ttl <= 0 {
 		ttl = 10 * time.Minute
+	}
+	detail := market.ErrorDetails(err)
+	if detail.Retryable && detail.RetryAfterSeconds > 0 {
+		ttl = time.Duration(detail.RetryAfterSeconds) * time.Second
 	}
 	r.historyMu.Lock()
 	defer r.historyMu.Unlock()

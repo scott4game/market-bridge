@@ -634,3 +634,18 @@ curl -fsS -X POST \
 | `GET /v1/news?symbols=AAPL&limit=50` | 查询本地 FMP 新闻镜像 |
 | `GET /v1/news/stream` | Agent 友好的 SSE 新闻监听流 |
 | `GET /v1/news/ws` | 新闻 WebSocket 订阅与断线续传 |
+
+
+## 历史错误与分类排除（前复权v4）
+
+原有`error`/`warning`字符串仍保留。历史错误增加`error_details`，部分结果增加`warning_details`及`complete:false`：
+
+```json
+{"error":"upstream status 429: rate limited","complete":false,"error_details":{"code":"upstream_http","message":"upstream status 429: rate limited","upstream_status":429,"retryable":true,"retry_after_seconds":60}}
+```
+
+有等待时间时HTTP响应包含`Retry-After`；部分历史仍可能为HTTP200，调用者必须检查warning/complete，不把它当完整数据缓存。`history_cooldown`表示该规范化范围仍处于冷却；网络错误使用`network_error`，成功状态但非法JSON为`invalid_upstream_json`。默认其他确定性错误是`data_error`且不可盲目重试。取消请求不写入冷却。
+
+证券档案接口的`profiles`仅包含检查通过的当前活跃美国交易所普通股，REIT普通股保留；`excluded`包含完整原档案及`reason`，类型与描述冲突不会被自动改写成另一类型。`complete`表示所有候选均获取或明确分类，并不要求每个候选都合格。`errors`继续表示资料获取失败；即使使用stale缓存，errors也不被排除项掩盖。泛证券目录/universe仍是多市场目录，不能代替此普通股筛选接口。
+
+复权因子JSON继续使用十进制字符串，现允许超过六位小数；价格字段精度不变。客户端拒绝`massive-qfq-v1`至`v3`曲线，要求服务端升级。新代码使用`us-qfq-v4`缓存键，因此旧派生Parquet/Redis结果不会作为新复权结果复用。

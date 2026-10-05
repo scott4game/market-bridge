@@ -676,3 +676,14 @@ curl -i http://127.0.0.1:17601/healthz
 # 公网经过 Nginx 检查服务
 curl -i https://stock.example.com/healthz
 ```
+
+
+## 从前复权v3升级到v4
+
+1. 保留原始/split-adjusted行情和旧结果审计副本，先更新服务端，再更新客户端（无需修改股票代码或交易规则）。本次发布不自动重启已有容器。
+2. 确认调整曲线版本为massive-qfq-v4；上游historical_adjustment_factor已经累计，不能再次连乘。客户端遇到旧版本会明确拒绝，而不是默默继续使用。
+3. v4语义进入派生缓存键，旧数据按正常保留策略过期，不需要清空原始ClickHouse行情。外部应用自有缓存、导出文件、指标和回测输入不会自动被修改，必须使用新曲线重新生成并记录版本，避免混用。
+4. 证券profiles接口重新校验旧缓存并提供excluded；从新合格名单重建调用方股票池，不能继续把旧候选数量当作合格数量。
+5. 按error_details区分复权/分类、权限、限流、网络和真实空数据；遵循retry_after_seconds/Retry-After。不得为了消除缺口而改用后来更有利的成交价格。
+
+推送dev会按现有Release workflow执行测试并发布镜像。镜像发布成功不等于运行中的服务已升级，也不等于历史回测已重建。

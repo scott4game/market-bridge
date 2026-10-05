@@ -77,3 +77,41 @@ func TestRouterLeavesSubHourHistoryUnchanged(t *testing.T) {
 		t.Fatalf("calls=%d err=%v", len(stub.calls), err)
 	}
 }
+
+func TestHistoryFailureScopeVersionAndRetryPolicy(t *testing.T) {
+	now := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	spec := market.DatasetSpec{Symbols: []string{"A"}, Interval: "1d", From: now.AddDate(-1, 0, 0), To: now, Session: market.RegularSession, Adjustment: market.SplitAdjusted}
+	stub := &historyPolicyStub{}
+	r := &Router{}
+	key := historyFailureKey(stub, spec)
+	other := spec
+	other.From = other.From.Add(time.Hour)
+	if key == historyFailureKey(stub, other) {
+		t.Fatal("date ranges share cooldown")
+	}
+	for _, tc := range []struct {
+		err     error
+		seconds int
+	}{
+		{&market.DataError{Message: "limited", UpstreamStatus: 429, Retryable: true, RetryAfterSeconds: 75}, 75},
+		{context.DeadlineExceeded, 30},
+		{&market.DataError{Message: "gateway", UpstreamStatus: 502, Retryable: true, RetryAfterSeconds: 30}, 30},
+		{errors.New("permission denied"), 600},
+	} {
+		r.storeHistoryFailure(key, nil, tc.err, now)
+		_, e, ok := r.cachedHistoryFailure(key, spec, now)
+		if !ok || market.ErrorDetails(e).RetryAfterSeconds != tc.seconds {
+			t.Fatalf("%v", e)
+		}
+		if _, _, ok := r.cachedHistoryFailure(key, spec, now.Add(time.Duration(tc.seconds)*time.Second)); ok {
+			t.Fatal("cooldown did not expire")
+		}
+	}
+	r.storeHistoryFailure(key, nil, context.Canceled, now)
+	if _, _, ok := r.cachedHistoryFailure(key, spec, now); ok {
+		t.Fatal("canceled request cached")
+	}
+	if _, _, ok := r.cachedHistoryFailure(historyFailureKey(stub, other), other, now); ok {
+		t.Fatal("other range blocked")
+	}
+}

@@ -320,14 +320,14 @@ func (h *HTTP) historyBars(w http.ResponseWriter, r *http.Request) {
 		bars, cached, err := h.Store.ProviderBarsCached(r.Context(), spec)
 		if err != nil {
 			if len(bars) > 0 {
-				h.writeHistory(w, r, spec, map[string]any{"source": "provider-partial", "bars": nonNilBars(bars), "warning": err.Error()})
+				h.writeHistory(w, r, spec, market.WithDataWarning(map[string]any{"source": "provider-partial", "bars": nonNilBars(bars)}, err))
 				return
 			}
 			if h.USTail == nil || !h.USTail.Eligible(spec) {
 				writeProviderError(w, err)
 				return
 			}
-			h.writeHistory(w, r, spec, map[string]any{"bars": []market.Bar{}, "source": "provider", "warning": err.Error()})
+			h.writeHistory(w, r, spec, market.WithDataWarning(map[string]any{"bars": []market.Bar{}, "source": "provider"}, err))
 			return
 		}
 		source := "provider"
@@ -429,10 +429,10 @@ func (h *HTTP) historyBars(w http.ResponseWriter, r *http.Request) {
 				writeProviderError(w, providerWarning)
 				return
 			}
-			h.writeHistory(w, r, spec, map[string]any{"bars": []market.Bar{}, "source": source, "warning": providerWarning.Error()})
+			h.writeHistory(w, r, spec, market.WithDataWarning(map[string]any{"bars": []market.Bar{}, "source": source}, providerWarning))
 			return
 		}
-		payload["warning"] = providerWarning.Error()
+		payload = market.WithDataWarning(payload, providerWarning)
 	}
 	h.writeHistory(w, r, spec, payload)
 }
@@ -442,7 +442,8 @@ func writeProviderError(w http.ResponseWriter, err error) {
 	if provider.IsHistoricalProviderDisabled(err) {
 		status = http.StatusServiceUnavailable
 	}
-	writeJSON(w, status, map[string]string{"error": err.Error()})
+	market.SetRetryAfter(w, err)
+	writeJSON(w, status, market.ErrorPayload(err))
 }
 
 func (h *HTTP) forwardAdjustBars(ctx context.Context, spec market.DatasetSpec, bars []market.Bar) ([]market.Bar, error) {
