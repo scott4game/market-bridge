@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -113,5 +114,47 @@ func TestHistoryFailureScopeVersionAndRetryPolicy(t *testing.T) {
 	}
 	if _, _, ok := r.cachedHistoryFailure(historyFailureKey(stub, other), other, now); ok {
 		t.Fatal("other range blocked")
+	}
+}
+
+func TestHistoryFailurePrunesUnvisitedRanges(t *testing.T) {
+	now := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	for _, onWrite := range []bool{false, true} {
+		r := &Router{HistoryCooldown: time.Minute}
+		r.storeHistoryFailure("old-range", []market.Bar{{Symbol: "A"}}, errors.New("failed"), now)
+		if onWrite {
+			r.storeHistoryFailure("new-range", nil, errors.New("failed"), now.Add(time.Minute))
+		} else {
+			r.cachedHistoryFailure("new-range", market.DatasetSpec{}, now.Add(time.Minute))
+		}
+		if _, exists := r.historyFailures["old-range"]; exists {
+			t.Fatalf("expired range retained (onWrite=%v)", onWrite)
+		}
+	}
+}
+
+func TestHistoryFailureCapacity(t *testing.T) {
+	now := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	r := &Router{HistoryCooldown: time.Hour}
+	for i := 0; i < maxHistoryFailures; i++ {
+		r.storeHistoryFailure(fmt.Sprint(i), nil, errors.New("failed"), now.Add(time.Duration(i)*time.Second))
+	}
+	// Updating an existing key must not evict an unrelated cooldown.
+	r.storeHistoryFailure("1", nil, errors.New("updated"), now)
+	if len(r.historyFailures) != maxHistoryFailures {
+		t.Fatal("update evicted a cooldown")
+	}
+	r.storeHistoryFailure("new-range", nil, errors.New("failed"), now.Add(time.Minute))
+	if len(r.historyFailures) != maxHistoryFailures {
+		t.Fatal("cache exceeded capacity")
+	}
+	if _, ok := r.historyFailures["new-range"]; !ok {
+		t.Fatal("new cooldown missing")
+	}
+	// Both 0 and the updated 1 expire first; either may be evicted.
+	if _, a := r.historyFailures["0"]; a {
+		if _, b := r.historyFailures["1"]; b {
+			t.Fatal("earliest expiry was not evicted")
+		}
 	}
 }

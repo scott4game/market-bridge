@@ -126,7 +126,9 @@ func HTTPDataError(resp *http.Response, body []byte, secrets ...string) error {
 // DecodeHTTPJSON checks status first so HTML/plain-text failures stay diagnosable.
 func DecodeHTTPJSON(resp *http.Response, v any) error {
 	if resp.StatusCode/100 != 2 {
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		// The envelope includes the message twice and JSON escaping can expand
+		// each byte sixfold. Bound the envelope separately from its messages.
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		if err != nil {
 			return &DataError{Code: "upstream_read", Message: fmt.Sprintf("upstream status %d: %s", resp.StatusCode, SafeErrorMessage(err.Error())), UpstreamStatus: resp.StatusCode, Retryable: true, RetryAfterSeconds: 30}
 		}

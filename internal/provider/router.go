@@ -63,6 +63,18 @@ type historyFailure struct {
 	expiresAt time.Time
 }
 
+const maxHistoryFailures = 256
+
+// pruneHistoryFailures must be called with historyMu held. Sweep all ranges:
+// rolling requests may never revisit the key of an expired failure.
+func (r *Router) pruneHistoryFailures(now time.Time) {
+	for key, failure := range r.historyFailures {
+		if !now.Before(failure.expiresAt) {
+			delete(r.historyFailures, key)
+		}
+	}
+}
+
 func (r *Router) Name() string        { return "router" }
 func (r *Router) DataVersion() string { return "router-v1" }
 
@@ -309,12 +321,9 @@ func historyFailureKey(p Provider, spec market.DatasetSpec) string {
 func (r *Router) cachedHistoryFailure(key string, spec market.DatasetSpec, now time.Time) ([]market.Bar, error, bool) {
 	r.historyMu.Lock()
 	defer r.historyMu.Unlock()
+	r.pruneHistoryFailures(now)
 	failure, ok := r.historyFailures[key]
 	if !ok {
-		return nil, nil, false
-	}
-	if !now.Before(failure.expiresAt) {
-		delete(r.historyFailures, key)
 		return nil, nil, false
 	}
 	bars := filterRequestedRange(append([]market.Bar(nil), failure.bars...), spec.From, spec.To)
@@ -342,6 +351,18 @@ func (r *Router) storeHistoryFailure(key string, bars []market.Bar, err error, n
 	defer r.historyMu.Unlock()
 	if r.historyFailures == nil {
 		r.historyFailures = map[string]historyFailure{}
+	}
+	r.pruneHistoryFailures(now)
+	if _, exists := r.historyFailures[key]; !exists && len(r.historyFailures) >= maxHistoryFailures {
+		// Retain longer cooldowns when the cache is full.
+		var earliestKey string
+		var earliest time.Time
+		for candidate, failure := range r.historyFailures {
+			if earliest.IsZero() || failure.expiresAt.Before(earliest) {
+				earliestKey, earliest = candidate, failure.expiresAt
+			}
+		}
+		delete(r.historyFailures, earliestKey)
 	}
 	r.historyFailures[key] = historyFailure{bars: append([]market.Bar(nil), bars...), err: err, expiresAt: now.Add(ttl)}
 }

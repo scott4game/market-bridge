@@ -65,3 +65,19 @@ func TestInvalidJSONEmptyResponseAndNetworkClassification(t *testing.T) {
 		t.Fatal("HTTP date retry-after")
 	}
 }
+
+func TestLongStructuredErrorSurvivesGateway(t *testing.T) {
+	for _, message := range []string{strings.Repeat("x", 2500), strings.Repeat("<", 4096)} {
+		original := &DataError{Code: "history_cooldown", Message: message, UpstreamStatus: 429, Retryable: true, RetryAfterSeconds: 77}
+		raw, err := json.Marshal(ErrorPayload(original))
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := &http.Response{StatusCode: 502, Header: http.Header{"Retry-After": []string{"77"}}, Body: io.NopCloser(strings.NewReader(string(raw)))}
+		var out any
+		detail := ErrorDetails(DecodeHTTPJSON(response, &out))
+		if detail.Code != original.Code || detail.UpstreamStatus != 429 || !detail.Retryable || detail.RetryAfterSeconds != 77 || detail.Message != message {
+			t.Fatalf("metadata or message lost for %d-byte envelope: %+v", len(raw), detail)
+		}
+	}
+}
