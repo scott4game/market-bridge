@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	shopdecimal "github.com/shopspring/decimal"
@@ -13,8 +14,8 @@ import (
 // strictly before EffectiveDate. Provider adapters convert per-event upstream
 // factors into this cumulative representation.
 type ForwardFactor struct {
-	EffectiveDate string  `json:"effective_date"`
-	Factor        Decimal `json:"factor"`
+	EffectiveDate string              `json:"effective_date"`
+	Factor        shopdecimal.Decimal `json:"factor"`
 }
 
 type ForwardFactors struct {
@@ -40,7 +41,7 @@ func ApplyForwardFactors(input []Bar, curves map[string]ForwardFactors, location
 			return nil, fmt.Errorf("missing forward-adjustment factors for %s", bar.Symbol)
 		}
 		date := bar.Timestamp.In(location).Format("2006-01-02")
-		factor := Decimal(decimalScale)
+		factor := shopdecimal.NewFromInt(1)
 		for _, item := range curve.Factors {
 			if item.EffectiveDate > date {
 				factor = item.Factor
@@ -65,16 +66,39 @@ func ApplyForwardFactors(input []Bar, curves map[string]ForwardFactors, location
 }
 
 func NormalizeForwardFactors(curve ForwardFactors) (ForwardFactors, error) {
+	for _, prefix := range []string{"massive-qfq-v1:", "massive-qfq-v2:", "massive-qfq-v3:"} {
+		if strings.HasPrefix(curve.Version, prefix) {
+			return curve, fmt.Errorf("obsolete forward-adjustment semantics %q; upgrade server and rebuild adjusted caches", prefix)
+		}
+	}
+	curve.Factors = append([]ForwardFactor(nil), curve.Factors...)
 	for _, item := range curve.Factors {
 		if _, err := time.Parse("2006-01-02", item.EffectiveDate); err != nil {
 			return curve, fmt.Errorf("invalid adjustment effective date %q", item.EffectiveDate)
 		}
-		if item.Factor <= 0 {
+		if !item.Factor.IsPositive() {
 			return curve, fmt.Errorf("invalid adjustment factor %s", item.Factor.String())
 		}
 	}
 	sort.Slice(curve.Factors, func(i, j int) bool { return curve.Factors[i].EffectiveDate < curve.Factors[j].EffectiveDate })
+	unique := curve.Factors[:0]
+	for _, item := range curve.Factors {
+		if len(unique) > 0 && unique[len(unique)-1].EffectiveDate == item.EffectiveDate {
+			if !unique[len(unique)-1].Factor.Equal(item.Factor) {
+				return curve, fmt.Errorf("conflicting adjustment factors on %s", item.EffectiveDate)
+			}
+			continue
+		}
+		unique = append(unique, item)
+	}
+	curve.Factors = unique
 	return curve, nil
+}
+
+// FactorFromFloat is intended for constants; upstream factors are parsed as decimal strings.
+func FactorFromFloat(value float64) shopdecimal.Decimal { return shopdecimal.NewFromFloat(value) }
+func ParseAdjustmentFactor(value string) (shopdecimal.Decimal, error) {
+	return shopdecimal.NewFromString(value)
 }
 
 // AccumulateForwardFactors converts per-event factors into the cumulative
@@ -85,19 +109,16 @@ func AccumulateForwardFactors(curve ForwardFactors) (ForwardFactors, error) {
 	if err != nil {
 		return curve, err
 	}
-	cumulative := Decimal(decimalScale)
+	cumulative := shopdecimal.NewFromInt(1)
 	for index := len(curve.Factors) - 1; index >= 0; index-- {
-		cumulative, err = multiplyDecimal(cumulative, curve.Factors[index].Factor)
-		if err != nil {
-			return curve, fmt.Errorf("accumulate adjustment factor for %s: %w", curve.Factors[index].EffectiveDate, err)
-		}
+		cumulative = cumulative.Mul(curve.Factors[index].Factor)
 		curve.Factors[index].Factor = cumulative
 	}
 	return curve, nil
 }
 
-func multiplyDecimal(value, factor Decimal) (Decimal, error) {
-	result := shopdecimal.NewFromInt(int64(value)).Mul(shopdecimal.NewFromInt(int64(factor))).Div(shopdecimal.NewFromInt(decimalScale)).Round(0)
+func multiplyDecimal(value Decimal, factor shopdecimal.Decimal) (Decimal, error) {
+	result := shopdecimal.NewFromInt(int64(value)).Mul(factor).Round(0)
 	max := shopdecimal.NewFromInt(math.MaxInt64)
 	min := shopdecimal.NewFromInt(math.MinInt64)
 	if result.GreaterThan(max) || result.LessThan(min) {

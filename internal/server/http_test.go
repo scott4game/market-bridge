@@ -79,7 +79,7 @@ func (p *factorProvider) Bars(context.Context, market.DatasetSpec) ([]market.Bar
 func (p *factorProvider) ForwardAdjustmentFactors(context.Context, string) (market.ForwardFactors, error) {
 	return market.ForwardFactors{
 		Symbol: "SNDK", Mode: market.ForwardAdjusted, AsOf: "2026-08-25", Version: p.version,
-		Factors: []market.ForwardFactor{{EffectiveDate: "2026-08-20", Factor: market.DecimalFromFloat(0.9)}},
+		Factors: []market.ForwardFactor{{EffectiveDate: "2026-08-20", Factor: market.FactorFromFloat(0.9)}},
 	}, nil
 }
 

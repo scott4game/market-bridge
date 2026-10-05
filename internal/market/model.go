@@ -247,7 +247,7 @@ func SemanticDataVersion(spec DatasetSpec, base string, now time.Time, factorVer
 		location = time.FixedZone("America/New_York", -5*60*60)
 	}
 	sort.Strings(factorVersions)
-	version := base + ":us-qfq-v3:" + now.In(location).Format("2006-01-02")
+	version := base + ":us-qfq-v4:" + now.In(location).Format("2006-01-02")
 	if len(factorVersions) > 0 {
 		version += ":" + strings.Join(factorVersions, "+")
 	}

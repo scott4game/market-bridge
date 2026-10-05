@@ -242,7 +242,7 @@ func TestMassiveDividendFactorsPaginateAndAccumulate(t *testing.T) {
 	if requests != 2 || curve.Symbol != "SNDK" || curve.Version == "" || len(curve.Factors) != 2 {
 		t.Fatalf("requests=%d curve=%+v", requests, curve)
 	}
-	if curve.Factors[0].Factor != market.DecimalFromFloat(0.72) || curve.Factors[1].Factor != market.DecimalFromFloat(0.8) {
+	if !curve.Factors[0].Factor.Equal(market.FactorFromFloat(0.9)) || !curve.Factors[1].Factor.Equal(market.FactorFromFloat(0.8)) {
 		t.Fatalf("factors=%+v", curve.Factors)
 	}
 }
@@ -536,5 +536,30 @@ func TestMassiveStockPlanDoesNotLimitIndices(t *testing.T) {
 	spec := market.DatasetSpec{Symbols: []string{"I:VIX"}, Interval: "1d", From: from, To: from.AddDate(0, 0, 1), Session: market.RegularSession, Adjustment: market.Raw}
 	if _, err := (&Massive{APIKey: "test", PlanName: "stocks_starter", BaseURL: server.URL, HTTP: server.Client()}).Bars(context.Background(), spec); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMonthlyDividendHistoryUsesCumulativeFactorsDirectly(t *testing.T) {
+	for _, symbol := range []string{"AGNC", "ARR"} {
+		t.Run(symbol, func(t *testing.T) {
+			now := time.Now()
+			items := []map[string]any{}
+			for i := 60; i > 0; i-- {
+				items = append(items, map[string]any{"ex_dividend_date": now.AddDate(0, -i, 0).Format("2006-01-02"), "historical_adjustment_factor": .4 + float64(60-i)*.009})
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]any{"status": "OK", "results": items})
+			}))
+			defer server.Close()
+			curve, err := (&Massive{APIKey: "test", BaseURL: server.URL, HTTP: server.Client()}).ForwardAdjustmentFactors(t.Context(), symbol)
+			if err != nil || len(curve.Factors) != 60 || !curve.Factors[0].Factor.Equal(market.FactorFromFloat(.4)) || !strings.HasPrefix(curve.Version, "massive-qfq-v4:") {
+				t.Fatalf("curve=%+v err=%v", curve, err)
+			}
+			for _, f := range curve.Factors {
+				if !f.Factor.IsPositive() {
+					t.Fatal("monthly cumulative factor underflowed")
+				}
+			}
+		})
 	}
 }

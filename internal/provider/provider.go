@@ -756,13 +756,13 @@ func (m *Massive) ForwardAdjustmentFactors(ctx context.Context, symbol string) (
 		factors = append(factors, part...)
 	}
 	curve := market.ForwardFactors{Symbol: normalized, Mode: market.ForwardAdjusted, AsOf: now.Format("2006-01-02"), Factors: factors}
-	curve, err = market.AccumulateForwardFactors(curve)
+	curve, err = market.NormalizeForwardFactors(curve)
 	if err != nil {
 		return market.ForwardFactors{}, err
 	}
 	raw, _ := json.Marshal(curve.Factors)
 	digest := sha256.Sum256(raw)
-	curve.Version = fmt.Sprintf("massive-qfq-v3:%s:%s:%x", normalized, curve.AsOf, digest[:8])
+	curve.Version = fmt.Sprintf("massive-qfq-v4:%s:%s:%x", normalized, curve.AsOf, digest[:8])
 	expiresAt := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, location)
 	m.factorMu.Lock()
 	if m.factorCache == nil {
@@ -873,7 +873,7 @@ func (m *Massive) fetchDividendFactors(ctx context.Context, client *http.Client,
 			if item.Date == "" || item.Factor == nil {
 				return nil, fmt.Errorf("massive dividends returned an incomplete adjustment factor for %s", symbol)
 			}
-			factor, factorErr := market.DecimalFromString(item.Factor.String())
+			factor, factorErr := market.ParseAdjustmentFactor(item.Factor.String())
 			if factorErr != nil {
 				return nil, fmt.Errorf("massive dividends factor for %s: %w", symbol, factorErr)
 			}
