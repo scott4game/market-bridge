@@ -105,5 +105,45 @@ func TestSecurityProfileCatalogReturnsStaleCacheOnRefreshFailure(t *testing.T) {
 }
 
 func validTestProfile(symbol, cik string, marketCap float64) provider.SecurityProfile {
-	return provider.SecurityProfile{Symbol: symbol, Name: symbol + " Inc.", CIK: cik, Type: "CS", Active: true, Locale: "us", Market: "stocks", MarketCap: marketCap, SICCode: "2834", Provider: "massive"}
+	return provider.SecurityProfile{Symbol: symbol, Name: symbol + " Inc.", CIK: cik, Type: "CS", PrimaryExchange: "XNAS", Active: true, Locale: "us", Market: "stocks", MarketCap: marketCap, SICCode: "2834", Provider: "massive"}
+}
+
+func TestSecurityProfileExclusionsRevalidateCache(t *testing.T) {
+	names := map[string]string{
+		"AGNCO": "AGNC Depositary Shares representing Preferred Stock",
+		"CNOBP": "ConnectOne Perpetual Preferred Stock, Series A",
+		"BHFAN": "Brighthouse Financial Non-Cumulative Preferred Stock",
+		"ATLCZ": "Atlanticus Holdings 9.25% Senior Notes due 2029",
+		"PFBC":  "Preferred Bank Common Stock",
+		"WELL":  "Welltower Inc. Common Stock (REIT)",
+	}
+	p := &profileCatalogProvider{profiles: map[string]provider.SecurityProfile{}, calls: map[string]int{}}
+	for s, name := range names {
+		p.securities = append(p.securities, provider.Security{Symbol: s})
+		profile := validTestProfile(s, s, 100)
+		profile.Name = name
+		p.profiles[s] = profile
+	}
+	store, err := NewStore(t.TempDir(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := OpenSecurityProfileCatalog(filepath.Join(t.TempDir(), "profiles.db"), store, time.Hour, time.Hour, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+	// Populate pre-fix fresh cache: exclusions must not depend on re-fetching.
+	for _, profile := range p.profiles {
+		if err := catalog.upsert(t.Context(), SecurityProfileRecord{SecurityProfile: profile, FetchedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	response, err := catalog.Ensure(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !response.Complete || len(response.Profiles) != 2 || len(response.Excluded) != 4 || len(response.Errors) != 0 || len(p.calls) != 0 {
+		t.Fatalf("%+v calls=%v", response, p.calls)
+	}
 }

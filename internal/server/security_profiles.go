@@ -27,12 +27,18 @@ type SecurityProfileError struct {
 	Error  string `json:"error"`
 }
 
+type SecurityProfileExclusion struct {
+	SecurityProfileRecord
+	Reason string `json:"reason"`
+}
+
 type SecurityProfileResponse struct {
-	Source    string                  `json:"source"`
-	UpdatedAt time.Time               `json:"updated_at"`
-	Complete  bool                    `json:"complete"`
-	Profiles  []SecurityProfileRecord `json:"profiles"`
-	Errors    []SecurityProfileError  `json:"errors,omitempty"`
+	Source    string                     `json:"source"`
+	UpdatedAt time.Time                  `json:"updated_at"`
+	Complete  bool                       `json:"complete"`
+	Profiles  []SecurityProfileRecord    `json:"profiles"`
+	Errors    []SecurityProfileError     `json:"errors,omitempty"`
+	Excluded  []SecurityProfileExclusion `json:"excluded,omitempty"`
 }
 
 type SecurityProfileCatalog struct {
@@ -110,6 +116,7 @@ func (c *SecurityProfileCatalog) Ensure(ctx context.Context) (SecurityProfileRes
 		cached[symbol] = record
 	}
 	profiles := make([]SecurityProfileRecord, 0, len(symbols))
+	excluded := make([]SecurityProfileExclusion, 0)
 	for _, symbol := range symbols {
 		record, ok := cached[symbol]
 		if !ok || now.Sub(record.FetchedAt) > c.maxStale {
@@ -119,6 +126,10 @@ func (c *SecurityProfileCatalog) Ensure(ctx context.Context) (SecurityProfileRes
 			continue
 		}
 		record.Stale = now.Sub(record.FetchedAt) >= c.ttl
+		if reason := provider.CommonStockExclusion(record.SecurityProfile); reason != "" {
+			excluded = append(excluded, SecurityProfileExclusion{SecurityProfileRecord: record, Reason: reason})
+			continue
+		}
 		profiles = append(profiles, record)
 	}
 	errorsOut := make([]SecurityProfileError, 0, len(failures))
@@ -133,7 +144,7 @@ func (c *SecurityProfileCatalog) Ensure(ctx context.Context) (SecurityProfileRes
 		source = "massive"
 	}
 	return SecurityProfileResponse{
-		Source: source, UpdatedAt: now, Complete: len(errorsOut) == 0 && len(profiles) == len(symbols), Profiles: profiles, Errors: errorsOut,
+		Source: source, UpdatedAt: now, Complete: len(errorsOut) == 0 && len(profiles)+len(excluded) == len(symbols), Profiles: profiles, Errors: errorsOut, Excluded: excluded,
 	}, nil
 }
 
@@ -201,8 +212,8 @@ func (c *SecurityProfileCatalog) fetch(ctx context.Context, symbols []string, no
 		}
 		profile := item.profile
 		profile.Symbol = strings.ToUpper(strings.TrimSpace(profile.Symbol))
-		if profile.Symbol != item.symbol || !profile.Active || !strings.EqualFold(profile.Type, "CS") || !strings.EqualFold(profile.Locale, "us") || !strings.EqualFold(profile.Market, "stocks") {
-			failures[item.symbol] = "provider returned a non-active US common stock profile"
+		if profile.Symbol != item.symbol {
+			failures[item.symbol] = "provider returned a different security symbol"
 			continue
 		}
 		record := SecurityProfileRecord{SecurityProfile: profile, FetchedAt: now}

@@ -54,7 +54,7 @@ func (p *analyticsProvider) SecurityProfile(_ context.Context, symbol string) (p
 	if symbol == "CCC" {
 		code, description = "2000", "Sector B"
 	}
-	return provider.SecurityProfile{Symbol: symbol, Name: symbol, Type: "CS", Active: true, Locale: "us", Market: "stocks", SICCode: code, SICDescription: description, Provider: "massive"}, nil
+	return provider.SecurityProfile{Symbol: symbol, Name: symbol, PrimaryExchange: "XNAS", Type: "CS", Active: true, Locale: "us", Market: "stocks", SICCode: code, SICDescription: description, Provider: "massive"}, nil
 }
 func (p *analyticsProvider) GroupedDaily(_ context.Context, _ string) ([]market.Bar, error) {
 	p.groupedCalls++
