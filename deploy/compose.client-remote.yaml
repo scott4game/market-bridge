@@ -1,0 +1,9 @@
+# Opt-in only. Keep both host ports on loopback; terminate HTTPS at a reverse proxy.
+# docker compose -f compose.yaml -f deploy/compose.client-remote.yaml --profile local up -d go-client
+services:
+  go-client:
+    environment:
+      GO_CLIENT_REMOTE_PORT: ${GO_CLIENT_REMOTE_PORT:?set a free remote port 1..65535}
+      GO_CLIENT_REMOTE_TOKEN: ${GO_CLIENT_REMOTE_TOKEN:?set an independent 32+ character token}
+    ports:
+      - "127.0.0.1:${GO_CLIENT_REMOTE_PORT}:${GO_CLIENT_REMOTE_PORT}"

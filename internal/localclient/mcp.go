@@ -69,7 +69,10 @@ func bindMCP[I any](s *mcp.Server, name, description string, call func(context.C
 		})
 }
 
-func (h *HTTP) mcpHandler() http.Handler {
+func (h *HTTP) mcpHandler() http.Handler { return h.mcpAccessHandler(false) }
+
+// Remote transport is only mounted behind RemoteHandler authentication.
+func (h *HTTP) mcpAccessHandler(remote bool) http.Handler {
 	s := mcp.NewServer(&mcp.Implementation{Name: "market-bridge", Version: "1.0.0"}, nil)
 	h.bindOptionsLiveMCP(s)
 	bindMCP(s, "get_bars", "Query historical bars. Cache misses may fetch and cache upstream data. Returns the latest limited rows within the explicit time range, not a complete history when truncated.", h.mcpBars)
@@ -80,7 +83,10 @@ func (h *HTTP) mcpHandler() http.Handler {
 	bindMCP(s, "get_provider_status", "Query upstream market provider availability.", func(ctx context.Context, _ struct{}) (map[string]any, error) {
 		return h.mcpServerJSON(ctx, "/v1/providers/status", nil)
 	})
-	transport := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, PropagateRequestCancellation: true, MaxRequestBodyBytes: 1 << 20})
+	transport := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, PropagateRequestCancellation: true, MaxRequestBodyBytes: 1 << 20, DisableLocalhostProtection: remote})
+	if remote {
+		return transport
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		peer, _, err := net.SplitHostPort(r.RemoteAddr)
 		host := r.Host

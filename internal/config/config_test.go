@@ -395,3 +395,27 @@ func TestOptionsLiveConfiguration(t *testing.T) {
 		t.Fatal("accepted unknown provider")
 	}
 }
+
+func TestClientRemotePortConfiguration(t *testing.T) {
+	c := Client{Listen: "127.0.0.1:17600"}
+	if addr, err := c.RemoteAddress(); err != nil || addr != "" {
+		t.Fatal("disabled by default", err)
+	}
+	c.RemotePortConfigured = true
+	c.RemotePort = "17601"
+	if c.Validate() == nil {
+		t.Fatal("missing token accepted")
+	}
+	c.RemoteToken = "01234567890123456789012345678901"
+	if addr, err := c.RemoteAddress(); err != nil || addr != "0.0.0.0:17601" {
+		t.Fatal(addr, err)
+	}
+	c.ServerToken = c.RemoteToken
+	if c.Validate() == nil {
+		t.Fatal("shared upstream token accepted")
+	}
+	t.Setenv("GO_CLIENT_REMOTE_PORT", "")
+	if !ClientFromEnv().RemotePortConfigured || ClientFromEnv().Validate() == nil {
+		t.Fatal("explicit empty must be rejected")
+	}
+}

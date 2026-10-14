@@ -649,3 +649,7 @@ curl -fsS -X POST \
 证券档案接口的`profiles`仅包含检查通过的当前活跃美国交易所普通股，REIT普通股保留；`excluded`包含完整原档案及`reason`，类型与描述冲突不会被自动改写成另一类型。`complete`表示所有候选均获取或明确分类，并不要求每个候选都合格。`errors`继续表示资料获取失败；即使使用stale缓存，errors也不被排除项掩盖。泛证券目录/universe仍是多市场目录，不能代替此普通股筛选接口。
 
 复权因子JSON继续使用十进制字符串，现允许超过六位小数；价格字段精度不变。客户端拒绝`massive-qfq-v1`至`v3`曲线，要求服务端升级。新代码使用`us-qfq-v4`缓存键，因此旧派生Parquet/Redis结果不会作为新复权结果复用。
+
+## Optional authenticated remote listener
+
+The local listener keeps existing behavior. Set `GO_CLIENT_REMOTE_PORT` (or `serve --remote-port`) and an independent `GO_CLIENT_REMOTE_TOKEN` to add an authenticated remote API listener. If the port is absent, remote access is disabled. HTTPS proxies must target this remote listener, never the local unauthenticated port. See [remote access](go-client-remote-access.md) for configuration, allowlisted APIs, MCP and streaming support. Native iOS clients use the lightweight Swift SDK against this go-client endpoint.

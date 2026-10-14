@@ -24,13 +24,9 @@ import (
 )
 
 func main() {
-	cfg := config.ClientFromEnv()
-	if err := cfg.Validate(); err != nil {
-		log.Fatal(err)
-	}
-	cmd := "serve"
-	if len(os.Args) > 1 {
-		cmd = os.Args[1]
+	cmd, cfg, parseErr := parseClientCommand(os.Args[1:], config.ClientFromEnv())
+	if parseErr != nil {
+		log.Fatal(parseErr)
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -88,19 +84,15 @@ func main() {
 		defer newsStore.Close()
 		newsProxy := localclient.NewNewsProxy(cfg, newsStore)
 		go newsProxy.Run(ctx)
-		srv := &http.Server{Addr: cfg.Listen, Handler: (&localclient.HTTP{Cache: cache, Live: live, News: newsProxy}).Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 1 << 20}
-		go func() {
-			<-ctx.Done()
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer shutdownCancel()
-			_ = srv.Shutdown(shutdownCtx)
-		}()
-		log.Printf("go-client and KLineChart listening on http://%s", cfg.Listen)
-		if cfg.MCPEnabled {
-			log.Printf("MCP enabled at /mcp (local connections only; Docker compatibility=%t)", cfg.MCPAllowDocker)
+		handler := &localclient.HTTP{Cache: cache, Live: live, News: newsProxy}
+		addresses := []string{cfg.Listen}
+		handlers := []http.Handler{handler.Handler()}
+		remoteAddress, _ := cfg.RemoteAddress()
+		if remoteAddress != "" {
+			addresses = append(addresses, remoteAddress)
+			handlers = append(handlers, handler.RemoteHandler(cfg.RemoteToken))
 		}
-		err = srv.ListenAndServe()
-		if err != nil && err != http.ErrServerClosed {
+		if err := serveListeners(ctx, addresses, handlers); err != nil {
 			log.Fatal(err)
 		}
 	case "cache":

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -272,6 +273,9 @@ func split(v string) []string {
 }
 
 type Client struct {
+	RemotePort                  string
+	RemotePortConfigured        bool
+	RemoteToken                 string
 	MCPEnabled                  bool
 	MCPAllowDocker              bool
 	Listen                      string
@@ -302,7 +306,9 @@ type Client struct {
 }
 
 func ClientFromEnv() Client {
+	remotePort, remoteConfigured := os.LookupEnv("GO_CLIENT_REMOTE_PORT")
 	return Client{
+		RemotePort: remotePort, RemotePortConfigured: remoteConfigured, RemoteToken: os.Getenv("GO_CLIENT_REMOTE_TOKEN"),
 		MCPEnabled:     boolean("GO_CLIENT_MCP_ENABLED", true),
 		MCPAllowDocker: boolean("GO_CLIENT_MCP_ALLOW_DOCKER", false),
 		Listen:         env("GO_CLIENT_LISTEN", "127.0.0.1:17600"), CacheDir: env("GO_CLIENT_CACHE_DIRECTORY", "./data/client"),
@@ -319,6 +325,9 @@ func ClientFromEnv() Client {
 }
 
 func (c Client) Validate() error {
+	if _, err := c.RemoteAddress(); err != nil {
+		return err
+	}
 	if !c.ClickHouseEnabled {
 		return nil
 	}
@@ -373,4 +382,27 @@ func integer(k string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+// An absent port disables the listener; an explicitly empty/zero port is invalid.
+func (c Client) RemoteAddress() (string, error) {
+	if !c.RemotePortConfigured {
+		return "", nil
+	}
+	port, err := strconv.Atoi(c.RemotePort)
+	if err != nil || port < 1 || port > 65535 || strings.Trim(c.RemotePort, "0123456789") != "" {
+		return "", fmt.Errorf("GO_CLIENT_REMOTE_PORT / --remote-port must be 1..65535")
+	}
+	if len(strings.TrimSpace(c.RemoteToken)) < 32 || strings.ContainsAny(c.RemoteToken, " \t\r\n") {
+		return "", fmt.Errorf("GO_CLIENT_REMOTE_TOKEN must contain at least 32 non-whitespace characters when a remote port is configured")
+	}
+	if c.ServerToken != "" && c.RemoteToken == c.ServerToken {
+		return "", fmt.Errorf("remote access token must differ from upstream server token")
+	}
+	if _, local, err := net.SplitHostPort(c.Listen); err == nil {
+		if n, err := strconv.Atoi(local); err == nil && n == port {
+			return "", fmt.Errorf("remote port conflicts with local listener")
+		}
+	}
+	return net.JoinHostPort("0.0.0.0", strconv.Itoa(port)), nil
 }
