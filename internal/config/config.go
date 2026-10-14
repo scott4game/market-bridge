@@ -273,6 +273,7 @@ func split(v string) []string {
 }
 
 type Client struct {
+	PluginsJSON                 string
 	RemotePort                  string
 	RemotePortConfigured        bool
 	RemoteToken                 string
@@ -308,7 +309,8 @@ type Client struct {
 func ClientFromEnv() Client {
 	remotePort, remoteConfigured := os.LookupEnv("GO_CLIENT_REMOTE_PORT")
 	return Client{
-		RemotePort: remotePort, RemotePortConfigured: remoteConfigured, RemoteToken: os.Getenv("GO_CLIENT_REMOTE_TOKEN"),
+		PluginsJSON: os.Getenv("GO_CLIENT_PLUGINS"),
+		RemotePort:  remotePort, RemotePortConfigured: remoteConfigured, RemoteToken: os.Getenv("GO_CLIENT_REMOTE_TOKEN"),
 		MCPEnabled:     boolean("GO_CLIENT_MCP_ENABLED", true),
 		MCPAllowDocker: boolean("GO_CLIENT_MCP_ALLOW_DOCKER", false),
 		Listen:         env("GO_CLIENT_LISTEN", "127.0.0.1:17600"), CacheDir: env("GO_CLIENT_CACHE_DIRECTORY", "./data/client"),
@@ -325,6 +327,9 @@ func ClientFromEnv() Client {
 }
 
 func (c Client) Validate() error {
+	if _, err := c.Plugins(); err != nil {
+		return err
+	}
 	if _, err := c.RemoteAddress(); err != nil {
 		return err
 	}

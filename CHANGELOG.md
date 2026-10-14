@@ -35,3 +35,16 @@
 - MCP 实测 AAPL、AVGO：2025-01-17 到期、行权价 200–260 美元的看涨历史合约各返回 25 个；两只股票的 200 美元看涨合约在 2025-01-02 至 2025-01-17 各返回 11 根日线，股票日线也各返回 11 根。
 - 原有 Massive 合约查询固定使用 `expired=true`；本次实测传入到期前的 `as_of` 日期返回空列表，而省略 `as_of` 或指定到期后日期可返回合约。历史时点的未到期合约查询仍需后续完善，本次未修复。
 - 修正原有 Massive 历史范围测试在纽约午夜附近的窗口数量断言，并增加请求区间连续性检查。
+
+## Unreleased — optional go-client remote listener
+
+- Configure `GO_CLIENT_REMOTE_PORT` or `serve --remote-port` to add a separate authenticated listener; absence keeps it disabled. Independent `GO_CLIENT_REMOTE_TOKEN` required.
+- Remote HTTP/MCP/WS/SSE share existing data services; maintenance routes and local web UI remain unavailable remotely.
+- Swift SDK and iOS integration now target go-client; history uses the flat datasets/ensure contract. See docs/go-client-remote-access.md.
+
+## Unreleased — environment-configured HTTP plugins
+
+- Optional GO_CLIENT_PLUGINS registers independent authenticated HTTP backends with explicit GET/POST route allowlists; no plugin code is loaded into go-client.
+- Adds /v1/plugins discovery and scoped HTTP forwarding, plus list_plugins/query_plugin/submit_plugin MCP tools. Remote access remains separately authenticated.
+- Preserves statuses, partial JSON results and retry headers, bounds payloads, refuses redirects and redacts backend credentials. No automatic retries or deployments.
+- Swift SDK supports plugins() and pluginClient(id), reusing only the go-client remote credential.

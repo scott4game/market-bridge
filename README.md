@@ -379,3 +379,11 @@ Chains support `type=call/put`, decimal-string `strike_gte` / `strike_lte`, `off
 Responses include `provider`, `cache_hit`, and `fetched_at`. Expirations/chains cache for five minutes; quotes/Greeks for two seconds, in a separate in-memory cache capped at 1,000 entries. Quote `timestamp` is upstream market time; Greek calculation time is not supplied. Decimal values are nullable strings; absent data is never replaced with zero. Batch responses list `missing_symbols`. Contract multipliers/sizes use upstream values, never a fixed 100.
 
 Provider status adds `options_live`, showing configuration, last successful query time and last error. Configured does not mean the account has quote permissions. HTTP errors distinguish disabled (503), invalid input (400), quote permission (403), rate limit (429), timeout (504) and other upstream failures (502). No automatic Massive fallback. Trading, streaming, UI and historical option backfill are outside this feature.
+
+### Native iOS / Swift SDK
+
+The optional, dependency-free [MarketBridgeSDK](sdk/swift/README.md) connects to the authenticated go-client remote listener over HTTPS and WebSocket. It does not embed the Go client, Redis, ClickHouse or a database. Add `sdk/swift` as a local Swift Package; the repository root is not a remote Swift package.
+
+Remote access / 远端接入：[配置远端端口与鉴权](docs/go-client-remote-access.md)。未配置 `GO_CLIENT_REMOTE_PORT` 时不开启远端服务。
+
+HTTP plugins / 私有服务插件：[环境配置与路由白名单](docs/go-client-plugins.md)。未配置 `GO_CLIENT_PLUGINS` 时禁用；插件源码独立部署。

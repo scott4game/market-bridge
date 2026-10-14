@@ -44,6 +44,13 @@ func (h *HTTP) RemoteHandler(token string) http.Handler {
 	})
 }
 func remoteRouteAllowed(method, path string) bool {
+	if (method == http.MethodGet || method == http.MethodPost) && strings.HasPrefix(path, "/v1/plugins/") {
+		return true
+	}
+	if method == http.MethodGet && path == "/v1/plugins" {
+		return true
+	}
+
 	if method == http.MethodPost {
 		return path == "/v1/datasets/ensure" || path == "/v1/market-analytics/basket-flow"
 	}

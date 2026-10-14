@@ -20,13 +20,19 @@ import (
 var ui embed.FS
 
 type HTTP struct {
-	Cache *Cache
-	Live  *LiveProxy
-	News  *NewsProxy
+	Plugins *PluginGateway
+	Cache   *Cache
+	Live    *LiveProxy
+	News    *NewsProxy
 }
 
 func (h *HTTP) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/plugins", func(w http.ResponseWriter, r *http.Request) {
+		jsonResponse(w, 200, map[string]any{"plugins": h.Plugins.Catalog()})
+	})
+	mux.Handle("/v1/plugins/", h.Plugins)
+
 	if h.Cache != nil && h.Cache.cfg.MCPEnabled {
 		mux.Handle("/mcp", h.mcpHandler())
 	} else {

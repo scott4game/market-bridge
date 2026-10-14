@@ -1,0 +1,6 @@
+# Optional environment injection only; does not expose any new ports or start a plugin backend.
+services:
+  go-client:
+    environment:
+      GO_CLIENT_PLUGINS: ${GO_CLIENT_PLUGINS:?set plugin definitions JSON}
+      GO_CLIENT_PLUGIN_TOKEN: ${GO_CLIENT_PLUGIN_TOKEN:?set independent backend token}

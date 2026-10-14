@@ -459,3 +459,11 @@ go run ./cmd/options-probe -env-file .env.server -underlying AAPL.US
 响应带 `provider`、`cache_hit` 和 `fetched_at`。期权链/到期日缓存 5 分钟，报价/Greeks 缓存 2 秒；缓存仅在服务进程内、最多 1,000 项。报价 `timestamp` 是上游行情时间，Greeks 没有上游计算时间，不能将 `fetched_at` 当作计算时间。小数以字符串返回，缺失值为 `null`，批量未返回的合约列在 `missing_symbols`；合约乘数和规模取上游实际值，不固定为 100。
 
 `/v1/providers/status` 的 `options_live` 报告配置状态、最近成功查询时间及最近错误。`configured` 不表示已经获得行情权限。未启用返回 503，参数错误 400，行情无权限 403，上游限流 429，超时 504，其他上游错误 502；不自动切换 Massive。首期不提供期权交易、WebSocket 推送或期权历史 K 线回补。
+
+### iOS / Swift 轻量 SDK
+
+新增 [MarketBridgeSDK](sdk/swift/README.md)：通过 HTTPS / WebSocket 连接 go-client 的鉴权远端入口，无 Go 运行时、Redis、ClickHouse 或本地数据库。Xcode 通过本地目录 `sdk/swift` 引入；仓库根目录不作为远程 Swift Package。SDK不包含私有交易策略。
+
+Remote access / 远端接入：[配置远端端口与鉴权](docs/go-client-remote-access.md)。未配置 `GO_CLIENT_REMOTE_PORT` 时不开启远端服务。
+
+HTTP plugins / 私有服务插件：[环境配置与路由白名单](docs/go-client-plugins.md)。未配置 `GO_CLIENT_PLUGINS` 时禁用；插件源码独立部署。

@@ -84,7 +84,11 @@ func main() {
 		defer newsStore.Close()
 		newsProxy := localclient.NewNewsProxy(cfg, newsStore)
 		go newsProxy.Run(ctx)
-		handler := &localclient.HTTP{Cache: cache, Live: live, News: newsProxy}
+		pluginConfigs, pluginErr := cfg.Plugins()
+		if pluginErr != nil {
+			log.Fatal(pluginErr)
+		}
+		handler := &localclient.HTTP{Cache: cache, Live: live, News: newsProxy, Plugins: localclient.NewPluginGateway(pluginConfigs)}
 		addresses := []string{cfg.Listen}
 		handlers := []http.Handler{handler.Handler()}
 		remoteAddress, _ := cfg.RemoteAddress()
