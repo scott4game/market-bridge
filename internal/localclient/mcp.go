@@ -62,7 +62,7 @@ type mcpOptionBarsInput struct {
 }
 
 func bindMCP[I any](s *mcp.Server, name, description string, call func(context.Context, I) (map[string]any, error)) {
-	mcp.AddTool(s, &mcp.Tool{Name: name, Description: description, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}},
+	mcp.AddTool(s, &mcp.Tool{Name: name, Description: description, Meta: mcp.Meta{"gateway/policy": "query"}, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}},
 		func(ctx context.Context, _ *mcp.CallToolRequest, input I) (*mcp.CallToolResult, map[string]any, error) {
 			result, err := call(ctx, input)
 			return nil, result, err
@@ -73,18 +73,22 @@ func (h *HTTP) mcpHandler() http.Handler { return h.mcpAccessHandler(false) }
 
 // Remote transport is only mounted behind RemoteHandler authentication.
 func (h *HTTP) mcpAccessHandler(remote bool) http.Handler {
-	s := mcp.NewServer(&mcp.Implementation{Name: "market-bridge", Version: "1.0.0"}, nil)
-	h.bindOptionsLiveMCP(s)
-	h.bindPluginMCP(s)
-	bindMCP(s, "get_bars", "Query historical bars. Cache misses may fetch and cache upstream data. Returns the latest limited rows within the explicit time range, not a complete history when truncated.", h.mcpBars)
-	bindMCP(s, "get_recent_trades", "Query recent Longbridge trades; requires the upstream live provider.", h.mcpTrades)
-	bindMCP(s, "get_news", "Query locally stored news using sequence pagination.", h.mcpNews)
-	bindMCP(s, "get_option_contracts", "Query option contracts sorted by ticker with offset pagination; requires the options provider.", h.mcpContracts)
-	bindMCP(s, "get_option_bars", "Query option bars at the existing server's native granularity; no interval conversion. Cache misses may fetch upstream data.", h.mcpOptionBars)
-	bindMCP(s, "get_provider_status", "Query upstream market provider availability.", func(ctx context.Context, _ struct{}) (map[string]any, error) {
-		return h.mcpServerJSON(ctx, "/v1/providers/status", nil)
-	})
-	transport := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, PropagateRequestCancellation: true, MaxRequestBodyBytes: 1 << 20, DisableLocalhostProtection: remote})
+	build := func(r *http.Request) *mcp.Server {
+		s := mcp.NewServer(&mcp.Implementation{Name: "market-bridge", Version: "1.0.0"}, nil)
+		h.bindOptionsLiveMCP(s)
+		h.bindPluginMCP(s)
+		bindMCP(s, "get_bars", "Query historical bars. Cache misses may fetch and cache upstream data. Returns the latest limited rows within the explicit time range, not a complete history when truncated.", h.mcpBars)
+		bindMCP(s, "get_recent_trades", "Query recent Longbridge trades; requires the upstream live provider.", h.mcpTrades)
+		bindMCP(s, "get_news", "Query locally stored news using sequence pagination.", h.mcpNews)
+		bindMCP(s, "get_option_contracts", "Query option contracts sorted by ticker with offset pagination; requires the options provider.", h.mcpContracts)
+		bindMCP(s, "get_option_bars", "Query option bars at the existing server's native granularity; no interval conversion. Cache misses may fetch upstream data.", h.mcpOptionBars)
+		bindMCP(s, "get_provider_status", "Query upstream market provider availability.", func(ctx context.Context, _ struct{}) (map[string]any, error) {
+			return h.mcpServerJSON(ctx, "/v1/providers/status", nil)
+		})
+		h.MCPBackends.bind(r.Context(), s)
+		return s
+	}
+	transport := mcp.NewStreamableHTTPHandler(build, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, PropagateRequestCancellation: true, MaxRequestBodyBytes: 1 << 20, DisableLocalhostProtection: remote})
 	if remote {
 		return transport
 	}

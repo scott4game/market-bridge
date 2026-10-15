@@ -88,7 +88,11 @@ func main() {
 		if pluginErr != nil {
 			log.Fatal(pluginErr)
 		}
-		handler := &localclient.HTTP{Cache: cache, Live: live, News: newsProxy, Plugins: localclient.NewPluginGateway(pluginConfigs)}
+		mcpConfigs, mcpErr := cfg.MCPBackends()
+		if mcpErr != nil {
+			log.Fatal(mcpErr)
+		}
+		handler := &localclient.HTTP{Cache: cache, Live: live, News: newsProxy, Plugins: localclient.NewPluginGateway(pluginConfigs), MCPBackends: localclient.NewMCPGateway(mcpConfigs)}
 		addresses := []string{cfg.Listen}
 		handlers := []http.Handler{handler.Handler()}
 		remoteAddress, _ := cfg.RemoteAddress()

@@ -13,8 +13,19 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    outputs:
+      image_matrix: ${{ steps.components.outputs.matrix }}
     steps:
       - uses: actions/checkout@v5
+      - name: Select image components
+        id: components
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/heads/dev ]] && git log -1 --format=%B | grep -qx 'Release-Components: client'; then
+            echo 'matrix=[{"target":"go-client","image":"market-bridge-client"}]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'matrix=[{"target":"go-client","image":"market-bridge-client"},{"target":"go-server","image":"market-bridge-server"}]' >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -84,11 +95,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        include:
-          - target: go-server
-            image: market-bridge-server
-          - target: go-client
-            image: market-bridge-client
+        include: ${{ fromJSON(needs.test.outputs.image_matrix) }}
     steps:
       - name: Checkout source
         uses: actions/checkout@v5
@@ -131,9 +138,9 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
           tags: |
-            ${{ startsWith(github.ref, 'refs/tags/v') && format('docker.io/{0}/{1}:{2}', vars.DOCKERHUB_USERNAME, matrix.image, github.ref_name) || '' }}
+            docker.io/${{ vars.DOCKERHUB_USERNAME }}/${{ matrix.image }}:${{ steps.build-version.outputs.version }}
             docker.io/${{ vars.DOCKERHUB_USERNAME }}/${{ matrix.image }}:latest
-            ${{ startsWith(github.ref, 'refs/tags/v') && format('ghcr.io/{0}/{1}:{2}', github.repository_owner, matrix.image, github.ref_name) || '' }}
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:${{ steps.build-version.outputs.version }}
             ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max

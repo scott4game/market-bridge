@@ -277,8 +277,10 @@ type Client struct {
 	RemotePort                  string
 	RemotePortConfigured        bool
 	RemoteToken                 string
+	RemoteHost                  string
 	MCPEnabled                  bool
 	MCPAllowDocker              bool
+	MCPBackendsJSON             string
 	Listen                      string
 	CacheDir                    string
 	ServerURL                   string
@@ -311,9 +313,11 @@ func ClientFromEnv() Client {
 	return Client{
 		PluginsJSON: os.Getenv("GO_CLIENT_PLUGINS"),
 		RemotePort:  remotePort, RemotePortConfigured: remoteConfigured, RemoteToken: os.Getenv("GO_CLIENT_REMOTE_TOKEN"),
-		MCPEnabled:     boolean("GO_CLIENT_MCP_ENABLED", true),
-		MCPAllowDocker: boolean("GO_CLIENT_MCP_ALLOW_DOCKER", false),
-		Listen:         env("GO_CLIENT_LISTEN", "127.0.0.1:17600"), CacheDir: env("GO_CLIENT_CACHE_DIRECTORY", "./data/client"),
+		RemoteHost:      os.Getenv("GO_CLIENT_REMOTE_HOST"),
+		MCPEnabled:      boolean("GO_CLIENT_MCP_ENABLED", true),
+		MCPAllowDocker:  boolean("GO_CLIENT_MCP_ALLOW_DOCKER", false),
+		MCPBackendsJSON: os.Getenv("GO_CLIENT_MCP_BACKENDS"),
+		Listen:          env("GO_CLIENT_LISTEN", "127.0.0.1:17600"), CacheDir: env("GO_CLIENT_CACHE_DIRECTORY", "./data/client"),
 		ServerURL: env("GO_CLIENT_SERVER_URL", "http://127.0.0.1:17601"), ServerToken: os.Getenv("GO_CLIENT_SERVER_TOKEN"),
 		ParquetTTL: duration("GO_CLIENT_PARQUET_TTL", 720*time.Hour), CleanupInterval: duration("GO_CLIENT_CLEANUP_INTERVAL", 6*time.Hour),
 		RedisEnabled: boolean("GO_CLIENT_REDIS_ENABLED", false), RedisAddress: env("GO_CLIENT_REDIS_ADDRESS", "127.0.0.1:6379"), RedisUsername: os.Getenv("GO_CLIENT_REDIS_USERNAME"), RedisPassword: os.Getenv("GO_CLIENT_REDIS_PASSWORD"), RedisDB: integer("GO_CLIENT_REDIS_DB", 0), RedisTTL: duration("GO_CLIENT_REDIS_TTL", 24*time.Hour),
@@ -394,6 +398,9 @@ func (c Client) RemoteAddress() (string, error) {
 	if !c.RemotePortConfigured {
 		return "", nil
 	}
+	if c.RemoteHost != "" && c.RemoteHost != "localhost" && net.ParseIP(c.RemoteHost) == nil {
+		return "", fmt.Errorf("GO_CLIENT_REMOTE_HOST must be an IP address or localhost")
+	}
 	port, err := strconv.Atoi(c.RemotePort)
 	if err != nil || port < 1 || port > 65535 || strings.Trim(c.RemotePort, "0123456789") != "" {
 		return "", fmt.Errorf("GO_CLIENT_REMOTE_PORT / --remote-port must be 1..65535")
@@ -409,5 +416,9 @@ func (c Client) RemoteAddress() (string, error) {
 			return "", fmt.Errorf("remote port conflicts with local listener")
 		}
 	}
-	return net.JoinHostPort("0.0.0.0", strconv.Itoa(port)), nil
+	host := c.RemoteHost
+	if host == "" {
+		host = "0.0.0.0"
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port)), nil
 }

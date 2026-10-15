@@ -20,10 +20,11 @@ import (
 var ui embed.FS
 
 type HTTP struct {
-	Plugins *PluginGateway
-	Cache   *Cache
-	Live    *LiveProxy
-	News    *NewsProxy
+	MCPBackends *MCPGateway
+	Plugins     *PluginGateway
+	Cache       *Cache
+	Live        *LiveProxy
+	News        *NewsProxy
 }
 
 func (h *HTTP) Handler() http.Handler {
